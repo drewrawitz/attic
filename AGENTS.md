@@ -23,19 +23,15 @@ The acceptance tests for the design:
 
 ## Stack
 
-Pin exact versions. Once a `package.json` lists a package, that file is the source of truth and its row here can go.
+Pin exact versions. Once a `package.json` lists a package, that file is the source of truth and its row here can go. The one exception to pinning is `@cloudflare/workers-types`, which stays on `latest`.
 
-| Package                              | Version       | Kind    | Role                                                |
-| ------------------------------------ | ------------- | ------- | --------------------------------------------------- |
-| `effect`                             | 4.0.2         | Runtime | Domain logic, Schema                                |
-| `@effect/sql-d1`                     | 4.0.2         | Runtime | D1 client                                           |
-| `agents`                             | 0.28.0        | Runtime | `createMcpHandler` from `agents/mcp/server`         |
-| `@modelcontextprotocol/server`       | 2.0.0         | Runtime | MCP SDK v2, pinned by `agents` as a peer            |
-| `@cloudflare/workers-oauth-provider` | 1.2.3         | Runtime | OAuth for MCP clients, Google upstream              |
-| `alchemy`                            | 2.0.0-beta.81 | Dev     | Infrastructure                                      |
-| `@effect/vitest`                     | 4.0.2         | Dev     | Tests through `vp test`                             |
-| `@effect/sql-sqlite-node`            | 4.0.2         | Dev     | Domain tests on Node SQLite with the real migration |
-| `@cloudflare/workers-types`          | latest        | Dev     | Runtime types                                       |
+| Package                              | Version       | Kind    | Role                                        |
+| ------------------------------------ | ------------- | ------- | ------------------------------------------- |
+| `@effect/sql-d1`                     | 4.0.2         | Runtime | D1 client                                   |
+| `agents`                             | 0.28.0        | Runtime | `createMcpHandler` from `agents/mcp/server` |
+| `@modelcontextprotocol/server`       | 2.0.0         | Runtime | MCP SDK v2, pinned by `agents` as a peer    |
+| `@cloudflare/workers-oauth-provider` | 1.2.3         | Runtime | OAuth for MCP clients, Google upstream      |
+| `alchemy`                            | 2.0.0-beta.81 | Dev     | Infrastructure                              |
 
 ## Hard rules
 

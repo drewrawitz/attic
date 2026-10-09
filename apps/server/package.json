@@ -1,0 +1,14 @@
+{
+  "name": "@attic/server",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@attic/core": "workspace:*",
+    "effect": "4.0.2"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "latest",
+    "typescript": "catalog:"
+  }
+}
