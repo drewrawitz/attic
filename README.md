@@ -8,6 +8,7 @@ Attic has no app. It is a remote MCP server on Cloudflare (Workers, D1, R2, KV) 
 
 - `apps/server` is the Worker.
 - `packages/core` is the domain logic, written with Effect. Nothing in it is specific to Workers, so its tests run in Node.
+  Every tool is declared there with `defineTool`, one file each in `src/tools/`, and listed in `src/index.ts`. The Worker registers whatever is on that list.
 - `alchemy.run.ts` declares the Cloudflare resources: the Worker, the D1 database, the R2 bucket, and the KV namespace.
 - `migrations/` is the database schema. It is applied on every deploy, and to the local database on every start.
 - `test/` runs the stack in `alchemy.run.ts` on local simulators.

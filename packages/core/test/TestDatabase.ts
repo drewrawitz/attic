@@ -8,8 +8,8 @@ import { DatabaseSync } from "node:sqlite";
 
 const migrationsDir = new URL("../../../migrations/", import.meta.url);
 
-// Every migration file, in the order a deploy applies them.
-const migrations = readdirSync(migrationsDir)
+/** Every migration file, in the order a deploy applies them. */
+export const migrations = readdirSync(migrationsDir)
   .filter((name) => name.endsWith(".sql"))
   .sort()
   .map((name) => readFileSync(new URL(name, migrationsDir), "utf8"));

@@ -1,81 +1,74 @@
-import { hello } from "@attic/core";
+import { callTool, tools, type Tool, type ToolResult } from "@attic/core";
 import { D1Client } from "@effect/sql-d1";
 import { McpServer, type CallToolResult } from "@modelcontextprotocol/server";
 import { createMcpHandler, getMcpAuthContext } from "agents/mcp/server";
-import { Data, Effect, Schema } from "effect";
+import { Effect, Schema } from "effect";
 import type { WorkerEnv } from "../../../alchemy.run.ts";
 import { isAllowed } from "./allowlist.ts";
 
+// The JSON Schema dialect the MCP SDK asks every tool to describe its input in.
+const DIALECT = "draft-2020-12";
+
 // A tool's input is an Effect Schema. The MCP SDK takes it as a Standard Schema that can
-// also describe itself as JSON Schema.
-const toolInput = <S extends Schema.ConstraintDecoder<unknown>>(schema: S) =>
-  Schema.toStandardJSONSchemaV1(Schema.toStandardSchemaV1(schema));
-
-// For a tool that takes nothing. An empty `Schema.Struct({})` will not do: it means any value
-// that is not null, and describes itself with a `not`, which some clients turn away.
-const NO_INPUT = Schema.Record(Schema.String, Schema.Never);
-
-class NotAllowed extends Data.TaggedError("NotAllowed") {}
-
-// The email of whoever is calling, from what sign-in stored with the token. Sign-in already
-// checked the allowlist. Checking again on every call means an email taken off the list is
-// locked out at once, not when its token runs out.
-const signedInEmail = (env: WorkerEnv) => {
-  const email = getMcpAuthContext()?.props.email;
-  return typeof email === "string" && isAllowed(env.ALLOWED_EMAILS, email)
-    ? Effect.succeed(email)
-    : Effect.fail(new NotAllowed());
+// also describe itself as JSON Schema. Effect works that description out afresh each time it
+// is asked, and the SDK asks whenever a tool is registered, which is on every request. So
+// it is worked out here once and handed back from then on.
+const toolInput = (schema: Tool["input"]) => {
+  const { "~standard": standard } = Schema.toStandardJSONSchemaV1(
+    Schema.toStandardSchemaV1(schema),
+  );
+  const described = standard.jsonSchema.input({ target: DIALECT });
+  return {
+    "~standard": {
+      ...standard,
+      jsonSchema: {
+        ...standard.jsonSchema,
+        input: (options: Parameters<typeof standard.jsonSchema.input>[0]) =>
+          options.target === DIALECT ? described : standard.jsonSchema.input(options),
+      },
+    },
+  };
 };
 
-const text = (value: string, isError = false): CallToolResult => ({
-  content: [{ type: "text", text: value }],
-  isError,
-});
+// Every tool as the MCP SDK registers it. A new server is built for each request (ADR 0001),
+// so whatever is the same for every request is done here, once, when the module loads.
+const registrations = tools.map((tool) => ({
+  tool,
+  config: {
+    description: tool.description,
+    inputSchema: toolInput(tool.input),
+    annotations: tool.annotations,
+  },
+}));
 
-// Runs a tool's program for the signed-in caller and turns its result into what MCP sends
-// back. The caller is read here, before the program starts, because the MCP handler only
-// keeps it within reach for the length of this call.
-const runTool = <A, E>(
-  env: WorkerEnv,
-  tool: (email: string) => Effect.Effect<A, E, D1Client.D1Client>,
-) =>
-  Effect.runPromise(
-    signedInEmail(env).pipe(
-      Effect.flatMap(tool),
-      Effect.map((result) => text(JSON.stringify(result))),
-      Effect.catchTag("NotAllowed", () =>
-        Effect.succeed(text("This Google account is not allowed to use this Attic.", true)),
-      ),
-      Effect.provide(D1Client.layer({ db: env.DB })),
-    ),
-  );
+// Whether whoever is calling may use this Attic, from the email sign-in stored with the
+// token. Sign-in already checked the allowlist. Checking again on every call means an email
+// taken off the list is locked out at once, not when its token runs out.
+const callerIsAllowed = (env: WorkerEnv) => {
+  const email = getMcpAuthContext()?.props.email;
+  return typeof email === "string" && isAllowed(env.ALLOWED_EMAILS, email);
+};
 
-// The placeholder tool. It makes one query, so a call goes through everything a real tool
-// will: the token, the MCP layer, Effect, and D1.
-const sayHello = (email: string) =>
-  Effect.gen(function* () {
-    const sql = yield* D1Client.D1Client;
-    const [categories] = yield* sql<{
-      count: number;
-    }>`SELECT count(*) AS count FROM categories`;
+const NOT_ALLOWED: ToolResult = {
+  text: "This Google account is not allowed to use this Attic.",
+  isError: true,
+};
 
-    return { message: yield* hello, email, categories: categories?.count ?? 0 };
-  });
+// Runs a tool for the signed-in caller, on the Worker's database, and puts what it sends back
+// in the shape MCP expects. The caller is checked here, before anything starts, because the
+// MCP handler only keeps it within reach for the length of this call.
+const runTool = async (env: WorkerEnv, tool: Tool, input: unknown): Promise<CallToolResult> => {
+  const { text, isError } = callerIsAllowed(env)
+    ? await Effect.runPromise(callTool(tool, input, D1Client.layer({ db: env.DB })))
+    : NOT_ALLOWED;
+  return { content: [{ type: "text", text }], isError };
+};
 
 const createServer = (env: WorkerEnv) => {
   const server = new McpServer({ name: "attic", version: "0.0.0" });
-
-  server.registerTool(
-    "hello",
-    {
-      description:
-        "Placeholder until the real tools land. Returns a greeting, the email of the signed-in Google account, and how many Categories the database holds, which shows that sign-in and the database both work.",
-      inputSchema: toolInput(NO_INPUT),
-      annotations: { readOnlyHint: true },
-    },
-    () => runTool(env, sayHello),
-  );
-
+  for (const { tool, config } of registrations) {
+    server.registerTool(tool.name, config, (input) => runTool(env, tool, input));
+  }
   return server;
 };
 
