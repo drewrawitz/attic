@@ -5,7 +5,10 @@
   "type": "module",
   "dependencies": {
     "@attic/core": "workspace:*",
+    "@cloudflare/workers-oauth-provider": "1.2.3",
     "@effect/sql-d1": "4.0.2",
+    "@modelcontextprotocol/server": "2.0.0",
+    "agents": "0.28.0",
     "effect": "4.0.2"
   },
   "devDependencies": {

@@ -1,36 +1,58 @@
-import { hello } from "@attic/core";
-import { D1Client } from "@effect/sql-d1";
-import { Effect } from "effect";
+import { OAuthProvider } from "@cloudflare/workers-oauth-provider";
 import type { WorkerEnv } from "../../../alchemy.run.ts";
+import { mcp } from "./mcp.ts";
+import { overLimit } from "./rate-limit.ts";
+import { AUTHORIZE_PATH, MCP_PATH, REGISTER_PATH, TOKEN_PATH } from "./routes.ts";
+import { signIn } from "./sign-in.ts";
 
-// The hello-world for the scaffold step. It runs a trivial Effect program that makes one D1
-// query and one small batch, which is the request the CPU numbers in ADR 0012 were measured
-// on. It only reads. It goes away when the first real route lands.
-const program = Effect.gen(function* () {
-  const sql = yield* D1Client.D1Client;
+// Every request goes through Cloudflare's OAuth provider. It answers the OAuth endpoints
+// itself, lets a request for /mcp through only with a token it issued, and hands everything
+// else to the sign-in pages.
+const newProvider = (origin: string) =>
+  new OAuthProvider<WorkerEnv>({
+    apiRoute: MCP_PATH,
+    apiHandler: mcp,
+    defaultHandler: signIn,
+    authorizeEndpoint: AUTHORIZE_PATH,
+    tokenEndpoint: TOKEN_PATH,
+    clientRegistrationEndpoint: REGISTER_PATH,
+    // The address a client connects to, which every token is bound to.
+    resourceMetadata: { resource: `${origin}${MCP_PATH}` },
+  });
 
-  const [categories] = yield* sql<{
-    count: number;
-  }>`SELECT count(*) AS count FROM categories`;
+// The provider has to be told its own address when it is built, and that address is only
+// known from a request: the workers.dev address, a custom domain, or localhost in dev. So
+// there is one provider for each address the Worker is reached at. Cloudflare only routes a
+// request here for a hostname the Worker is deployed on, so this stays at one or two.
+const providers = new Map<string, OAuthProvider<WorkerEnv>>();
 
-  const batch = yield* sql.batch([
-    sql`SELECT count(*) AS count FROM properties`,
-    sql`SELECT count(*) AS count FROM items`,
-    sql`SELECT count(*) AS count FROM changes`,
-  ]);
+const providerFor = (origin: string) => {
+  let known = providers.get(origin);
+  if (known === undefined) {
+    known = newProvider(origin);
+    providers.set(origin, known);
+  }
+  return known;
+};
 
-  return {
-    message: yield* hello,
-    categories: categories?.count ?? 0,
-    batchStatements: batch.length,
-  };
-});
+// The provider only accepts plain http for an address on this machine, which is what dev
+// uses.
+const THIS_MACHINE = new Set(["localhost", "127.0.0.1", "[::1]"]);
 
 export default {
-  async fetch(_request, env): Promise<Response> {
-    const result = await Effect.runPromise(
-      program.pipe(Effect.provide(D1Client.layer({ db: env.DB }))),
-    );
-    return Response.json(result);
+  async fetch(request, env, ctx): Promise<Response> {
+    const url = new URL(request.url);
+    if (url.protocol !== "https:" && !THIS_MACHINE.has(url.hostname)) {
+      return new Response("Attic only answers over https.", { status: 400 });
+    }
+    if (await overLimit(request, env, url.pathname)) {
+      return new Response("Too many requests. Try again in a minute.", {
+        status: 429,
+        headers: { "retry-after": "60" },
+      });
+    }
+    // The provider attaches its helpers to the env object it is given. A copy for each
+    // request keeps two providers from sharing one set.
+    return providerFor(url.origin).fetch(request, { ...env }, ctx);
   },
 } satisfies ExportedHandler<WorkerEnv>;
