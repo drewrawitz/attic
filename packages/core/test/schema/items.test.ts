@@ -1,7 +1,7 @@
 import { expect, it } from "@effect/vitest";
 import { Effect } from "effect";
 import { SqlClient } from "effect/sql";
-import { refusal, TestDatabase } from "../TestDatabase.ts";
+import { checkList, refusal, TestDatabase } from "../TestDatabase.ts";
 
 it.effect("a Fixture needs a Property", () =>
   Effect.gen(function* () {
@@ -35,7 +35,9 @@ it.effect("an Item's scope is fixture or belonging", () =>
     const sql = yield* SqlClient.SqlClient;
     yield* sql`INSERT INTO properties (id, name) VALUES ('p1', 'Maple Street house')`;
 
-    for (const scope of ["fixture", "belonging"]) {
+    const scopes = ["fixture", "belonging"];
+    expect(yield* checkList("items", "scope")).toEqual(scopes);
+    for (const scope of scopes) {
       yield* sql`INSERT INTO items (id, name, scope, property_id) VALUES (${scope}, 'Fridge', ${scope}, 'p1')`;
     }
     expect(yield* sql`SELECT count(*) AS n FROM items`).toEqual([{ n: 2 }]);
@@ -52,6 +54,7 @@ it.effect("an Item's status is active, listed, sold, given, lost, stolen, or des
     const sql = yield* SqlClient.SqlClient;
 
     const statuses = ["active", "listed", "sold", "given", "lost", "stolen", "destroyed"];
+    expect(yield* checkList("items", "status")).toEqual(statuses);
     for (const status of statuses) {
       yield* sql`INSERT INTO items (id, name, status) VALUES (${status}, 'Couch', ${status})`;
     }

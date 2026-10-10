@@ -55,3 +55,17 @@ export const refusal = <A, R>(statement: Effect.Effect<A, SqlError, R>) =>
       return /^(UNIQUE|CHECK|FOREIGN KEY|NOT NULL) constraint failed/.exec(message)?.[1] ?? message;
     }),
   );
+
+/**
+ * The values a column's CHECK list allows, in the order the table's definition gives them.
+ * SQLite has no way to ask for the list, and trying values only shows that the ones tried
+ * are refused, so this reads the definition. It is what catches a value being added.
+ */
+export const checkList = (table: string, column: string) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const [definition] = yield* sql<{ sql: string }>`
+      SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ${table}`;
+    const list = new RegExp(`CHECK \\(${column} IN\\s*\\(([^)]*)\\)`).exec(definition?.sql ?? "");
+    return [...(list?.[1] ?? "").matchAll(/'([^']*)'/g)].map((value) => value[1]);
+  });

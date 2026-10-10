@@ -1,13 +1,14 @@
 import { expect, it } from "@effect/vitest";
 import { Effect } from "effect";
 import { SqlClient } from "effect/sql";
-import { refusal, TestDatabase } from "../TestDatabase.ts";
+import { checkList, refusal, TestDatabase } from "../TestDatabase.ts";
 
 it.effect("a Document's kind is photo, receipt, quote, manual, warranty, or other", () =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
 
     const kinds = ["photo", "receipt", "quote", "manual", "warranty", "other"];
+    expect(yield* checkList("documents", "kind")).toEqual(kinds);
     for (const kind of kinds) {
       yield* sql`INSERT INTO documents (id, kind, r2_key, mime_type, sha256)
                  VALUES (${kind}, ${kind}, ${`files/${kind}`}, 'application/pdf', ${`hash-${kind}`})`;
