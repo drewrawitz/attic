@@ -31,14 +31,13 @@ test(
   "the hello-world answers from local D1",
   Effect.gen(function* () {
     const { url } = yield* stack;
-    const response = yield* Test.getWhenReady(`${url}/?batches=2`);
+    const response = yield* Test.getWhenReady(url!);
     expect(response.status).toBe(200);
     // The migration seeds the starter Categories, so a count above zero means it was applied.
     expect(yield* response.json).toEqual({
       message: "Hello from Attic",
       categories: expect.toSatisfy((count: number) => count > 0),
-      batches: 2,
-      statementsPerBatch: 3,
+      batchStatements: 3,
     });
   }),
 );
