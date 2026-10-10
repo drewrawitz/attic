@@ -25,13 +25,11 @@ The acceptance tests for the design:
 
 Pin exact versions. Once a `package.json` lists a package, that file is the source of truth and its row here can go. The one exception to pinning is `@cloudflare/workers-types`, which stays on `latest`.
 
-| Package                              | Version       | Kind    | Role                                        |
-| ------------------------------------ | ------------- | ------- | ------------------------------------------- |
-| `@effect/sql-d1`                     | 4.0.2         | Runtime | D1 client                                   |
-| `agents`                             | 0.28.0        | Runtime | `createMcpHandler` from `agents/mcp/server` |
-| `@modelcontextprotocol/server`       | 2.0.0         | Runtime | MCP SDK v2, pinned by `agents` as a peer    |
-| `@cloudflare/workers-oauth-provider` | 1.2.3         | Runtime | OAuth for MCP clients, Google upstream      |
-| `alchemy`                            | 2.0.0-beta.81 | Dev     | Infrastructure                              |
+| Package                              | Version | Kind    | Role                                        |
+| ------------------------------------ | ------- | ------- | ------------------------------------------- |
+| `agents`                             | 0.28.0  | Runtime | `createMcpHandler` from `agents/mcp/server` |
+| `@modelcontextprotocol/server`       | 2.0.0   | Runtime | MCP SDK v2, pinned by `agents` as a peer    |
+| `@cloudflare/workers-oauth-provider` | 1.2.3   | Runtime | OAuth for MCP clients, Google upstream      |
 
 ## Hard rules
 

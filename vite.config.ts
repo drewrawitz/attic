@@ -13,4 +13,8 @@ export default defineConfig({
   run: {
     cache: true,
   },
+  // The root tests run the stack in alchemy.run.ts on local simulators. Each package has its own.
+  test: {
+    include: ["test/**/*.test.ts"],
+  },
 });

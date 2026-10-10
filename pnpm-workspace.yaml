@@ -19,3 +19,6 @@ peerDependencyRules:
     - vite
   allowedVersions:
     vite: "*"
+# workerd's binary arrives as an optional dependency, so its install script can stay off.
+allowBuilds:
+  workerd: false
