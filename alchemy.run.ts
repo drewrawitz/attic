@@ -40,7 +40,7 @@ export type WorkerEnv = Cloudflare.InferEnv<typeof Worker>;
 
 // A deploy keeps its state in the Cloudflare state store, so it does not depend on one
 // machine's disk. `alchemy dev` and the tests only describe local simulators, so their state
-// stays in .alchemy/ and they need no Cloudflare account.
+// stays in .alchemy/ and they need no Cloudflare account (ADR 0013).
 const state = Layer.unwrap(
   Alchemy.AlchemyContext.useSync(({ dev }) => (dev ? Alchemy.localState() : Cloudflare.state())),
 );
