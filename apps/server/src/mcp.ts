@@ -11,6 +11,10 @@ import { isAllowed } from "./allowlist.ts";
 const toolInput = <S extends Schema.ConstraintDecoder<unknown>>(schema: S) =>
   Schema.toStandardJSONSchemaV1(Schema.toStandardSchemaV1(schema));
 
+// For a tool that takes nothing. An empty `Schema.Struct({})` will not do: it means any value
+// that is not null, and describes itself with a `not`, which some clients turn away.
+const NO_INPUT = Schema.Record(Schema.String, Schema.Never);
+
 class NotAllowed extends Data.TaggedError("NotAllowed") {}
 
 // The email of whoever is calling, from what sign-in stored with the token. Sign-in already
@@ -66,7 +70,7 @@ const createServer = (env: WorkerEnv) => {
     {
       description:
         "Placeholder until the real tools land. Returns a greeting, the email of the signed-in Google account, and how many Categories the database holds, which shows that sign-in and the database both work.",
-      inputSchema: toolInput(Schema.Struct({})),
+      inputSchema: toolInput(NO_INPUT),
       annotations: { readOnlyHint: true },
     },
     () => runTool(env, sayHello),

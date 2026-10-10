@@ -361,10 +361,12 @@ test(
     const token = await tokenFor(url, ALLOWED_ACCOUNT);
     const { message } = await mcp(url, { method: "tools/list" }, token);
     const { result } = message as { result: { tools: unknown[] } };
+    // An object that takes nothing, in the plainest words JSON Schema has. Some clients turn
+    // a tool away if its schema leads with anything fancier, such as `not`.
     expect(result.tools).toEqual([
       expect.objectContaining({
         name: "hello",
-        inputSchema: expect.objectContaining({ type: "object" }),
+        inputSchema: { type: "object", additionalProperties: false },
         annotations: { readOnlyHint: true },
       }),
     ]);
