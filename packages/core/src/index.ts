@@ -1,5 +1,7 @@
-import { Effect } from "effect";
+import type { Tool } from "./tool.ts";
+import { getSchema } from "./tools/get-schema.ts";
 
-// Placeholder that proves the Effect wiring from core to the Worker.
-// It goes away when the first real service lands.
-export const hello: Effect.Effect<string> = Effect.succeed("Hello from Attic");
+export { callTool, type Tool, type ToolResult } from "./tool.ts";
+
+/** Every tool Attic has. The server registers each one. */
+export const tools: ReadonlyArray<Tool> = [getSchema];

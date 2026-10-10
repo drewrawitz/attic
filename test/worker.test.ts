@@ -1,3 +1,4 @@
+import { readdirSync, readFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { expect } from "@effect/vitest";
 import * as Cloudflare from "alchemy/Cloudflare";
@@ -86,7 +87,28 @@ const ALLOWED_ACCOUNT: GoogleAccount = {
   name: "Pat Example",
 };
 
-const CALL_HELLO = { method: "tools/call", params: { name: "hello", arguments: {} } };
+// A call to a tool, and the tool result the Worker answers with.
+const callOnWorker = async (url: string, token: string, name: string, input: unknown = {}) => {
+  const call = { method: "tools/call", params: { name, arguments: input } };
+  return (await mcp(url, call, token)).message as {
+    result?: { isError?: boolean; content: [{ type: string; text: string }] };
+    error?: { code: number; message: string };
+  };
+};
+
+// The names the migrations create.
+const created = (kind: "TABLE" | "VIEW") => {
+  const dir = new URL("../migrations/", import.meta.url);
+  return readdirSync(dir)
+    .filter((name) => name.endsWith(".sql"))
+    .flatMap((name) => [
+      ...readFileSync(new URL(name, dir), "utf8").matchAll(
+        new RegExp(`^CREATE ${kind} (\\w+)`, "gm"),
+      ),
+    ])
+    .map((match) => match[1])
+    .sort();
+};
 
 const consentHandle = (html: string) => /name="handle" value="([^"]+)"/.exec(html)![1]!;
 
@@ -339,24 +361,39 @@ test(
 );
 
 test(
-  "a signed-in client can call the placeholder tool",
+  "a signed-in client can call get_schema, which reads the Worker's own database",
   onWorker(async (url) => {
-    const { message } = await mcp(url, CALL_HELLO, await tokenFor(url, ALLOWED_ACCOUNT));
+    const { result } = await callOnWorker(url, await tokenFor(url, ALLOWED_ACCOUNT), "get_schema");
+    expect(result).toMatchObject({ isError: false, content: [{ type: "text" }] });
 
-    const { result } = message as { result: { content: [{ type: string; text: string }] } };
-    expect(result.content).toHaveLength(1);
-    // The migration seeds the starter Categories, so a count above zero also shows that the
-    // Worker's database has the schema.
-    expect(JSON.parse(result.content[0].text)).toEqual({
-      message: "Hello from Attic",
-      email: "ALLOWED@example.COM",
-      categories: expect.toSatisfy((count: number) => count > 0),
+    const schema = JSON.parse(result!.content[0].text) as {
+      tables: { name: string; sql: string }[];
+      views: { name: string; sql: string }[];
+      categories: { id: string }[];
+      conventions: string;
+      partial_dates: string;
+      data_keys: { item: Record<string, string> };
+    };
+    // D1 and Alchemy keep tables of their own in this database, which the Node SQLite under
+    // the tests in packages/core does not have. None of them may be passed off as Attic's.
+    expect(schema.tables.map(({ name }) => name).sort()).toEqual(created("TABLE"));
+    expect(schema.views.map(({ name }) => name).sort()).toEqual(created("VIEW"));
+    expect(schema.tables.find(({ name }) => name === "items")?.sql).toMatch(/^CREATE TABLE items/);
+    // The migration seeds the starter Categories, and power-tools sits under tools.
+    expect(schema.categories.find(({ id }) => id === "tools")).toEqual({
+      id: "tools",
+      name: "Tools",
+      expects: [],
+      children: [{ id: "power-tools", name: "Power tools", expects: [], children: [] }],
     });
+    expect(schema.conventions).toContain("Conventions inside `data`:");
+    expect(schema.partial_dates).toContain("Partial dates");
+    expect(schema.data_keys.item).toHaveProperty("parts");
   }),
 );
 
 test(
-  "a signed-in client is told what the placeholder tool takes and that it only reads",
+  "a signed-in client is told that get_schema takes nothing and only reads, and hello is gone",
   onWorker(async (url) => {
     const token = await tokenFor(url, ALLOWED_ACCOUNT);
     const { message } = await mcp(url, { method: "tools/list" }, token);
@@ -365,11 +402,30 @@ test(
     // a tool away if its schema leads with anything fancier, such as `not`.
     expect(result.tools).toEqual([
       expect.objectContaining({
-        name: "hello",
+        name: "get_schema",
+        description: expect.stringContaining("Category tree"),
         inputSchema: { type: "object", additionalProperties: false },
         annotations: { readOnlyHint: true },
       }),
     ]);
+
+    // The placeholder tool this one replaced is gone, not only left off the list.
+    const hello = await callOnWorker(url, token, "hello");
+    expect(hello.result).toBeUndefined();
+    expect(hello.error?.message).toContain("hello not found");
+  }),
+);
+
+test(
+  "input that does not fit a tool's schema comes back as a validation error",
+  onWorker(async (url) => {
+    const token = await tokenFor(url, ALLOWED_ACCOUNT);
+    const { result } = await callOnWorker(url, token, "get_schema", { property: "Maple Street" });
+    expect(result).toEqual({
+      isError: true,
+      content: [{ type: "text", text: expect.stringContaining("Input validation error") }],
+    });
+    expect(result!.content[0].text).toContain("property");
   }),
 );
 
@@ -513,12 +569,10 @@ test(
     yield* deployWith({ ALLOWED_EMAILS: "second@example.com" });
 
     yield* eventually(async (url) => {
-      const { message } = await mcp(url, CALL_HELLO, token);
-      expect(message).toMatchObject({
-        result: {
-          isError: true,
-          content: [{ type: "text", text: expect.stringContaining("not allowed") }],
-        },
+      const { result } = await callOnWorker(url, token, "get_schema");
+      expect(result).toEqual({
+        isError: true,
+        content: [{ type: "text", text: expect.stringContaining("not allowed") }],
       });
     });
   }).pipe(Effect.ensuring(restoreSettings)),
