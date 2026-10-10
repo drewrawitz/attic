@@ -1,4 +1,4 @@
-import { Data, Effect, type Layer, Schema } from "effect";
+import { Data, Effect, type Layer, Option, Predicate, Schema, SchemaTransformation } from "effect";
 import type { SqlClient } from "effect/sql";
 import type { SqlError } from "effect/sql/SqlError";
 
@@ -13,6 +13,23 @@ export class ToolError extends Data.TaggedError("ToolError")<{ readonly message:
  * any value that is not null, and describes itself with a `not`, which some clients turn away.
  */
 export const NoInput = Schema.Record(Schema.String, Schema.Never);
+
+/**
+ * An optional field of a tool's input. `Schema.optional` will not do: it publishes the field
+ * as nullable and then refuses null, so a client that sends what it was told it could is
+ * turned away. This one takes null, a value, or nothing. The tool is handed one form of "not
+ * given", whichever way the client said it: the key is left out.
+ */
+export const optional = <Field extends Schema.Constraint>(field: Field) =>
+  Schema.optionalKey(Schema.NullOr(field)).pipe(
+    Schema.decodeTo(
+      Schema.optionalKey(Schema.toType(field)),
+      SchemaTransformation.transformOptional<Field["Type"], Field["Type"] | null>({
+        decode: Option.filter(Predicate.isNotNull),
+        encode: (given) => given,
+      }),
+    ),
+  );
 
 // What a tool does once its input has been checked: a program over the database.
 type Program = Effect.Effect<unknown, ToolError | SqlError, SqlClient.SqlClient>;

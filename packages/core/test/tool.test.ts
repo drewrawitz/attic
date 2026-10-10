@@ -1,7 +1,7 @@
 import { expect, it } from "@effect/vitest";
 import { Cause, Effect, Layer, Logger, Schema } from "effect";
 import { SqlClient } from "effect/sql";
-import { callTool, defineTool, NoInput, ToolError } from "../src/tool.ts";
+import { callTool, defineTool, NoInput, optional, ToolError } from "../src/tool.ts";
 import { call } from "./call.ts";
 import { TestDatabase } from "./TestDatabase.ts";
 
@@ -138,3 +138,31 @@ it.effect("a database that cannot be opened ends the same way", () =>
     expect(logged).toEqual([expect.stringContaining("no database is bound as DB")]);
   }),
 );
+
+// What the MCP layer does with a tool's input: it publishes the schema as JSON Schema and
+// checks every call against it. `Schema.optional` publishes a field as nullable and then
+// refuses null, so a client that sends what it was told it could is turned away.
+it("an optional field is published as nullable, and a call may send null, a value, or nothing", async () => {
+  const input = Schema.Struct({ words: Schema.String, property: optional(Schema.String) });
+  const { jsonSchema, validate } = Schema.toStandardJSONSchemaV1(Schema.toStandardSchemaV1(input))[
+    "~standard"
+  ];
+
+  expect(jsonSchema.input({ target: "draft-2020-12" })).toMatchObject({
+    properties: {
+      words: { type: "string" },
+      property: { anyOf: [{ type: "string" }, { type: "null" }] },
+    },
+    required: ["words"],
+  });
+
+  // The tool is handed one form of "not given", whichever way the client said it.
+  expect(await validate({ words: "fridge" })).toStrictEqual({ value: { words: "fridge" } });
+  expect(await validate({ words: "fridge", property: null })).toStrictEqual({
+    value: { words: "fridge" },
+  });
+  expect(await validate({ words: "fridge", property: "Maple Street house" })).toEqual({
+    value: { words: "fridge", property: "Maple Street house" },
+  });
+  expect(await validate({ words: "fridge", property: 7 })).toHaveProperty("issues");
+});

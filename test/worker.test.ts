@@ -88,7 +88,7 @@ const ALLOWED_ACCOUNT: GoogleAccount = {
 };
 
 // A call to a tool, and the tool result the Worker answers with.
-const callTool = async (url: string, token: string, name: string, input: unknown = {}) => {
+const callOnWorker = async (url: string, token: string, name: string, input: unknown = {}) => {
   const call = { method: "tools/call", params: { name, arguments: input } };
   return (await mcp(url, call, token)).message as {
     result?: { isError?: boolean; content: [{ type: string; text: string }] };
@@ -363,7 +363,7 @@ test(
 test(
   "a signed-in client can call get_schema, which reads the Worker's own database",
   onWorker(async (url) => {
-    const { result } = await callTool(url, await tokenFor(url, ALLOWED_ACCOUNT), "get_schema");
+    const { result } = await callOnWorker(url, await tokenFor(url, ALLOWED_ACCOUNT), "get_schema");
     expect(result).toMatchObject({ isError: false, content: [{ type: "text" }] });
 
     const schema = JSON.parse(result!.content[0].text) as {
@@ -410,7 +410,7 @@ test(
     ]);
 
     // The placeholder tool this one replaced is gone, not only left off the list.
-    const hello = await callTool(url, token, "hello");
+    const hello = await callOnWorker(url, token, "hello");
     expect(hello.result).toBeUndefined();
     expect(hello.error?.message).toContain("hello not found");
   }),
@@ -420,7 +420,7 @@ test(
   "input that does not fit a tool's schema comes back as a validation error",
   onWorker(async (url) => {
     const token = await tokenFor(url, ALLOWED_ACCOUNT);
-    const { result } = await callTool(url, token, "get_schema", { property: "Maple Street" });
+    const { result } = await callOnWorker(url, token, "get_schema", { property: "Maple Street" });
     expect(result).toEqual({
       isError: true,
       content: [{ type: "text", text: expect.stringContaining("Input validation error") }],
@@ -569,7 +569,7 @@ test(
     yield* deployWith({ ALLOWED_EMAILS: "second@example.com" });
 
     yield* eventually(async (url) => {
-      const { result } = await callTool(url, token, "get_schema");
+      const { result } = await callOnWorker(url, token, "get_schema");
       expect(result).toEqual({
         isError: true,
         content: [{ type: "text", text: expect.stringContaining("not allowed") }],
