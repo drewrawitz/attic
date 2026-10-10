@@ -42,7 +42,7 @@ This is [`alchemy dev`](https://alchemy.run/cloudflare/local-development). The W
 vp run -r test
 ```
 
-The tests in `packages/core` run in Node. The tests in `test/` use [Alchemy's test harness](https://alchemy.run/testing/test-harness) in dev mode, so they run the real Worker and the real migration on the same local simulators as `vp run dev`. They need no Cloudflare account either.
+Both suites apply the real files in `migrations/`. The tests in `packages/core` run in Node and pin the rules the schema enforces, on an in-memory Node SQLite database. Node SQLite and D1 are not the same build (ADR 0006), so the tests in `test/` also run the real Worker and the real migration on local D1. They use [Alchemy's test harness](https://alchemy.run/testing/test-harness) in dev mode, which runs the same local simulators as `vp run dev`. Neither suite needs a Cloudflare account.
 
 - Run all of the above checks before pushing:
 

@@ -49,7 +49,7 @@ const rows = <Row>(db: Client, sql: string, ...values: unknown[]) =>
   );
 
 // The client reports a failed statement as a defect, so a refusal is read off the cause.
-const refusalOf = (statement: Effect.Effect<unknown, never, Alchemy.RuntimeContext>) =>
+const refusal = (statement: Effect.Effect<unknown, never, Alchemy.RuntimeContext>) =>
   statement.pipe(
     Effect.as("it went through"),
     Effect.catchCause((cause) => Effect.succeed(Cause.pretty(cause))),
@@ -146,18 +146,19 @@ test.provider("a delete that a foreign key refuses fails and leaves the row", (s
           db.prepare(`INSERT INTO vendors (id, name) VALUES ('ace', 'Ace Plumbing')`),
           db.prepare(`INSERT INTO items (id, name, vendor_id) VALUES ('faucet', 'Faucet', 'ace')`),
         ]);
-        const refusal = yield* refusalOf(db.prepare(`DELETE FROM vendors WHERE id = 'ace'`).run());
-        return { refusal, vendors: yield* rows(db, `SELECT name FROM vendors WHERE id = 'ace'`) };
+        const refused = yield* refusal(db.prepare(`DELETE FROM vendors WHERE id = 'ace'`).run());
+        return { refused, vendors: yield* rows(db, `SELECT name FROM vendors WHERE id = 'ace'`) };
       }),
     );
-    expect(result.refusal).toContain("FOREIGN KEY constraint failed");
+    expect(result.refused).toContain("FOREIGN KEY constraint failed");
     expect(result.vendors).toEqual([{ name: "Ace Plumbing" }]);
   }),
 );
 
-// This one pins a rule, not a SQLite feature. It is here because the rule was changed in the
-// migration just before the first deploy, and a foreign key can't be changed again without
-// rebuilding the table.
+// This one checks a rule, not a SQLite feature. The rule is pinned with the other deletion
+// rules in packages/core. It is repeated here on D1 because it was changed in the migration
+// just before the first deploy, and a foreign key can't be changed again without rebuilding
+// the table.
 test.provider("a Project that still has Quotes refuses deletion", (stack) =>
   Effect.gen(function* () {
     const result = yield* onDatabase(stack, (db) =>
@@ -175,7 +176,7 @@ test.provider("a Project that still has Quotes refuses deletion", (stack) =>
             `INSERT INTO quotes (id, project_id, vendor_id, amount_cents) VALUES ('q1', 'lighting', 'bright', 120000)`,
           ),
         ]);
-        const refusal = yield* refusalOf(
+        const refused = yield* refusal(
           db.prepare(`DELETE FROM projects WHERE id = 'lighting'`).run(),
         );
         // Moving the Quote to another Project is what lets the delete through.
@@ -184,13 +185,13 @@ test.provider("a Project that still has Quotes refuses deletion", (stack) =>
           .run();
         yield* db.prepare(`DELETE FROM projects WHERE id = 'lighting'`).run();
         return {
-          refusal,
+          refused,
           projects: yield* rows(db, `SELECT id FROM projects ORDER BY id`),
           quotes: yield* rows(db, `SELECT id, project_id FROM quotes`),
         };
       }),
     );
-    expect(result.refusal).toContain("FOREIGN KEY constraint failed");
+    expect(result.refused).toContain("FOREIGN KEY constraint failed");
     expect(result.projects).toEqual([{ id: "lighting-2" }]);
     expect(result.quotes).toEqual([{ id: "q1", project_id: "lighting-2" }]);
   }),
