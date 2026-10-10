@@ -5,10 +5,19 @@
   "type": "module",
   "scripts": {
     "ready": "vp check && vp run -r test",
+    "test": "vp test",
     "prepare": "vp config"
   },
   "devDependencies": {
-    "vite-plus": "catalog:"
+    "@cloudflare/workers-types": "latest",
+    "@effect/platform-node": "4.0.2",
+    "@effect/vitest": "4.0.2",
+    "@types/node": "catalog:",
+    "alchemy": "2.0.0-beta.81",
+    "effect": "4.0.2",
+    "typescript": "catalog:",
+    "vite-plus": "catalog:",
+    "vitest": "catalog:"
   },
   "devEngines": {
     "packageManager": {

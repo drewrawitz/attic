@@ -190,9 +190,11 @@ CREATE TABLE project_spaces (
 
 -- What one vendor said a project would cost. One per vendor per project; a revised
 -- quote replaces the old one. The PDF it came on is a document linked to the project.
+-- A project that still has quotes can't be deleted: move them to another project or
+-- delete them first.
 CREATE TABLE quotes (
   id            TEXT PRIMARY KEY,
-  project_id    TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  project_id    TEXT NOT NULL REFERENCES projects(id),
   vendor_id     TEXT NOT NULL REFERENCES vendors(id),
   amount_cents  INTEGER,
   quoted_on     TEXT,
@@ -378,6 +380,10 @@ CREATE INDEX change_records_entity  ON change_records (entity_type, entity_id);
 -- A property that is still yours today: no end date, or an end date that hasn't passed.
 -- A partial end date counts through the whole period it names, so end_on = '2026' is
 -- current for all of 2026.
+-- "Today" here is the UTC date, because a view can't know the configured timezone. On a
+-- property's last day that is off by a few hours. The curated tools don't rely on it: they
+-- work out the current property in code, with today in the configured timezone. This view,
+-- and inventory below, are the close-enough form for SQL written through the query tool.
 CREATE VIEW current_properties AS
 SELECT * FROM properties
 WHERE end_on IS NULL

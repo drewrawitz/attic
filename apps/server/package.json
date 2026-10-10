@@ -5,6 +5,7 @@
   "type": "module",
   "dependencies": {
     "@attic/core": "workspace:*",
+    "@effect/sql-d1": "4.0.2",
     "effect": "4.0.2"
   },
   "devDependencies": {

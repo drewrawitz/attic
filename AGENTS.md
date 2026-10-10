@@ -25,13 +25,11 @@ The acceptance tests for the design:
 
 Pin exact versions. Once a `package.json` lists a package, that file is the source of truth and its row here can go. The one exception to pinning is `@cloudflare/workers-types`, which stays on `latest`.
 
-| Package                              | Version       | Kind    | Role                                        |
-| ------------------------------------ | ------------- | ------- | ------------------------------------------- |
-| `@effect/sql-d1`                     | 4.0.2         | Runtime | D1 client                                   |
-| `agents`                             | 0.28.0        | Runtime | `createMcpHandler` from `agents/mcp/server` |
-| `@modelcontextprotocol/server`       | 2.0.0         | Runtime | MCP SDK v2, pinned by `agents` as a peer    |
-| `@cloudflare/workers-oauth-provider` | 1.2.3         | Runtime | OAuth for MCP clients, Google upstream      |
-| `alchemy`                            | 2.0.0-beta.81 | Dev     | Infrastructure                              |
+| Package                              | Version | Kind    | Role                                        |
+| ------------------------------------ | ------- | ------- | ------------------------------------------- |
+| `agents`                             | 0.28.0  | Runtime | `createMcpHandler` from `agents/mcp/server` |
+| `@modelcontextprotocol/server`       | 2.0.0   | Runtime | MCP SDK v2, pinned by `agents` as a peer    |
+| `@cloudflare/workers-oauth-provider` | 1.2.3   | Runtime | OAuth for MCP clients, Google upstream      |
 
 ## Hard rules
 
@@ -51,7 +49,7 @@ Pin exact versions. Once a `package.json` lists a package, that file is the sour
 
 Every tool follows these.
 
-- **Property:** accepts an id or a name. When omitted, use the one Current property. With none or several, return an error that lists them.
+- **Property:** accepts an id or a name. When omitted, use the one Current property. With none or several, return an error that lists them. Tools decide "current" in code, with today in the configured timezone. The `current_properties` and `inventory` views use the UTC date and are only for `query`.
 - **Spaces and Vendors:** referenced by name, matched ignoring case, created on first use.
 - **Categories:** must already exist. An unknown one is an error that lists the closest matches.
 - **Money:** dollars (the configured currency) at the tool boundary, integer cents in the database.
