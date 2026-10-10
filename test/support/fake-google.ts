@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage } from "node:http";
 import type { AddressInfo } from "node:net";
 
-// What Google says about the account that signed in.
+// An account at the stand-in, in the words Google's userinfo answer uses.
 export interface GoogleAccount {
   readonly sub: string;
   readonly email: string;

@@ -7,11 +7,19 @@ import {
 import type { WorkerEnv } from "../../../alchemy.run.ts";
 import { allowedEmails, isAllowed } from "./allowlist.ts";
 import { consentPage, messagePage } from "./consent-page.ts";
-import { authorizeUrl, fetchProfile, newVerifier } from "./google.ts";
+import { fetchProfile, newVerifier, signInUrl, type GoogleClient } from "./google.ts";
+import { AUTHORIZE, CALLBACK } from "./routes.ts";
 
 // The provider adds its helpers to the env it hands to this handler.
 const helpers = (env: WorkerEnv) =>
   (env as WorkerEnv & { readonly OAUTH_PROVIDER: OAuthHelpers }).OAUTH_PROVIDER;
+
+const googleClient = (env: WorkerEnv): GoogleClient => ({
+  clientId: env.GOOGLE_CLIENT_ID,
+  clientSecret: env.GOOGLE_CLIENT_SECRET,
+  tokenUrl: env.GOOGLE_TOKEN_URL,
+  userinfoUrl: env.GOOGLE_USERINFO_URL,
+});
 
 const html = (body: string, init: { status?: number; headers?: Headers } = {}) => {
   const headers = init.headers ?? new Headers();
@@ -19,12 +27,19 @@ const html = (body: string, init: { status?: number; headers?: Headers } = {}) =
   return new Response(body, { status: init.status ?? 200, headers });
 };
 
+// Sends the browser on. `headers` carries the cookies the provider wants set on the way.
+const redirect = (headers: Headers, location?: string) => {
+  if (location !== undefined) headers.set("location", location);
+  return new Response(null, { status: 302, headers });
+};
+
 // What is kept on this side while the person is away at Google.
 interface AtGoogle {
   readonly verifier: string;
 }
 
-const callbackUrl = (request: Request) => `${new URL(request.url).origin}/callback`;
+// Where Google sends the person back to.
+const callbackUrl = (request: Request) => `${new URL(request.url).origin}${CALLBACK}`;
 
 // Send the browser to Google. Only call this once the client has been allowed.
 const toGoogle = async (
@@ -38,16 +53,14 @@ const toGoogle = async (
     data: { verifier } satisfies AtGoogle,
     headers,
   });
-  upstream.headers.set(
-    "location",
-    await authorizeUrl({
-      clientId: env.GOOGLE_CLIENT_ID,
+  return redirect(
+    upstream.headers,
+    await signInUrl(googleClient(env), {
       redirectUri: callbackUrl(request),
       state: upstream.state,
       verifier,
     }),
   );
-  return new Response(null, { status: 302, headers: upstream.headers });
 };
 
 // GET /authorize: show the consent page for the client that asked.
@@ -72,8 +85,8 @@ const decide = async (request: Request, env: WorkerEnv) => {
   const handle = typeof posted === "string" ? posted : "";
 
   if (form.get("decision") !== "approve") {
-    const denied = await oauth.denyConsent(request, handle);
-    return new Response(null, { status: 302, headers: denied.headers });
+    // The provider's headers already say where to send the client its refusal.
+    return redirect((await oauth.denyConsent(request, handle)).headers);
   }
   // The approval is remembered for this browser, not for a person. Who they are is only
   // known once Google sends them back.
@@ -87,39 +100,30 @@ const decide = async (request: Request, env: WorkerEnv) => {
 const finish = async (request: Request, env: WorkerEnv) => {
   const oauth = helpers(env);
   const resumed = await oauth.finishUpstream<AtGoogle>(request);
-  const redirect = (location: string) => {
-    resumed.headers.set("location", location);
-    return new Response(null, { status: 302, headers: resumed.headers });
-  };
+  const refuse = (error: "access_denied" | "server_error") =>
+    redirect(resumed.headers, authorizationErrorRedirect(resumed.request, error));
 
   // Google reports a cancelled or failed sign-in with `error`. The client is told it was
   // denied, whatever else came back.
   const answer = new URL(request.url).searchParams;
   const code = answer.get("code");
-  if (answer.has("error") || code === null) {
-    return redirect(authorizationErrorRedirect(resumed.request, "access_denied"));
-  }
+  if (answer.has("error") || code === null) return refuse("access_denied");
 
-  const profile = await fetchProfile(
-    {
-      clientId: env.GOOGLE_CLIENT_ID,
-      clientSecret: env.GOOGLE_CLIENT_SECRET,
-      tokenUrl: env.GOOGLE_TOKEN_URL,
-      userinfoUrl: env.GOOGLE_USERINFO_URL,
-    },
-    { code, verifier: resumed.data.verifier, redirectUri: callbackUrl(request) },
-  );
-  if (profile === undefined) {
-    return redirect(authorizationErrorRedirect(resumed.request, "server_error"));
-  }
-  // An address Google has not verified could be anyone's, so it never counts.
+  const profile = await fetchProfile(googleClient(env), {
+    code,
+    verifier: resumed.data.verifier,
+    redirectUri: callbackUrl(request),
+  });
+  if (profile === undefined) return refuse("server_error");
+
+  // An email Google has not verified could be anyone's, so it never counts.
   if (!profile.emailVerified || !isAllowed(env.ALLOWED_EMAILS, profile.email)) {
     console.warn(
       profile.emailVerified
         ? "Sign-in denied: the Google account is not on the allowlist"
         : "Sign-in denied: Google has not verified the account's email",
     );
-    return redirect(authorizationErrorRedirect(resumed.request, "access_denied"));
+    return refuse("access_denied");
   }
 
   const { redirectTo } = await oauth.completeAuthorization({
@@ -130,28 +134,29 @@ const finish = async (request: Request, env: WorkerEnv) => {
     // Google's tokens are not kept. Nothing needs them once the email is known.
     props: { email: profile.email, name: profile.name },
   });
-  return redirect(redirectTo);
+  return redirect(resumed.headers, redirectTo);
 };
 
 // The settings a host supplies before anyone can sign in. `alchemy dev` starts without
 // them, so this is where a host finds out which ones are still missing.
 const missingSettings = (env: WorkerEnv) => [
-  ...(env.GOOGLE_CLIENT_ID.trim() === "" ? ["GOOGLE_CLIENT_ID"] : []),
-  ...(env.GOOGLE_CLIENT_SECRET.trim() === "" ? ["GOOGLE_CLIENT_SECRET"] : []),
+  ...(env.GOOGLE_CLIENT_ID === "" ? ["GOOGLE_CLIENT_ID"] : []),
+  ...(env.GOOGLE_CLIENT_SECRET === "" ? ["GOOGLE_CLIENT_SECRET"] : []),
   ...(allowedEmails(env.ALLOWED_EMAILS).length === 0 ? ["ALLOWED_EMAILS"] : []),
 ];
 
-const step = (request: Request) => {
+// The step of sign-in that a request is for, if it is for one.
+const stepFor = (request: Request) => {
   const { pathname } = new URL(request.url);
-  if (pathname === "/authorize" && request.method === "GET") return showConsent;
-  if (pathname === "/authorize" && request.method === "POST") return decide;
-  if (pathname === "/callback" && request.method === "GET") return finish;
+  if (pathname === AUTHORIZE && request.method === "GET") return showConsent;
+  if (pathname === AUTHORIZE && request.method === "POST") return decide;
+  if (pathname === CALLBACK && request.method === "GET") return finish;
   return undefined;
 };
 
 const route = (request: Request, env: WorkerEnv) => {
-  const handle = step(request);
-  if (handle === undefined) return new Response(null, { status: 404 });
+  const step = stepFor(request);
+  if (step === undefined) return new Response(null, { status: 404 });
 
   const missing = missingSettings(env);
   if (missing.length > 0) {
@@ -163,7 +168,7 @@ const route = (request: Request, env: WorkerEnv) => {
       { status: 503 },
     );
   }
-  return handle(request, env);
+  return step(request, env);
 };
 
 // The pages a person sees while signing in. Everything that is not an OAuth endpoint or /mcp

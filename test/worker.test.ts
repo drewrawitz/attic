@@ -1,3 +1,4 @@
+import { request as httpRequest } from "node:http";
 import { expect } from "@effect/vitest";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Test from "alchemy/Test/Vitest";
@@ -5,14 +6,16 @@ import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as Schedule from "effect/Schedule";
 import Stack from "../alchemy.run.ts";
-import { browser, newAddress, type Browser } from "./support/browser.ts";
+import { browser, newAddress, newNetwork, type Browser } from "./support/browser.ts";
 import { startFakeGoogle, type GoogleAccount } from "./support/fake-google.ts";
 import { authorizeUrl, exchange, mcp, REDIRECT_URI, register } from "./support/mcp-client.ts";
 
 // Runs the whole stack on Alchemy's local simulators: the Worker in workerd, with local D1,
 // R2, and KV behind its bindings. Nothing here touches a Cloudflare account, and nothing
-// calls Google. The Worker's two calls to Google go to a stand-in on this machine.
-const google = await startFakeGoogle({ id: "test-google-client", secret: "test-google-secret" });
+// calls Google. The Worker's two calls to Google go to a stand-in on this machine, which
+// knows the OAuth client the tests pretend the host created.
+const GOOGLE_CLIENT = { id: "test-google-client", secret: "test-google-secret" };
+const google = await startFakeGoogle(GOOGLE_CLIENT);
 
 const { test, beforeAll, afterAll, deploy } = Test.make({
   providers: Cloudflare.providers(),
@@ -21,30 +24,38 @@ const { test, beforeAll, afterAll, deploy } = Test.make({
 
 // The tests bring their own sign-in settings, so they pass on a fresh clone and are not
 // changed by whatever a local .env holds.
-const SETTINGS = {
-  GOOGLE_CLIENT_ID: "test-google-client",
-  GOOGLE_CLIENT_SECRET: "test-google-secret",
+const SETTINGS: Record<string, string | undefined> = {
+  GOOGLE_CLIENT_ID: GOOGLE_CLIENT.id,
+  GOOGLE_CLIENT_SECRET: GOOGLE_CLIENT.secret,
   GOOGLE_TOKEN_URL: google.tokenUrl,
   GOOGLE_USERINFO_URL: google.userinfoUrl,
   ALLOWED_EMAILS: " Allowed@Example.com , second@example.com ",
 };
 
-// Deploys the stack with those settings, or with some of them changed, the way a host
-// would after editing .env. They are read ahead of the environment and .env, which still
-// answer for everything else. A second deploy replaces the Worker in place: it keeps its
+// Deploys the stack with those settings, or with some of them changed or left unset, the
+// way a host would after editing .env. For these names the tests are the only source, so a
+// setting left unset here stays unset whatever the environment or .env says. Everything else
+// is still read from there. A second deploy replaces the Worker in place: it keeps its
 // address, its KV, and its database.
-const deployWith = (changed: Partial<typeof SETTINGS> = {}) =>
-  Effect.flatMap(ConfigProvider.ConfigProvider, (environment) =>
-    deploy(Stack).pipe(
-      Effect.provideService(
-        ConfigProvider.ConfigProvider,
-        ConfigProvider.orElse(
-          ConfigProvider.fromEnv({ env: { ...SETTINGS, ...changed } }),
-          environment,
+const deployWith = (changed: Record<string, string | undefined> = {}) =>
+  Effect.flatMap(ConfigProvider.ConfigProvider, (environment) => {
+    const settings = { ...SETTINGS, ...changed };
+    const fromTests = ConfigProvider.fromEnv({
+      env: Object.fromEntries(
+        Object.entries(settings).filter(
+          (entry): entry is [string, string] => entry[1] !== undefined,
         ),
       ),
-    ),
-  );
+    });
+    return deploy(Stack).pipe(
+      Effect.provideService(
+        ConfigProvider.ConfigProvider,
+        ConfigProvider.make((path) =>
+          (String(path[0]) in settings ? fromTests : environment).load(path),
+        ),
+      ),
+    );
+  });
 
 // There is no `afterAll(destroy(Stack))`. In 2.0.0-beta.81 it never returns behind the
 // harness's sidecar process, and the sidecar stays on because it is how `alchemy dev` runs.
@@ -65,46 +76,87 @@ afterAll(Effect.promise(() => google.close()));
 const onWorker = (body: (url: string) => Promise<void>) =>
   Effect.flatMap(stack, ({ url }) => Effect.promise(() => body(url!)));
 
-const PAT: GoogleAccount = {
+// A Google account whose email is on the allowlist.
+const ALLOWED_ACCOUNT: GoogleAccount = {
   sub: "1001",
   email: "allowed@example.com",
   email_verified: true,
   name: "Pat Example",
 };
 
+const CALL_HELLO = { method: "tools/call", params: { name: "hello", arguments: {} } };
+
 const consentHandle = (html: string) => /name="handle" value="([^"]+)"/.exec(html)![1]!;
 
-// A new client registers from the same address as the person who will sign in with it.
-const newClient = async (url: string, person: Browser, name = "Test client") => {
-  const registered = await register(url, name, person.address);
-  return (await registered.json()) as { client_id: string };
-};
-
-// A new client registers, and a person allows it on the consent page. Returns where the
-// Worker sends the browser next, which is Google's sign-in page.
-const allowNewClient = async (url: string, person = browser()) => {
-  const client = await newClient(url, person);
+// A new client registers and sends a person to the sign-in page, from the same address.
+const openSignIn = async (url: string) => {
+  const person = browser();
+  const registered = await register(url, "Test client", person.address);
+  const client = (await registered.json()) as { client_id: string };
   const page = await person.get(authorizeUrl(url, client.client_id));
-  const allowed = await person.post(`${url}/authorize`, {
-    handle: consentHandle(await page.text()),
-    decision: "approve",
-  });
-  return { client, person, allowed };
+  return { person, client, page };
 };
 
-// The whole browser part of sign-in: allow the client, sign in to Google as `account`, and
-// come back to the Worker's callback. Returns where the Worker sends the browser last.
-const signInAs = async (url: string, account: GoogleAccount) => {
-  const { client, person, allowed } = await allowNewClient(url);
-  const atGoogle = new URL(allowed.headers.get("location")!);
-  const back = await person.get(
+// The person answers the consent page. Returns where the Worker sends the browser next.
+const answerConsent = async (url: string, person: Browser, page: Response, decision: string) =>
+  person.post(`${url}/authorize`, { handle: consentHandle(await page.text()), decision });
+
+// A new client registers, and a person allows it on the consent page. `atGoogle` is where
+// the Worker sends the browser next, which is Google's sign-in page.
+const allowNewClient = async (url: string) => {
+  const { person, client, page } = await openSignIn(url);
+  const allowed = await answerConsent(url, person, page, "approve");
+  return { person, client, allowed, atGoogle: new URL(allowed.headers.get("location")!) };
+};
+
+// Google sends the browser back to the Worker's callback with `answer`, plus the state the
+// Worker gave it.
+const comeBack = (url: string, person: Browser, atGoogle: URL, answer: Record<string, string>) =>
+  person.get(
     `${url}/callback?${new URLSearchParams({
-      code: google.signIn(atGoogle, account),
+      ...answer,
       state: atGoogle.searchParams.get("state")!,
     }).toString()}`,
   );
+
+// The whole browser part of sign-in: allow the client, sign in to Google as `account`, and
+// come back to the Worker's callback. `back` is where the Worker sends the browser last.
+const signInAs = async (url: string, account: GoogleAccount) => {
+  const { person, client, atGoogle } = await allowNewClient(url);
+  const back = await comeBack(url, person, atGoogle, { code: google.signIn(atGoogle, account) });
   return { client, back };
 };
+
+// Signs in as `account` and returns the token the client ends up holding.
+const tokenFor = async (url: string, account: GoogleAccount) => {
+  const { client, back } = await signInAs(url, account);
+  const code = new URL(back.headers.get("location")!).searchParams.get("code")!;
+  const token = (await (await exchange(url, client.client_id, code)).json()) as {
+    access_token: string;
+  };
+  return token.access_token;
+};
+
+// Where a redirect sends the client, and what it carries.
+const sentToClient = (redirect: Response) => {
+  const toClient = new URL(redirect.headers.get("location")!);
+  return {
+    status: redirect.status,
+    address: `${toClient.origin}${toClient.pathname}`,
+    error: toClient.searchParams.get("error"),
+    state: toClient.searchParams.get("state"),
+    code: toClient.searchParams.get("code"),
+  };
+};
+
+// What a client is sent when sign-in is refused: an error, its own state, and no code.
+const refusedWith = (error: string) => ({
+  status: 302,
+  address: REDIRECT_URI,
+  error,
+  state: "client-state",
+  code: null,
+});
 
 test(
   "the stack comes up on the local simulators",
@@ -153,17 +205,26 @@ test(
 );
 
 test(
+  "the consent page says where access will be sent and cannot be put in a frame",
+  onWorker(async (url) => {
+    const { page } = await openSignIn(url);
+    const html = await page.text();
+    expect(html).toContain("access is sent to <strong>localhost</strong>");
+    expect(html).toContain("That is an app on this computer.");
+    expect(page.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
+  }),
+);
+
+test(
   "allowing a client sends the browser to Google, asking only who the person is",
   onWorker(async (url) => {
-    const { allowed } = await allowNewClient(url);
+    const { allowed, atGoogle } = await allowNewClient(url);
     expect(allowed.status).toBe(302);
-
-    const atGoogle = new URL(allowed.headers.get("location")!);
     expect(`${atGoogle.origin}${atGoogle.pathname}`).toBe(
       "https://accounts.google.com/o/oauth2/v2/auth",
     );
     expect(Object.fromEntries(atGoogle.searchParams)).toEqual({
-      client_id: "test-google-client",
+      client_id: GOOGLE_CLIENT.id,
       redirect_uri: `${url}/callback`,
       response_type: "code",
       scope: "openid email profile",
@@ -175,16 +236,53 @@ test(
 );
 
 test(
+  "pressing Deny on the consent page sends the client a refusal",
+  onWorker(async (url) => {
+    const { person, page } = await openSignIn(url);
+    const denied = await answerConsent(url, person, page, "deny");
+    expect(sentToClient(denied)).toEqual(refusedWith("access_denied"));
+  }),
+);
+
+test(
+  "a client the browser has already allowed goes straight to Google the next time",
+  onWorker(async (url) => {
+    const { client, person } = await allowNewClient(url);
+
+    const again = await person.get(authorizeUrl(url, client.client_id));
+    expect(again.status).toBe(302);
+    expect(new URL(again.headers.get("location")!).hostname).toBe("accounts.google.com");
+  }),
+);
+
+test(
+  "a consent form that was already used shows a page and sends the browser nowhere",
+  onWorker(async (url) => {
+    const { person, page } = await openSignIn(url);
+    const form = { handle: consentHandle(await page.text()), decision: "approve" };
+    await person.post(`${url}/authorize`, form);
+
+    const again = await person.post(`${url}/authorize`, form);
+    expect(again.status).toBe(400);
+    expect(again.headers.get("location")).toBeNull();
+    expect(await again.text()).toContain("Sign-in did not finish");
+  }),
+);
+
+test(
   "a verified email on the allowlist completes sign-in, and the client gets a token",
   onWorker(async (url) => {
-    const { client, back } = await signInAs(url, PAT);
-    expect(back.status).toBe(302);
+    const { client, back } = await signInAs(url, ALLOWED_ACCOUNT);
+    expect(sentToClient(back)).toEqual({
+      status: 302,
+      address: REDIRECT_URI,
+      error: null,
+      state: "client-state",
+      code: expect.any(String),
+    });
 
-    const toClient = new URL(back.headers.get("location")!);
-    expect(`${toClient.origin}${toClient.pathname}`).toBe(REDIRECT_URI);
-    expect(toClient.searchParams.get("state")).toBe("client-state");
-
-    const token = await exchange(url, client.client_id, toClient.searchParams.get("code")!);
+    const code = new URL(back.headers.get("location")!).searchParams.get("code")!;
+    const token = await exchange(url, client.client_id, code);
     expect(token.status).toBe(200);
     expect(await token.json()).toMatchObject({
       access_token: expect.any(String),
@@ -194,79 +292,53 @@ test(
   }),
 );
 
-// What a client is sent when sign-in is refused: an error, its own state, and no code.
-const refusal = (back: Response) => {
-  const toClient = new URL(back.headers.get("location")!);
-  return {
-    status: back.status,
-    address: `${toClient.origin}${toClient.pathname}`,
-    error: toClient.searchParams.get("error"),
-    state: toClient.searchParams.get("state"),
-    code: toClient.searchParams.get("code"),
-  };
-};
-
-const ACCESS_DENIED = {
-  status: 302,
-  address: REDIRECT_URI,
-  error: "access_denied",
-  state: "client-state",
-  code: null,
-};
-
 test(
   "an email that is not on the allowlist is denied",
   onWorker(async (url) => {
-    const { back } = await signInAs(url, { ...PAT, sub: "2002", email: "stranger@example.com" });
-    expect(refusal(back)).toEqual(ACCESS_DENIED);
+    const { back } = await signInAs(url, {
+      ...ALLOWED_ACCOUNT,
+      sub: "2002",
+      email: "stranger@example.com",
+    });
+    expect(sentToClient(back)).toEqual(refusedWith("access_denied"));
   }),
 );
 
 test(
   "an email on the allowlist that Google has not verified is denied",
   onWorker(async (url) => {
-    const { back } = await signInAs(url, { ...PAT, email_verified: false });
-    expect(refusal(back)).toEqual(ACCESS_DENIED);
+    const { back } = await signInAs(url, { ...ALLOWED_ACCOUNT, email_verified: false });
+    expect(sentToClient(back)).toEqual(refusedWith("access_denied"));
   }),
 );
 
 test(
   "an error from Google on the callback ends in the error redirect, not a token",
   onWorker(async (url) => {
-    const { person, allowed } = await allowNewClient(url);
-    const atGoogle = new URL(allowed.headers.get("location")!);
-    // The person pressed Cancel on Google's page. Google also sends a code here to show
-    // that the error wins over it.
-    const back = await person.get(
-      `${url}/callback?${new URLSearchParams({
-        error: "access_denied",
-        code: google.signIn(atGoogle, PAT),
-        state: atGoogle.searchParams.get("state")!,
-      }).toString()}`,
-    );
-    expect(refusal(back)).toEqual(ACCESS_DENIED);
+    const { person, atGoogle } = await allowNewClient(url);
+    // The person pressed Cancel on Google's page. A code that would work is sent along too,
+    // to show that the error wins over it.
+    const back = await comeBack(url, person, atGoogle, {
+      error: "access_denied",
+      code: google.signIn(atGoogle, ALLOWED_ACCOUNT),
+    });
+    expect(sentToClient(back)).toEqual(refusedWith("access_denied"));
   }),
 );
 
-// Signs in as `account` and returns the token the client ends up holding.
-const tokenFor = async (url: string, account: GoogleAccount) => {
-  const { client, back } = await signInAs(url, account);
-  const code = new URL(back.headers.get("location")!).searchParams.get("code")!;
-  const token = (await (await exchange(url, client.client_id, code)).json()) as {
-    access_token: string;
-  };
-  return token.access_token;
-};
+test(
+  "a code that Google does not accept ends in an error for the client, not a token",
+  onWorker(async (url) => {
+    const { person, atGoogle } = await allowNewClient(url);
+    const back = await comeBack(url, person, atGoogle, { code: "not-from-google" });
+    expect(sentToClient(back)).toEqual(refusedWith("server_error"));
+  }),
+);
 
 test(
   "a signed-in client can call the placeholder tool",
   onWorker(async (url) => {
-    const token = await tokenFor(url, PAT);
-    const { message } = await mcp(
-      url,
-      { method: "tools/call", params: { name: "hello", arguments: {} } },
-      token,
-    );
+    const { message } = await mcp(url, CALL_HELLO, await tokenFor(url, ALLOWED_ACCOUNT));
 
     const { result } = message as { result: { content: [{ type: string; text: string }] } };
     expect(result.content).toHaveLength(1);
@@ -283,7 +355,8 @@ test(
 test(
   "a signed-in client is told what the placeholder tool takes and that it only reads",
   onWorker(async (url) => {
-    const { message } = await mcp(url, { method: "tools/list" }, await tokenFor(url, PAT));
+    const token = await tokenFor(url, ALLOWED_ACCOUNT);
+    const { message } = await mcp(url, { method: "tools/list" }, token);
     const { result } = message as { result: { tools: unknown[] } };
     expect(result.tools).toEqual([
       expect.objectContaining({
@@ -295,8 +368,8 @@ test(
   }),
 );
 
-// Registration and the sign-in page are open to anyone, and each use writes to KV. These two
-// pin how many of each one address gets in a minute.
+// Registration and the sign-in page are open to anyone, and each use writes to KV. These
+// pin how many of each one caller gets in a minute.
 test(
   "registrations past five a minute from one address are refused",
   onWorker(async (url) => {
@@ -308,6 +381,29 @@ test(
     expect(statuses).toEqual([201, 201, 201, 201, 201, 429]);
     // Another address still gets through.
     expect((await register(url, "Test client", newAddress())).status).toBe(201);
+  }),
+);
+
+// One network can hand itself any number of IPv6 addresses, so a fresh address must not
+// mean a fresh allowance. The last address is the fifth one written out the long way.
+test(
+  "addresses on the same IPv6 network share one limit",
+  onWorker(async (url) => {
+    const network = newNetwork();
+    const [, , third, fourth] = network.split(":");
+    const addresses = [
+      `${network}::1`,
+      `${network}::2`,
+      `${network}:aaaa:bbbb:cccc:dddd`,
+      `${network}::ffff`,
+      `${network}:1::`,
+      `2001:0db8:${third!.padStart(4, "0")}:${fourth!.padStart(4, "0")}:0001:0000:0000:0000`,
+    ];
+    const statuses: number[] = [];
+    for (const address of addresses) {
+      statuses.push((await register(url, "Test client", address)).status);
+    }
+    expect(statuses).toEqual([201, 201, 201, 201, 201, 429]);
   }),
 );
 
@@ -328,11 +424,10 @@ test(
 test(
   "requests for the sign-in page past ten a minute from one address are refused",
   onWorker(async (url) => {
-    const person = browser();
-    const client = await newClient(url, person);
-
-    const statuses: number[] = [];
-    for (let attempt = 0; attempt < 11; attempt++) {
+    // Opening the sign-in page is the first of the ten.
+    const { person, client, page } = await openSignIn(url);
+    const statuses = [page.status];
+    for (let attempt = 1; attempt < 11; attempt++) {
       statuses.push((await person.get(authorizeUrl(url, client.client_id))).status);
     }
     expect(statuses).toEqual([...Array.from({ length: 10 }, () => 200), 429]);
@@ -341,74 +436,24 @@ test(
   }),
 );
 
+// Every token is tied to the address the Worker is reached at, and the OAuth provider only
+// accepts plain http for this machine.
 test(
-  "pressing Deny on the consent page sends the client a refusal",
+  "a request over plain http for any host but this machine is turned away",
   onWorker(async (url) => {
-    const person = browser();
-    const client = await newClient(url, person);
-    const page = await person.get(authorizeUrl(url, client.client_id));
-
-    const denied = await person.post(`${url}/authorize`, {
-      handle: consentHandle(await page.text()),
-      decision: "deny",
+    const status = await new Promise<number>((resolve, reject) => {
+      const request = httpRequest(
+        `${url}/mcp`,
+        { method: "POST", setHost: false, headers: { host: "attic.example.com" } },
+        (response) => {
+          response.resume();
+          resolve(response.statusCode ?? 0);
+        },
+      );
+      request.on("error", reject);
+      request.end();
     });
-    expect(refusal(denied)).toEqual(ACCESS_DENIED);
-  }),
-);
-
-test(
-  "a client the browser has already allowed goes straight to Google the next time",
-  onWorker(async (url) => {
-    const { client, person } = await allowNewClient(url);
-
-    const again = await person.get(authorizeUrl(url, client.client_id));
-    expect(again.status).toBe(302);
-    expect(new URL(again.headers.get("location")!).hostname).toBe("accounts.google.com");
-  }),
-);
-
-test(
-  "the consent page says where access will be sent and cannot be put in a frame",
-  onWorker(async (url) => {
-    const person = browser();
-    const client = await newClient(url, person);
-
-    const page = await person.get(authorizeUrl(url, client.client_id));
-    const html = await page.text();
-    expect(html).toContain("access is sent to <strong>localhost</strong>");
-    expect(html).toContain("That is an app on this computer.");
-    expect(page.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
-  }),
-);
-
-test(
-  "a consent form that was already used shows a page and sends the browser nowhere",
-  onWorker(async (url) => {
-    const person = browser();
-    const client = await newClient(url, person);
-    const page = await person.get(authorizeUrl(url, client.client_id));
-    const form = { handle: consentHandle(await page.text()), decision: "approve" };
-    await person.post(`${url}/authorize`, form);
-
-    const again = await person.post(`${url}/authorize`, form);
-    expect(again.status).toBe(400);
-    expect(again.headers.get("location")).toBeNull();
-    expect(await again.text()).toContain("Sign-in did not finish");
-  }),
-);
-
-test(
-  "a code that Google does not accept ends in an error for the client, not a token",
-  onWorker(async (url) => {
-    const { person, allowed } = await allowNewClient(url);
-    const atGoogle = new URL(allowed.headers.get("location")!);
-    const back = await person.get(
-      `${url}/callback?${new URLSearchParams({
-        code: "not-from-google",
-        state: atGoogle.searchParams.get("state")!,
-      }).toString()}`,
-    );
-    expect(refusal(back)).toEqual({ ...ACCESS_DENIED, error: "server_error" });
+    expect(status).toBe(400);
   }),
 );
 
@@ -444,16 +489,13 @@ const restoreSettings = deployWith().pipe(
 test(
   "with sign-in settings missing, the sign-in page says which ones",
   Effect.gen(function* () {
-    // Blank, not empty: an empty value counts as unset, and .env would answer for it.
-    yield* deployWith({ GOOGLE_CLIENT_ID: " ", ALLOWED_EMAILS: " " });
+    yield* deployWith({ GOOGLE_CLIENT_SECRET: undefined, ALLOWED_EMAILS: undefined });
 
     yield* eventually(async (url) => {
       const page = await browser().get(`${url}/authorize`);
       const html = await page.text();
       expect(page.status).toBe(503);
-      expect(html).toContain("GOOGLE_CLIENT_ID");
-      expect(html).toContain("ALLOWED_EMAILS");
-      expect(html).not.toContain("GOOGLE_CLIENT_SECRET");
+      expect(html).toContain("Missing: GOOGLE_CLIENT_SECRET, ALLOWED_EMAILS.");
     });
   }).pipe(Effect.ensuring(restoreSettings)),
 );
@@ -462,15 +504,11 @@ test(
   "a token stops working at the tools once its email is taken off the allowlist",
   Effect.gen(function* () {
     const { url } = yield* stack;
-    const token = yield* Effect.promise(() => tokenFor(url!, PAT));
+    const token = yield* Effect.promise(() => tokenFor(url!, ALLOWED_ACCOUNT));
     yield* deployWith({ ALLOWED_EMAILS: "second@example.com" });
 
     yield* eventually(async (url) => {
-      const { message } = await mcp(
-        url,
-        { method: "tools/call", params: { name: "hello", arguments: {} } },
-        token,
-      );
+      const { message } = await mcp(url, CALL_HELLO, token);
       expect(message).toMatchObject({
         result: {
           isError: true,

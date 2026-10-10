@@ -52,7 +52,7 @@ export const Worker = Cloudflare.Worker(
     const secret = (name: string) => setting(name).pipe(Config.map(Redacted.make));
     // Only dev mode reads another address for Google, which is how the tests stand in for
     // it. A deploy always binds Google's own.
-    const google = (name: string, url: string) =>
+    const googleUrl = (name: string, url: string) =>
       dev ? Config.String(name).pipe(Config.withDefault(url)) : Config.succeed(url);
     const consentSecret = yield* ConsentSecret;
 
@@ -72,8 +72,8 @@ export const Worker = Cloudflare.Worker(
         AUTHORIZE_LIMIT,
         GOOGLE_CLIENT_ID: yield* setting("GOOGLE_CLIENT_ID"),
         GOOGLE_CLIENT_SECRET: yield* secret("GOOGLE_CLIENT_SECRET"),
-        GOOGLE_TOKEN_URL: yield* google("GOOGLE_TOKEN_URL", GOOGLE_TOKEN_URL),
-        GOOGLE_USERINFO_URL: yield* google("GOOGLE_USERINFO_URL", GOOGLE_USERINFO_URL),
+        GOOGLE_TOKEN_URL: yield* googleUrl("GOOGLE_TOKEN_URL", GOOGLE_TOKEN_URL),
+        GOOGLE_USERINFO_URL: yield* googleUrl("GOOGLE_USERINFO_URL", GOOGLE_USERINFO_URL),
         ALLOWED_EMAILS: yield* secret("ALLOWED_EMAILS"),
         CONSENT_SECRET: consentSecret.text,
       },

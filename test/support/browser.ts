@@ -1,15 +1,19 @@
 import { randomBytes } from "node:crypto";
 
-// An internet address nobody else in the suite is using, from the range kept for examples.
-// Cloudflare reports the caller's address in the `cf-connecting-ip` header, and the Worker
-// counts its rate limits by it. Giving each visitor its own keeps one test's requests from
-// using up another's.
-export const newAddress = () =>
-  `2001:db8:${randomBytes(2).toString("hex")}::${randomBytes(2).toString("hex")}`;
+const hextet = () => randomBytes(2).toString("hex");
+
+// An IPv6 network nobody else in the suite is using, from the range kept for examples.
+export const newNetwork = () => `2001:db8:${hextet()}:${hextet()}`;
+
+// An internet address on a network of its own. Cloudflare reports the caller's address in
+// the `cf-connecting-ip` header, and the Worker counts its rate limits by it. Giving each
+// visitor its own keeps one test's requests from using up another's.
+export const newAddress = () => `${newNetwork()}::1`;
 
 // A stand-in for the browser of the person signing in. It keeps cookies between requests and
 // never follows a redirect, so a test can look at where each step sends it.
-export const browser = (address = newAddress()) => {
+export const browser = () => {
+  const address = newAddress();
   const cookies = new Map<string, string>();
 
   const send = async (url: string, init: { method?: string; body?: URLSearchParams } = {}) => {
