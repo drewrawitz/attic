@@ -23,18 +23,12 @@ The acceptance tests for the design:
 
 ## Stack
 
-Pin exact versions. Once a `package.json` lists a package, that file is the source of truth and its row here can go. The one exception to pinning is `@cloudflare/workers-types`, which stays on `latest`.
-
-| Package                              | Version | Kind    | Role                                        |
-| ------------------------------------ | ------- | ------- | ------------------------------------------- |
-| `agents`                             | 0.28.0  | Runtime | `createMcpHandler` from `agents/mcp/server` |
-| `@modelcontextprotocol/server`       | 2.0.0   | Runtime | MCP SDK v2, pinned by `agents` as a peer    |
-| `@cloudflare/workers-oauth-provider` | 1.2.3   | Runtime | OAuth for MCP clients, Google upstream      |
+Pin exact versions. Each `package.json` is the source of truth for what is installed and at which version. The one exception to pinning is `@cloudflare/workers-types`, which stays on `latest`.
 
 ## Hard rules
 
-- **MCP:** build on `createMcpHandler` and `@modelcontextprotocol/server` v2. `McpAgent` and the v1 `@modelcontextprotocol/sdk` are off the table (ADR 0001). The agents API moved recently, so read `node_modules/agents/docs/mcp-servers.md` and `mcp-transports.md` before writing against it.
-- **OAuth:** use the built-in helpers in `@cloudflare/workers-oauth-provider` 1.x, and read `node_modules/@cloudflare/workers-oauth-provider/docs/upstream-sign-in.md` and `consent-page.md` first. The auth code in Cloudflare's old `remote-mcp-google-oauth` template (`workers-oauth-utils.ts`) is obsolete.
+- **MCP:** build on `createMcpHandler` and `@modelcontextprotocol/server` v2. `McpAgent` and the v1 `@modelcontextprotocol/sdk` are off the table (ADR 0001). The agents API moved recently, so read `apps/server/node_modules/agents/docs/mcp-servers.md` and `mcp-transports.md` before writing against it.
+- **OAuth:** use the built-in helpers in `@cloudflare/workers-oauth-provider` 1.x, and read `apps/server/node_modules/@cloudflare/workers-oauth-provider/docs/upstream-sign-in.md` and `consent-page.md` first. The auth code in Cloudflare's old `remote-mcp-google-oauth` template (`workers-oauth-utils.ts`) is obsolete.
 - **Layers:** Effect in tool handlers and `packages/core`. OAuth and the MCP transport stay on Cloudflare's libraries (ADR 0004). The Worker is a plain `export default { fetch }` module, and Alchemy only declares resources (ADR 0005).
 - **Writes:** reads first, then one atomic batch that also records the Change (ADR 0011). Never call `withTransaction`, which dies on D1 (ADR 0006).
 - **Tool schemas:** Effect Schema, converted with `Schema.toStandardJSONSchemaV1(Schema.toStandardSchemaV1(schema))`. Use `Schema.Finite` for numbers, because plain `Schema.Number` advertises Infinity and NaN.

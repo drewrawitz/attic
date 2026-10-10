@@ -19,6 +19,9 @@ peerDependencyRules:
     - vite
   allowedVersions:
     vite: "*"
-# workerd's binary arrives as an optional dependency, so its install script can stay off.
+# None of these install scripts is needed. The workerd and esbuild binaries arrive as optional
+# dependencies, and the core-js-pure script only prints a banner.
 allowBuilds:
+  core-js-pure: false
+  esbuild: false
   workerd: false
