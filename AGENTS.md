@@ -49,7 +49,7 @@ Pin exact versions. Once a `package.json` lists a package, that file is the sour
 
 Every tool follows these.
 
-- **Property:** accepts an id or a name. When omitted, use the one Current property. With none or several, return an error that lists them.
+- **Property:** accepts an id or a name. When omitted, use the one Current property. With none or several, return an error that lists them. Tools decide "current" in code, with today in the configured timezone. The `current_properties` and `inventory` views use the UTC date and are only for `query`.
 - **Spaces and Vendors:** referenced by name, matched ignoring case, created on first use.
 - **Categories:** must already exist. An unknown one is an error that lists the closest matches.
 - **Money:** dollars (the configured currency) at the tool boundary, integer cents in the database.
