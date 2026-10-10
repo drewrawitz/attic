@@ -6,8 +6,6 @@
   "scripts": {
     "ready": "vp check && vp run -r test",
     "test": "vp test",
-    "dev": "alchemy dev",
-    "deploy": "alchemy deploy --stage prod",
     "prepare": "vp config"
   },
   "devDependencies": {
