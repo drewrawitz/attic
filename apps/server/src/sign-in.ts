@@ -8,7 +8,7 @@ import type { WorkerEnv } from "../../../alchemy.run.ts";
 import { allowedEmails, isAllowed } from "./allowlist.ts";
 import { consentPage, messagePage } from "./consent-page.ts";
 import { fetchProfile, newVerifier, signInUrl, type GoogleClient } from "./google.ts";
-import { AUTHORIZE, CALLBACK } from "./routes.ts";
+import { AUTHORIZE_PATH, CALLBACK_PATH } from "./routes.ts";
 
 // The provider adds its helpers to the env it hands to this handler.
 const helpers = (env: WorkerEnv) =>
@@ -39,7 +39,7 @@ interface AtGoogle {
 }
 
 // Where Google sends the person back to.
-const callbackUrl = (request: Request) => `${new URL(request.url).origin}${CALLBACK}`;
+const callbackUrl = (request: Request) => `${new URL(request.url).origin}${CALLBACK_PATH}`;
 
 // Send the browser to Google. Only call this once the client has been allowed.
 const toGoogle = async (
@@ -137,8 +137,8 @@ const finish = async (request: Request, env: WorkerEnv) => {
   return redirect(resumed.headers, redirectTo);
 };
 
-// The settings a host supplies before anyone can sign in. `alchemy dev` starts without
-// them, so this is where a host finds out which ones are still missing.
+// The settings the User supplies before anyone can sign in. `alchemy dev` starts without
+// them, so this is where the User finds out which ones are still missing.
 const missingSettings = (env: WorkerEnv) => [
   ...(env.GOOGLE_CLIENT_ID === "" ? ["GOOGLE_CLIENT_ID"] : []),
   ...(env.GOOGLE_CLIENT_SECRET === "" ? ["GOOGLE_CLIENT_SECRET"] : []),
@@ -148,9 +148,9 @@ const missingSettings = (env: WorkerEnv) => [
 // The step of sign-in that a request is for, if it is for one.
 const stepFor = (request: Request) => {
   const { pathname } = new URL(request.url);
-  if (pathname === AUTHORIZE && request.method === "GET") return showConsent;
-  if (pathname === AUTHORIZE && request.method === "POST") return decide;
-  if (pathname === CALLBACK && request.method === "GET") return finish;
+  if (pathname === AUTHORIZE_PATH && request.method === "GET") return showConsent;
+  if (pathname === AUTHORIZE_PATH && request.method === "POST") return decide;
+  if (pathname === CALLBACK_PATH && request.method === "GET") return finish;
   return undefined;
 };
 

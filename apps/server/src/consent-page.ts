@@ -1,5 +1,5 @@
 import type { ConsentDescription } from "@cloudflare/workers-oauth-provider";
-import { AUTHORIZE } from "./routes.ts";
+import { AUTHORIZE_PATH } from "./routes.ts";
 
 const ENTITIES: Record<string, string> = {
   "&": "&amp;",
@@ -43,7 +43,7 @@ export const consentPage = (details: ConsentDescription, handle: string) => {
 ${loopback}
 ${scopes}
 <p>Next you sign in with Google. Only an account on this Attic's list gets in.</p>
-<form method="post" action="${AUTHORIZE}">
+<form method="post" action="${AUTHORIZE_PATH}">
   <input type="hidden" name="handle" value="${escapeHtml(handle)}">
   <button name="decision" value="approve">Allow</button>
   <button name="decision" value="deny">Deny</button>

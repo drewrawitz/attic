@@ -17,7 +17,7 @@ const challenge = async (verifier: string) =>
     new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier))),
   );
 
-// How the Worker reaches Google as the OAuth client the host created.
+// How the Worker reaches Google as the OAuth client the User created.
 export interface GoogleClient {
   readonly clientId: string;
   readonly clientSecret: string;

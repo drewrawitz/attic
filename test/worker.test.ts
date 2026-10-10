@@ -13,7 +13,7 @@ import { authorizeUrl, exchange, mcp, REDIRECT_URI, register } from "./support/m
 // Runs the whole stack on Alchemy's local simulators: the Worker in workerd, with local D1,
 // R2, and KV behind its bindings. Nothing here touches a Cloudflare account, and nothing
 // calls Google. The Worker's two calls to Google go to a stand-in on this machine, which
-// knows the OAuth client the tests pretend the host created.
+// knows the OAuth client the tests pretend the User created.
 const GOOGLE_CLIENT = { id: "test-google-client", secret: "test-google-secret" };
 const google = await startFakeGoogle(GOOGLE_CLIENT);
 
@@ -33,7 +33,7 @@ const SETTINGS: Record<string, string | undefined> = {
 };
 
 // Deploys the stack with those settings, or with some of them changed or left unset, the
-// way a host would after editing .env. For these names the tests are the only source, so a
+// way the User would after editing .env. For these names the tests are the only source, so a
 // setting left unset here stays unset whatever the environment or .env says. Everything else
 // is still read from there. A second deploy replaces the Worker in place: it keeps its
 // address, its KV, and its database.
@@ -76,10 +76,12 @@ afterAll(Effect.promise(() => google.close()));
 const onWorker = (body: (url: string) => Promise<void>) =>
   Effect.flatMap(stack, ({ url }) => Effect.promise(() => body(url!)));
 
-// A Google account whose email is on the allowlist.
+// A Google account whose email is on the allowlist. The setting spells it
+// " Allowed@Example.com " and Google spells it another way again, so a sign-in only works
+// if both sides are compared ignoring case and the spaces around them.
 const ALLOWED_ACCOUNT: GoogleAccount = {
   sub: "1001",
-  email: "allowed@example.com",
+  email: "ALLOWED@example.COM",
   email_verified: true,
   name: "Pat Example",
 };
@@ -127,16 +129,6 @@ const signInAs = async (url: string, account: GoogleAccount) => {
   return { client, back };
 };
 
-// Signs in as `account` and returns the token the client ends up holding.
-const tokenFor = async (url: string, account: GoogleAccount) => {
-  const { client, back } = await signInAs(url, account);
-  const code = new URL(back.headers.get("location")!).searchParams.get("code")!;
-  const token = (await (await exchange(url, client.client_id, code)).json()) as {
-    access_token: string;
-  };
-  return token.access_token;
-};
-
 // Where a redirect sends the client, and what it carries.
 const sentToClient = (redirect: Response) => {
   const toClient = new URL(redirect.headers.get("location")!);
@@ -147,6 +139,17 @@ const sentToClient = (redirect: Response) => {
     state: toClient.searchParams.get("state"),
     code: toClient.searchParams.get("code"),
   };
+};
+
+// Signs in as `account` and returns the token the client ends up holding.
+const tokenFor = async (url: string, account: GoogleAccount) => {
+  const { client, back } = await signInAs(url, account);
+  const token = (await (
+    await exchange(url, client.client_id, sentToClient(back).code!)
+  ).json()) as {
+    access_token: string;
+  };
+  return token.access_token;
 };
 
 // What a client is sent when sign-in is refused: an error, its own state, and no code.
@@ -273,7 +276,8 @@ test(
   "a verified email on the allowlist completes sign-in, and the client gets a token",
   onWorker(async (url) => {
     const { client, back } = await signInAs(url, ALLOWED_ACCOUNT);
-    expect(sentToClient(back)).toEqual({
+    const sent = sentToClient(back);
+    expect(sent).toEqual({
       status: 302,
       address: REDIRECT_URI,
       error: null,
@@ -281,8 +285,7 @@ test(
       code: expect.any(String),
     });
 
-    const code = new URL(back.headers.get("location")!).searchParams.get("code")!;
-    const token = await exchange(url, client.client_id, code);
+    const token = await exchange(url, client.client_id, sent.code!);
     expect(token.status).toBe(200);
     expect(await token.json()).toMatchObject({
       access_token: expect.any(String),
@@ -346,7 +349,7 @@ test(
     // Worker's database has the schema.
     expect(JSON.parse(result.content[0].text)).toEqual({
       message: "Hello from Attic",
-      email: "allowed@example.com",
+      email: "ALLOWED@example.COM",
       categories: expect.toSatisfy((count: number) => count > 0),
     });
   }),
