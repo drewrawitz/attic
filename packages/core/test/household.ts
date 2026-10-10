@@ -1,6 +1,6 @@
 import { Effect } from "effect";
 import { SqlClient } from "effect/sql";
-import { load, remove, type Statement } from "../../../household/records.ts";
+import { loadStatements, removeStatements, type Statement } from "../../../household/records.ts";
 
 const run = (statements: ReadonlyArray<Statement>) =>
   Effect.gen(function* () {
@@ -12,7 +12,7 @@ const run = (statements: ReadonlyArray<Statement>) =>
  * Loads the made-up household into the database the test is running on. A test of a tool that
  * reads loads it first, and then asks the tool about the fridge, the living room, and the rest.
  */
-export const loadHousehold = run(load);
+export const loadHousehold = run(loadStatements);
 
 /** Takes the made-up household out again. */
-export const removeHousehold = run(remove);
+export const removeHousehold = run(removeStatements);

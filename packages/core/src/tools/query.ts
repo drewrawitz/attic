@@ -22,7 +22,7 @@ const decodeResult = Schema.decodeUnknownEffect(
 // The D1 binding has no read-only mode, so the wrapper and the semicolon rule are all that keep
 // this tool from writing. If D1 ever says the database changed, one of them has a hole.
 const CHANGED =
-  "This query changed the database, which query must never do. Nothing was undone. Stop, and tell whoever runs this Attic what SQL you sent: the read-only guard has a hole.";
+  "This query changed the database, which query must never do. Nothing was undone. Stop, and tell the User what SQL you sent: the read-only guard has a hole.";
 
 // The caller's SQL goes inside this. Only a SELECT or a WITH is valid there, so anything else
 // is a syntax error before it runs. The line breaks keep a `--` comment at the end of the
@@ -33,6 +33,10 @@ const CLOSE = `\n) LIMIT ${MOST_ROWS + 1}`;
 // A statement the database turned down, in the database's own words, so that whoever wrote the
 // SQL can fix it. SQLite says where a mistake is by counting from the start of what it ran,
 // which begins with the wrapper, so the count is moved back to the caller's own SQL.
+//
+// The driver gives every failure the same shape, so one that is not about the SQL, such as D1
+// being out of reach, goes back the same way, in D1's words. Either way it is the caller's to
+// act on: fix the SQL, or try again.
 const turnedDown = ({ reason: { cause } }: SqlError) => {
   const said = (cause instanceof Error ? cause.message : String(cause)).replace(
     / at offset (\d+)/,

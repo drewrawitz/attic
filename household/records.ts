@@ -7,8 +7,7 @@
 // and claim number says SEED.
 //
 // Every id starts with `seed-`. That prefix is how the set is removed without touching anything
-// else: a record of the User's own has a ULID for its id, and a ULID has no hyphen. The one id
-// the User picks is a Category's, so a Category of theirs must not start with `seed-`.
+// else: a record of the User's own has a ULID for its id, and a ULID has no hyphen.
 
 /** One SQL statement and the values bound to it, for whichever database client runs it. */
 export interface Statement {
@@ -34,7 +33,7 @@ const RECORDS: ReadonlyArray<readonly [table: string, rows: ReadonlyArray<Row>]>
         tenure: "own",
         address: "12 Maple Street, Springfield",
         start_on: "2022-05-20",
-        // The trim color is the same in every room, so it is a fact about the Property.
+        // The trim color is the same in every Space, so it is a fact about the Property.
         data: {
           paint: {
             trim: {
@@ -132,11 +131,11 @@ const RECORDS: ReadonlyArray<readonly [table: string, rows: ReadonlyArray<Row>]>
         role: "hvac",
         data: { phone: "555-0188" },
       },
-      { id: "seed-vendor-stride", name: "Stride Fitness Outlet", role: "retailer", data: {} },
+      { id: "seed-vendor-stride", name: "Stride Supply", role: "retailer", data: {} },
     ],
   ],
   // A child of the starter Category `fitness`, so an Item filed here is a fitness Item only
-  // through its parent.
+  // through its parent. Nothing else about the treadmill says "fitness", its Vendor included.
   ["categories", [{ id: "seed-cardio", name: "Cardio", parent_id: "fitness", data: {} }]],
   [
     "items",
@@ -502,6 +501,13 @@ const RECORDS: ReadonlyArray<readonly [table: string, rows: ReadonlyArray<Row>]>
       },
       // Changing an Item's status writes a dated Note.
       {
+        id: "seed-note-desk",
+        property_id: MAPLE,
+        entity_type: "item",
+        entity_id: "seed-item-desk",
+        body: "2026-09-20: listed on Craigslist for $250.",
+      },
+      {
         id: "seed-note-exercise-bike",
         property_id: MAPLE,
         entity_type: "item",
@@ -632,14 +638,14 @@ const RECORDS: ReadonlyArray<readonly [table: string, rows: ReadonlyArray<Row>]>
         property_id: MAPLE,
         status: "filed",
         kind: "receipt",
-        title: "Stride Fitness Outlet receipt",
+        title: "Stride Supply receipt",
         doc_date: "2024-01-20",
         total_cents: 189900,
         vendor_id: "seed-vendor-stride",
         r2_key: "seed/treadmill-receipt.pdf",
         mime_type: "application/pdf",
         sha256: "seed-sha256-treadmill-receipt",
-        text: "Stride Fitness Outlet. NordicTrack Commercial 1750 treadmill. Total $1,899.00.",
+        text: "Stride Supply. NordicTrack Commercial 1750 treadmill. Total $1,899.00.",
       },
       {
         id: "seed-doc-treadmill-photo",
@@ -757,31 +763,45 @@ const MARKED_BY: Readonly<Record<string, string>> = {
   document_links: "document_id",
 };
 
+// What a value is bound as. An object goes in as JSON text.
+const stored = (value: Value) =>
+  typeof value === "object" && value !== null ? JSON.stringify(value) : value;
+
+// Takes the set's rows out of one table: the rows whose id starts with `seed-`. That reaches a
+// copy loaded from an earlier version of this file too. Categories are the exception, because
+// a Category's id is a name the User picks, and one of theirs could start the same way. Those
+// go by the ids listed here and no others.
+const clear = (table: string, rows: ReadonlyArray<Row>): Statement =>
+  table === "categories"
+    ? {
+        sql: `DELETE FROM categories WHERE id IN (${rows.map(() => "?").join(", ")})`,
+        params: rows.map((row) => stored(row.id)),
+      }
+    : { sql: `DELETE FROM ${table} WHERE ${MARKED_BY[table] ?? "id"} GLOB 'seed-*'`, params: [] };
+
 const insert = (table: string, row: Row): Statement => {
   const columns = Object.keys(row);
   return {
     sql: `INSERT INTO ${table} (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`,
-    params: Object.values(row).map((value) =>
-      typeof value === "object" && value !== null ? JSON.stringify(value) : value,
-    ),
+    params: Object.values(row).map(stored),
   };
 };
 
 /**
- * Takes the made-up household out: one DELETE for each table, last table first, so that a row
- * goes before the one it points at. Each statement removes only rows the set put there, which
- * is what makes the number of rows it reports exact.
+ * The statements that take the made-up household out: one DELETE for each table, last table
+ * first, so that a row goes before the one it points at. Each removes only rows the set put
+ * there, which is what makes the number of rows it reports exact.
  */
-export const remove: ReadonlyArray<Statement> = RECORDS.map(([table]) => ({
-  sql: `DELETE FROM ${table} WHERE ${MARKED_BY[table] ?? "id"} GLOB 'seed-*'`,
-  params: [],
-})).reverse();
+export const removeStatements: ReadonlyArray<Statement> = RECORDS.map(([table, rows]) =>
+  clear(table, rows),
+).reverse();
 
 /**
- * Puts the made-up household in. It takes any earlier copy out first, so loading twice leaves
- * one copy, and a set that has changed since it was last loaded replaces the old one.
+ * The statements that put the made-up household in. They open with `removeStatements`, so
+ * loading twice leaves one copy, and a set that has changed since it was last loaded replaces
+ * the old one. The INSERTs follow.
  */
-export const load: ReadonlyArray<Statement> = [
-  ...remove,
+export const loadStatements: ReadonlyArray<Statement> = [
+  ...removeStatements,
   ...RECORDS.flatMap(([table, rows]) => rows.map((row) => insert(table, row))),
 ];

@@ -1,27 +1,23 @@
 import { expect } from "@effect/vitest";
 import * as Effect from "effect/Effect";
-import { household } from "../household/stack.ts";
-import { mcp } from "./support/mcp-client.ts";
-import {
-  ALLOWED_ACCOUNT,
-  beforeAll,
-  callOnWorker,
-  deploy,
-  stack,
-  test,
-  tokenFor,
-} from "./support/stack.ts";
+import { householdStack, type Operation } from "../household/stack.ts";
+import { beforeAll, deploy, stack, test } from "./support/harness.ts";
+import { callOnWorker, mcp } from "./support/mcp-client.ts";
+import { ALLOWED_ACCOUNT, tokenFor } from "./support/sign-in.ts";
 
 // `query` is guarded by how D1 behaves, and the Node SQLite under the tests in packages/core is
 // not the same build (ADR 0006). So everything here goes through the real Worker on local D1.
-//
-// The made-up household is loaded the way `vp run household:load` loads it: by deploying the
-// stack in household/, which finds the Worker's database and runs one batch on it. `force`
-// makes it run even when the last run of these tests already loaded it.
+
+// Runs one of the two commands the way `vp run household:load` and `vp run household:remove`
+// run them: by deploying the stack in household/, which finds the Worker's database and runs
+// one batch on it. `force` makes it run even when its last run did the same thing.
+const command = (operation: Operation) => deploy(householdStack(operation), { force: true });
+
+// A client that has signed in, with the made-up household loaded.
 const signedIn = beforeAll(
   Effect.gen(function* () {
     const { url } = yield* stack;
-    yield* deploy(household("load"), { force: true });
+    yield* command("load");
     return { url: url!, token: yield* Effect.promise(() => tokenFor(url!, ALLOWED_ACCOUNT)) };
   }),
 );
@@ -33,17 +29,15 @@ interface Answer {
   readonly refused?: string;
 }
 
-// A test body that asks `query` things, as a signed-in client.
+const ask = async (client: { url: string; token: string }, sql: string): Promise<Answer> => {
+  const { result } = await callOnWorker(client.url, client.token, "query", { sql });
+  const text = result!.content[0].text;
+  return result!.isError === true ? { refused: text } : (JSON.parse(text) as Answer);
+};
+
+// A test body that asks `query` things, as that client.
 const asking = (body: (query: (sql: string) => Promise<Answer>) => Promise<void>) =>
-  Effect.flatMap(signedIn, ({ url, token }) =>
-    Effect.promise(() =>
-      body(async (sql) => {
-        const { result } = await callOnWorker(url, token, "query", { sql });
-        const text = result!.content[0].text;
-        return result!.isError === true ? { refused: text } : (JSON.parse(text) as Answer);
-      }),
-    ),
-  );
+  Effect.flatMap(signedIn, (client) => Effect.promise(() => body((sql) => ask(client, sql))));
 
 test(
   "query returns the rows of a SELECT as stored: cents as integers and data as text",
@@ -138,7 +132,7 @@ test(
   asking(async (query) => {
     const notes = `SELECT * FROM notes ORDER BY id`;
     const before = await query(notes);
-    expect(before.rows).toHaveLength(5);
+    expect(before.rows).toHaveLength(6);
 
     for (const sql of [
       `SELECT 1; DELETE FROM notes`,
@@ -179,6 +173,16 @@ test(
     const unlimited = await query(`${counting(700)}) /*`);
     expect(unlimited.rows).toHaveLength(500);
     expect(unlimited.note).toContain("first 500 rows");
+  }),
+);
+
+// The wrapper's closing bracket sits on a line of its own, where a comment cannot reach it.
+test(
+  "query runs a statement that ends in a comment",
+  asking(async (query) => {
+    expect(
+      await query(`SELECT name FROM vendors WHERE role = 'hvac' -- who services the furnace`),
+    ).toEqual({ rows: [{ name: "Hearth Heating and Air" }] });
   }),
 );
 
@@ -358,7 +362,7 @@ test(
   }),
 );
 
-// The living room has wall paint of its own. Its trim is the Property's, which is house-wide.
+// The living room has wall paint of its own and no trim entry, so its trim is the Property's.
 test(
   "what paint is in the living room",
   asking(async (query) => {
@@ -367,12 +371,12 @@ test(
         SELECT json_extract(s.data, '$.paint.walls.color') AS walls,
                json_extract(s.data, '$.paint.walls.code') AS walls_code,
                json_extract(s.data, '$.paint.trim.color') AS trim,
-               json_extract(p.data, '$.paint.trim.color') AS house_trim
+               json_extract(p.data, '$.paint.trim.color') AS property_trim
           FROM spaces s JOIN current_properties p ON p.id = s.property_id
          WHERE s.name = 'living room'`),
     ).toEqual({
       rows: [
-        { walls: "Agreeable Gray", walls_code: "SW 7029", trim: null, house_trim: "Pure White" },
+        { walls: "Agreeable Gray", walls_code: "SW 7029", trim: null, property_trim: "Pure White" },
       ],
     });
   }),
@@ -423,17 +427,13 @@ test(
   }),
 );
 
-// The two commands, run the way `vp run household:load` and `vp run household:remove` run
-// them. This takes the made-up household out part-way through, so it is the last test in the
-// file, and it puts the set back when it is done.
+// This takes the made-up household out part-way through, so it is the last test in the file,
+// and it puts the set back when it is done.
 test(
-  "loading the made-up household and then removing it leaves every table as it was",
+  "the load and remove commands leave every table as it was, and say how many rows went each way",
   Effect.gen(function* () {
-    const { url, token } = yield* signedIn;
-    const rowsOf = async (sql: string) => {
-      const { result } = await callOnWorker(url, token, "query", { sql });
-      return (JSON.parse(result!.content[0].text) as Answer).rows!;
-    };
+    const client = yield* signedIn;
+    const rowsOf = async (sql: string) => (await ask(client, sql)).rows!;
     // Every row of every table of Attic's, by table. D1 and Alchemy keep tables of their own
     // in the same database, and theirs start with an underscore.
     const everyTable = Effect.promise(async () => {
@@ -449,23 +449,22 @@ test(
     });
     const count = (tables: Record<string, ReadonlyArray<unknown>>) =>
       Object.values(tables).reduce((sum, rows) => sum + rows.length, 0);
-    const run = (operation: "load" | "remove") => deploy(household(operation), { force: true });
 
-    yield* run("remove");
+    yield* command("remove");
     const without = yield* everyTable;
 
-    const loaded = yield* run("load");
+    const loaded = yield* command("load");
     const withIt = yield* everyTable;
     const inTheSet = count(withIt) - count(without);
     expect(inTheSet).toBeGreaterThan(50);
     expect(loaded).toEqual({ removed: 0, loaded: inTheSet });
 
     // A second load replaces the first copy and leaves one.
-    expect(yield* run("load")).toEqual({ removed: inTheSet, loaded: inTheSet });
+    expect(yield* command("load")).toEqual({ removed: inTheSet, loaded: inTheSet });
     expect(count(yield* everyTable)).toBe(count(withIt));
 
     // Removing says how many rows it took out, and leaves none behind.
-    expect(yield* run("remove")).toEqual({ removed: inTheSet, loaded: 0 });
+    expect(yield* command("remove")).toEqual({ removed: inTheSet, loaded: 0 });
     expect(yield* everyTable).toEqual(without);
-  }).pipe(Effect.ensuring(Effect.orDie(deploy(household("load"), { force: true })))),
+  }).pipe(Effect.ensuring(Effect.orDie(command("load")))),
 );

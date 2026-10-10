@@ -77,10 +77,10 @@ vp run household:remove --stage <stage>
 
 The stage is `dev_<your user name>` for the database behind `vp run dev`, which can be running, and `prod` for the deployed copy. A stage that `vp run dev` or the tests made on this machine is found in `.alchemy/` and needs no Cloudflare account. Any other stage is looked up in the Cloudflare account in `.env`.
 
-Each command is `alchemy deploy` of a small stack in `household/` that holds one Action. It shows a plan with that one Action, asks before it runs, and then says how many rows went each way, such as `{ removed: 0, loaded: 84 }`. It runs as one atomic batch, so it either all happens or none of it does.
+Each command is `alchemy deploy` of a small stack in `household/` that holds one Action. It shows a plan with that one Action, asks before it runs, and then says how many rows went each way, such as `{ removed: 0, loaded: 85 }`. It runs as one atomic batch, so it either all happens or none of it does.
 
 - Loading takes any earlier copy out first, so loading twice leaves one copy.
-- Removing deletes every row whose id starts with `seed-`, says how many that was, and leaves none behind. Your own records have ULIDs for ids, which never start that way. The one id you choose yourself is a Category's, so do not give a Category an id that starts with `seed-`.
+- Removing deletes every row whose id starts with `seed-`, says how many that was, and leaves none behind. Your own records have ULIDs for ids, which never start that way. The one id you choose yourself is a Category's, so the set's Categories are removed by their exact ids, and a Category of yours is left alone whatever it is called.
 
 Alchemy remembers the stack under the name `attic-household`, beside `attic`. That record holds only the last answer, and it is harmless to leave.
 

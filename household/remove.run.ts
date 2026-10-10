@@ -1,4 +1,4 @@
-import { household } from "./stack.ts";
+import { householdStack } from "./stack.ts";
 
 // `vp run household:remove --stage <stage>` deploys this.
-export default household("remove");
+export default householdStack("remove");

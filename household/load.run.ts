@@ -1,4 +1,4 @@
-import { household } from "./stack.ts";
+import { householdStack } from "./stack.ts";
 
 // `vp run household:load --stage <stage>` deploys this.
-export default household("load");
+export default householdStack("load");

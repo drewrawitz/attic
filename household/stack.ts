@@ -3,7 +3,7 @@ import * as Cloudflare from "alchemy/Cloudflare";
 import { State } from "alchemy/State";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import { load, remove } from "./records.ts";
+import { loadStatements, removeStatements } from "./records.ts";
 
 // The stack in alchemy.run.ts and its database, by the names they have there.
 const ATTIC = "attic";
@@ -27,6 +27,9 @@ const state = Layer.unwrap(
   }),
 );
 
+/** What a command does with the made-up household. */
+export type Operation = "load" | "remove";
+
 /**
  * A stack whose one job is to put the made-up household into a stage's database, or to take it
  * out. It declares no resource of its own: it finds the database the `attic` stack made for
@@ -36,7 +39,7 @@ const state = Layer.unwrap(
  * It says how many rows went each way. A load first removes any earlier copy, so `removed` is
  * zero the first time.
  */
-export const household = (operation: "load" | "remove") =>
+export const householdStack = (operation: Operation) =>
   Alchemy.Stack(
     "attic-household",
     { providers: Cloudflare.providers(), state },
@@ -47,16 +50,17 @@ export const household = (operation: "load" | "remove") =>
         "Household",
         Effect.gen(function* () {
           const db = yield* Cloudflare.D1.QueryDatabase(database);
-          return (input: { operation: "load" | "remove" }) =>
+          return (input: { operation: Operation }) =>
             Effect.gen(function* () {
-              const statements = input.operation === "load" ? load : remove;
+              const statements = input.operation === "load" ? loadStatements : removeStatements;
               const results = yield* db.batch(
                 statements.map(({ sql, params }) => db.prepare(sql).bind(...params)),
               );
               const rows = (from: number, to?: number) =>
                 results.slice(from, to).reduce((sum, result) => sum + result.meta.changes, 0);
               // Both lists open with the same DELETEs, and a load goes on to its INSERTs.
-              return { removed: rows(0, remove.length), loaded: rows(remove.length) };
+              const deletes = removeStatements.length;
+              return { removed: rows(0, deletes), loaded: rows(deletes) };
             });
         }).pipe(Effect.provide(Cloudflare.D1.QueryDatabaseLocal)),
       );

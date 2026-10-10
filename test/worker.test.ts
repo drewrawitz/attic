@@ -4,25 +4,26 @@ import { expect } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Schedule from "effect/Schedule";
 import { browser, newAddress, newNetwork } from "./support/browser.ts";
-import { authorizeUrl, exchange, mcp, REDIRECT_URI, register } from "./support/mcp-client.ts";
+import { deployWith, google, GOOGLE_CLIENT, onWorker, stack, test } from "./support/harness.ts";
+import {
+  authorizeUrl,
+  callOnWorker,
+  exchange,
+  mcp,
+  REDIRECT_URI,
+  register,
+} from "./support/mcp-client.ts";
 import {
   ALLOWED_ACCOUNT,
   allowNewClient,
   answerConsent,
-  callOnWorker,
   comeBack,
   consentHandle,
-  deployWith,
-  google,
-  GOOGLE_CLIENT,
-  onWorker,
   openSignIn,
   sentToClient,
   signInAs,
-  stack,
-  test,
   tokenFor,
-} from "./support/stack.ts";
+} from "./support/sign-in.ts";
 
 // The names the migrations create.
 const created = (kind: "TABLE" | "VIEW") => {

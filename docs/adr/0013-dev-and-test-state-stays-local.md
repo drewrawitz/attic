@@ -8,3 +8,4 @@ Checked against alchemy 2.0.0-beta.81 on 2026-10-09.
 
 - Anyone can clone the repo and run `vp run dev` and the tests with no Cloudflare account.
 - Local data is reset by deleting `.alchemy/`. Alchemy's docs suggest `alchemy destroy --stage dev_$USER` for that, but a destroy does not run in dev mode, so it reads the Cloudflare state store and never sees the local stage.
+- A command that is told only a stage's name cannot go by dev mode, because plain `alchemy deploy` is never in it. The made-up household's stack (issue 24) looks for the stage in `.alchemy/` first and uses the Cloudflare state store otherwise. That is how it reaches the database behind `vp run dev` with no Cloudflare account.

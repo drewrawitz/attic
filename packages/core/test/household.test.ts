@@ -65,3 +65,18 @@ it.effect("every record of the made-up household has an id that starts with seed
     expect(strays).toEqual([]);
   }).pipe(Effect.provide(TestDatabase)),
 );
+
+// A Category's id is the one id the User picks, so one of theirs can start with seed-.
+it.effect("removing the made-up household leaves a Category of the User's own alone", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`INSERT INTO categories (id, name, parent_id) VALUES ('seed-starting', 'Seed starting', 'outdoor')`;
+    yield* loadHousehold;
+
+    yield* removeHousehold;
+
+    expect(yield* sql`SELECT id FROM categories WHERE id GLOB 'seed-*'`).toEqual([
+      { id: "seed-starting" },
+    ]);
+  }).pipe(Effect.provide(TestDatabase)),
+);
