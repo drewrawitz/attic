@@ -13,8 +13,6 @@ import { DB } from "../alchemy.run.ts";
 const { test } = Test.make({
   providers: Cloudflare.providers(),
   dev: true,
-  // See worker.test.ts.
-  sidecar: false,
 });
 
 type Client = Cloudflare.D1.QueryDatabaseClient;
@@ -23,7 +21,10 @@ type Client = Cloudflare.D1.QueryDatabaseClient;
 // and it only resolves inside an Action. So each check deploys a scratch stack that holds the
 // database and one Action, and the Action's output is what the check asserts on. Every check
 // starts from a freshly migrated database.
-const onDatabase = <A>(stack: Test.ScratchStack, run: (db: Client) => Effect.Effect<A, any, any>) =>
+const onDatabase = <A>(
+  stack: Test.ScratchStack,
+  run: (db: Client) => Effect.Effect<A, never, Alchemy.RuntimeContext>,
+) =>
   stack.deploy(
     Effect.gen(function* () {
       yield* DB;

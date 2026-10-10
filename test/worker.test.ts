@@ -6,16 +6,16 @@ import Stack from "../alchemy.run.ts";
 
 // Runs the whole stack on Alchemy's local simulators: the Worker in workerd, with local D1,
 // R2, and KV behind its bindings. Nothing here touches a Cloudflare account.
-const { test, beforeAll, afterAll, deploy, destroy } = Test.make({
+const { test, beforeAll, deploy } = Test.make({
   providers: Cloudflare.providers(),
   dev: true,
-  // In 2.0.0-beta.81 `destroy` never returns when the local providers run behind the
-  // harness's sidecar process, so they run in this process instead.
-  sidecar: false,
 });
 
+// There is no `afterAll(destroy(Stack))`. In 2.0.0-beta.81 it never returns behind the
+// harness's sidecar process, and the sidecar stays on because it is how `alchemy dev` runs.
+// So this stack's local state stays in .alchemy/ between runs, and these tests have to keep
+// passing against whatever an earlier run left there.
 const stack = beforeAll(deploy(Stack));
-afterAll(destroy(Stack));
 
 test(
   "the stack comes up on the local simulators",
