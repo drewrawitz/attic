@@ -3,7 +3,6 @@ import * as Cloudflare from "alchemy/Cloudflare";
 import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
 
 // Attic's infrastructure. Alchemy only declares resources here (ADR 0005). The Worker itself
 // is the plain module in apps/server, and it reads these bindings from its `env`.
@@ -20,12 +19,8 @@ export const Worker = Cloudflare.Worker(
   Effect.gen(function* () {
     const { stage } = yield* Alchemy.Stack;
     const { dev } = yield* Alchemy.AlchemyContext;
-    // An empty value in .env counts as unset. Without a domain the Worker is served from its
-    // workers.dev address. Local dev has no use for one.
-    const domain = Option.filter(
-      yield* Config.option(Config.String("ATTIC_DOMAIN")),
-      (name) => name.trim() !== "" && !dev,
-    );
+    // Unset and empty mean the same: the Worker is served from its workers.dev address.
+    const domain = (yield* Config.String("ATTIC_DOMAIN").pipe(Config.withDefault(""))).trim();
 
     return {
       // A stage name may hold underscores, which a workers.dev hostname cannot.
@@ -35,10 +30,8 @@ export const Worker = Cloudflare.Worker(
       // `alchemy dev` and a deploy run under the same date. Raise it when Alchemy is upgraded.
       compatibility: { flags: ["nodejs_compat"], date: "2026-09-25" },
       env: { DB, FILES, OAUTH_KV },
-      ...Option.match(domain, {
-        onNone: () => ({}),
-        onSome: (name) => ({ domain: name.trim() }),
-      }),
+      // Local dev has no use for a domain.
+      ...(domain !== "" && !dev ? { domain } : {}),
     };
   }),
 );

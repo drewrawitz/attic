@@ -48,6 +48,13 @@ const rows = <Row>(db: Client, sql: string, ...values: unknown[]) =>
     (result) => result.results,
   );
 
+// The client reports a failed statement as a defect, so a refusal is read off the cause.
+const refusalOf = (statement: Effect.Effect<unknown, never, Alchemy.RuntimeContext>) =>
+  statement.pipe(
+    Effect.as("it went through"),
+    Effect.catchCause((cause) => Effect.succeed(Cause.pretty(cause))),
+  );
+
 // The starter Categories are the last statement in 0001_init.sql, and 'other' is its last row.
 test.provider("the migration applies through to its last statement", (stack) =>
   Effect.gen(function* () {
@@ -139,18 +146,52 @@ test.provider("a delete that a foreign key refuses fails and leaves the row", (s
           db.prepare(`INSERT INTO vendors (id, name) VALUES ('ace', 'Ace Plumbing')`),
           db.prepare(`INSERT INTO items (id, name, vendor_id) VALUES ('faucet', 'Faucet', 'ace')`),
         ]);
-        // The client reports a failed statement as a defect, so the refusal is read off the cause.
-        const refusal = yield* db
-          .prepare(`DELETE FROM vendors WHERE id = 'ace'`)
-          .run()
-          .pipe(
-            Effect.as("the delete went through"),
-            Effect.catchCause((cause) => Effect.succeed(Cause.pretty(cause))),
-          );
+        const refusal = yield* refusalOf(db.prepare(`DELETE FROM vendors WHERE id = 'ace'`).run());
         return { refusal, vendors: yield* rows(db, `SELECT name FROM vendors WHERE id = 'ace'`) };
       }),
     );
     expect(result.refusal).toContain("FOREIGN KEY constraint failed");
     expect(result.vendors).toEqual([{ name: "Ace Plumbing" }]);
+  }),
+);
+
+// This one pins a rule, not a SQLite feature. It is here because the rule was changed in the
+// migration just before the first deploy, and a foreign key can't be changed again without
+// rebuilding the table.
+test.provider("a Project that still has Quotes refuses deletion", (stack) =>
+  Effect.gen(function* () {
+    const result = yield* onDatabase(stack, (db) =>
+      Effect.gen(function* () {
+        yield* db.batch([
+          db.prepare(`INSERT INTO properties (id, name) VALUES ('home', 'Maple Street house')`),
+          db.prepare(
+            `INSERT INTO projects (id, property_id, title) VALUES ('lighting', 'home', 'Outdoor lighting')`,
+          ),
+          db.prepare(
+            `INSERT INTO projects (id, property_id, title) VALUES ('lighting-2', 'home', 'Outdoor lighting, second try')`,
+          ),
+          db.prepare(`INSERT INTO vendors (id, name) VALUES ('bright', 'Bright Electric')`),
+          db.prepare(
+            `INSERT INTO quotes (id, project_id, vendor_id, amount_cents) VALUES ('q1', 'lighting', 'bright', 120000)`,
+          ),
+        ]);
+        const refusal = yield* refusalOf(
+          db.prepare(`DELETE FROM projects WHERE id = 'lighting'`).run(),
+        );
+        // Moving the Quote to another Project is what lets the delete through.
+        yield* db
+          .prepare(`UPDATE quotes SET project_id = 'lighting-2' WHERE project_id = 'lighting'`)
+          .run();
+        yield* db.prepare(`DELETE FROM projects WHERE id = 'lighting'`).run();
+        return {
+          refusal,
+          projects: yield* rows(db, `SELECT id FROM projects ORDER BY id`),
+          quotes: yield* rows(db, `SELECT id, project_id FROM quotes`),
+        };
+      }),
+    );
+    expect(result.refusal).toContain("FOREIGN KEY constraint failed");
+    expect(result.projects).toEqual([{ id: "lighting-2" }]);
+    expect(result.quotes).toEqual([{ id: "q1", project_id: "lighting-2" }]);
   }),
 );
