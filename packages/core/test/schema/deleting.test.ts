@@ -91,6 +91,12 @@ const pointers = [
     repoint: `UPDATE work_spaces SET space_id = 's2' WHERE space_id = 's1'`,
   },
   {
+    pointedAt: "a Project that has a Quote",
+    point: [`INSERT INTO quotes (id, project_id, vendor_id) VALUES ('q1', 'proj1', 'v1')`],
+    remove: `DELETE FROM projects WHERE id = 'proj1'`,
+    repoint: `UPDATE quotes SET project_id = 'proj2' WHERE project_id = 'proj1'`,
+  },
+  {
     pointedAt: "a Project that has Work",
     point: [
       `INSERT INTO work (id, property_id, project_id, kind, title)

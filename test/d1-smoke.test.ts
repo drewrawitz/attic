@@ -155,9 +155,10 @@ test.provider("a delete that a foreign key refuses fails and leaves the row", (s
   }),
 );
 
-// This one pins a rule, not a SQLite feature. It is here because the rule was changed in the
-// migration just before the first deploy, and a foreign key can't be changed again without
-// rebuilding the table.
+// This one checks a rule, not a SQLite feature. The rule is pinned with the other deletion
+// rules in packages/core. It is repeated here on D1 because it was changed in the migration
+// just before the first deploy, and a foreign key can't be changed again without rebuilding
+// the table.
 test.provider("a Project that still has Quotes refuses deletion", (stack) =>
   Effect.gen(function* () {
     const result = yield* onDatabase(stack, (db) =>
