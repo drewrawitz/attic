@@ -100,7 +100,7 @@ This is `alchemy deploy --stage prod`. It shows a plan and asks before it change
 
 The Worker also gets a secret that you do not set. It signs the cookie that remembers which clients a browser has already allowed. Alchemy makes it on the first deploy and keeps it in its state store, so later deploys bind the same value.
 
-To connect a client, give it the address plus `/mcp`. It registers itself, opens the sign-in page in your browser, and gets a token once you have signed in with a Google account on the list. Registration and the sign-in page are open to anyone, so each caller gets five registrations and ten sign-in page requests a minute. A caller is an IPv4 address or an IPv6 network.
+To connect a client, give it the address plus `/mcp`. It registers itself, opens the sign-in page in your browser, and gets a token once you have signed in with a Google account on the list. Registration and the sign-in page are open to anyone, so a caller that keeps hitting them is slowed down. The limits are five registrations and ten sign-in page requests a minute for each IPv4 address or IPv6 network. Cloudflare counts them loosely: a burst gets a few seconds and a few dozen requests in before the refusals start, so this is a brake and not an exact count.
 
 Use `vp run deploy`, not a bare `alchemy deploy`. Alchemy's own default stage is `live_<your user name>`, so a bare deploy would plan a second copy of everything, with a Worker named `attic-live-<your user name>`.
 

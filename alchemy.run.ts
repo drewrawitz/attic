@@ -21,9 +21,11 @@ export const OAUTH_KV = Cloudflare.KV.Namespace("OAUTH_KV");
 export const ConsentSecret = Alchemy.Random("ConsentSecret");
 
 // Registration and the sign-in page are open to anyone, and each use writes to KV, which
-// Workers Free caps at 1,000 writes a day (ADR 0012). These limit how many of each one
-// address gets in a minute. The binding has no resource behind it. `namespaceId` is only a
-// number that keeps a limit's counters apart from every other limit in the account.
+// Workers Free caps at 1,000 writes a day (ADR 0012). These slow down a caller that keeps
+// hitting them. Cloudflare counts loosely, so a burst gets a few dozen requests in before
+// the refusals start: it is a brake, not a cap. The binding has no resource behind it.
+// `namespaceId` is only a number that keeps a limit's counters apart from every other limit
+// in the account.
 export const REGISTER_LIMIT = Cloudflare.RateLimit("REGISTER_LIMIT", {
   namespaceId: 1801,
   simple: { limit: 5, period: 60 },
