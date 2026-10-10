@@ -12,6 +12,7 @@ Attic has no app. It is a remote MCP server on Cloudflare (Workers, D1, R2, KV) 
 - `alchemy.run.ts` declares the Cloudflare resources: the Worker, the D1 database, the R2 bucket, and the KV namespace.
 - `migrations/` is the database schema. It is applied on every deploy, and to the local database on every start.
 - `test/` runs the stack in `alchemy.run.ts` on local simulators.
+- `household/` is a made-up household: one small set of records that the tests of the read tools share, and two commands that load it into a stage's database and remove it again.
 - `docs/adr/` records decisions and the reasons behind them.
 - `GLOSSARY.md` is the vocabulary used in code and docs.
 
@@ -52,11 +53,36 @@ Both suites apply the real files in `migrations/`. The tests in `packages/core` 
 
 The tests in `test/` also sign in, and they need no Google account and no `.env`. They bring their own settings, and a stand-in for Google on your machine answers the two calls the Worker makes to it. The Worker finds Google through `GOOGLE_TOKEN_URL` and `GOOGLE_USERINFO_URL`, which only dev mode reads. A deploy always uses Google's own addresses.
 
+The files in `test/` that run the Worker share one stage, one Worker, and one port, so they run one after another. The tests of a tool that reads load [the made-up household](#the-made-up-household) first.
+
 - Run all of the above checks before pushing:
 
 ```bash
 vp run ready
 ```
+
+### The made-up household
+
+`household/records.ts` holds one small set of made-up records: two Properties, a fridge with a water filter, a plumber, an outdoor lighting Project with two Quotes, and enough else to give each question in `AGENTS.md` an answer. Nothing in it is real, and every id in it starts with `seed-`.
+
+The tests load it themselves. To look at it from a client, load it into a stage's database, and remove it when you are done:
+
+```bash
+vp run household:load --stage <stage>
+```
+
+```bash
+vp run household:remove --stage <stage>
+```
+
+The stage is `dev_<your user name>` for the database behind `vp run dev`, which can be running, and `prod` for the deployed copy. A stage that `vp run dev` or the tests made on this machine is found in `.alchemy/` and needs no Cloudflare account. Any other stage is looked up in the Cloudflare account in `.env`.
+
+Each command is `alchemy deploy` of a small stack in `household/` that holds one Action. It shows a plan with that one Action, asks before it runs, and then says how many rows went each way, such as `{ removed: 0, loaded: 84 }`. It runs as one atomic batch, so it either all happens or none of it does.
+
+- Loading takes any earlier copy out first, so loading twice leaves one copy.
+- Removing deletes every row whose id starts with `seed-`, says how many that was, and leaves none behind. Your own records have ULIDs for ids, which never start that way. The one id you choose yourself is a Category's, so do not give a Category an id that starts with `seed-`.
+
+Alchemy remembers the stack under the name `attic-household`, beside `attic`. That record holds only the last answer, and it is harmless to leave.
 
 ## Deploying your own copy
 
