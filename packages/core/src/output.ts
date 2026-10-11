@@ -45,6 +45,12 @@ const inDollars = (value: unknown): unknown => {
 };
 
 /**
+ * How a curated tool shows the text of one JSON column it read apart from its row: parsed, with
+ * money in dollars, the way `formatRow` shows the column inside a row.
+ */
+export const formatJson = (text: string): unknown => inDollars(parsed(text));
+
+/**
  * How a curated tool shows a row it read. JSON columns come out parsed. A `_cents` column, or
  * a `data` key ending in `_cents`, comes out as an amount in dollars under the same name
  * without `_cents`. `query` returns raw rows and does not use this.

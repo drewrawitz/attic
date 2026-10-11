@@ -1,31 +1,22 @@
 import { expect } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import { test } from "./support/harness.ts";
-import { householdClient } from "./support/household.ts";
-import { callOnWorker, mcp } from "./support/mcp-client.ts";
+import { calling, householdClient, type Answer } from "./support/household.ts";
+import { mcp } from "./support/mcp-client.ts";
 
 // `query` is guarded by how D1 behaves, and the Node SQLite under the tests in packages/core is
 // not the same build (ADR 0006). So everything here goes through the real Worker on local D1,
 // with the made-up household loaded.
 
-// What `query` sends back: the rows, and a note when there were more. A refusal is its text.
-interface Answer {
-  readonly rows?: ReadonlyArray<Record<string, unknown>>;
-  readonly note?: string;
-  readonly refused?: string;
+// What `query` sends back: the rows, and a note when there were more.
+interface Rows {
+  readonly rows: ReadonlyArray<Record<string, unknown>>;
+  readonly note: string;
 }
 
-const ask = async (client: { url: string; token: string }, sql: string): Promise<Answer> => {
-  const { result } = await callOnWorker(client.url, client.token, "query", { sql });
-  const text = result!.content[0].text;
-  return result!.isError === true ? { refused: text } : (JSON.parse(text) as Answer);
-};
-
 // A test body that asks `query` things, as a signed-in client.
-const asking = (body: (query: (sql: string) => Promise<Answer>) => Promise<void>) =>
-  Effect.flatMap(householdClient, (client) =>
-    Effect.promise(() => body((sql) => ask(client, sql))),
-  );
+const asking = (body: (query: (sql: string) => Promise<Answer<Rows>>) => Promise<void>) =>
+  calling<Rows>("query")((call) => body((sql) => call({ sql })));
 
 test(
   "query returns the rows of a SELECT as stored: cents as integers and data as text",
