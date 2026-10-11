@@ -1,5 +1,5 @@
 import { expect, it } from "@effect/vitest";
-import { Effect, Schema } from "effect";
+import { Effect } from "effect";
 import type { Tool } from "../../src/tool.ts";
 import { getSchema } from "../../src/tools/get-schema.ts";
 import { saveCategory } from "../../src/tools/save-category.ts";
@@ -19,10 +19,7 @@ const SAVES: ReadonlyArray<readonly [tool: Tool, kind: string]> = [
 
 // What a client reads about a tool's `data` field.
 const dataDescription = (tool: Tool) => {
-  const { jsonSchema } = Schema.toStandardJSONSchemaV1(Schema.toStandardSchemaV1(tool.input))[
-    "~standard"
-  ];
-  const input = jsonSchema.input({ target: "draft-2020-12" }) as {
+  const input = tool.input["~standard"].jsonSchema.input({ target: "draft-2020-12" }) as {
     properties: { data: { anyOf: [{ description: string }] } };
   };
   return input.properties.data.anyOf[0].description;

@@ -100,7 +100,8 @@ test(
               id: described({ type: "string" }),
             },
             required: ["type", "id"],
-            additionalProperties: true,
+            // A struct inside a field takes no key but its own, the same as a tool's input.
+            additionalProperties: false,
           }),
           property: text,
         },
@@ -114,7 +115,11 @@ test(
       ).toEqual(
         expect.objectContaining({
           description: expect.any(String),
-          inputSchema: expect.objectContaining({ type: "object", ...input }),
+          inputSchema: expect.objectContaining({
+            type: "object",
+            ...input,
+            additionalProperties: false,
+          }),
           // MCP has a client assume a tool may destroy things unless it says otherwise.
           annotations: { readOnlyHint: false, destructiveHint: false },
         }),

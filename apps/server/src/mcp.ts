@@ -2,41 +2,19 @@ import { AtomicBatch, callTool, Ids, tools, type Tool, type ToolResult } from "@
 import { D1Client } from "@effect/sql-d1";
 import { McpServer, type CallToolResult } from "@modelcontextprotocol/server";
 import { createMcpHandler, getMcpAuthContext } from "agents/mcp/server";
-import { DateTime, Effect, Layer, Schema } from "effect";
+import { DateTime, Effect, Layer } from "effect";
 import type { WorkerEnv } from "../../../alchemy.run.ts";
 import { isAllowed } from "./allowlist.ts";
 
-// The JSON Schema dialect the MCP SDK asks every tool to describe its input in.
-const DIALECT = "draft-2020-12";
-
-// A tool's input is an Effect Schema. The MCP SDK takes it as a Standard Schema that can
-// also describe itself as JSON Schema. Effect works that description out afresh each time it
-// is asked, and the SDK asks whenever a tool is registered, which is on every request. So
-// it is worked out here once and handed back from then on.
-const toolInput = (schema: Tool["input"]) => {
-  const { "~standard": standard } = Schema.toStandardJSONSchemaV1(
-    Schema.toStandardSchemaV1(schema),
-  );
-  const described = standard.jsonSchema.input({ target: DIALECT });
-  return {
-    "~standard": {
-      ...standard,
-      jsonSchema: {
-        ...standard.jsonSchema,
-        input: (options: Parameters<typeof standard.jsonSchema.input>[0]) =>
-          options.target === DIALECT ? described : standard.jsonSchema.input(options),
-      },
-    },
-  };
-};
-
 // Every tool as the MCP SDK registers it. A new server is built for each request (ADR 0001),
-// so whatever is the same for every request is done here, once, when the module loads.
+// so whatever is the same for every request is done here, once, when the module loads. A
+// tool's input is already what the SDK takes: a Standard Schema that checks a call and
+// describes itself as JSON Schema, made in `defineTool`.
 const registrations = tools.map((tool) => ({
   tool,
   config: {
     description: tool.description,
-    inputSchema: toolInput(tool.input),
+    inputSchema: tool.input,
     annotations: tool.annotations,
   },
 }));

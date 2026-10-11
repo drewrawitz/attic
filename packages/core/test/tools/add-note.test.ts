@@ -277,9 +277,29 @@ it.effect("a Note of nothing but spaces is refused", () =>
 
     for (const body of ["", "   "]) {
       expect(yield* adding({ body }), body).toEqual({
-        refused: "Expected a Note with something in it.",
+        refused: "body: Expected a Note with something in it.",
       });
     }
+    expect(yield* counting).toEqual(before);
+  }).pipe(Effect.provide(TestDatabase)),
+);
+
+// `attach_to` takes a type and an id. A Property put inside it was once dropped, and the Note
+// was added without a word about it.
+it.effect("a key `attach_to` does not have is turned away by name, and no Note is added", () =>
+  Effect.gen(function* () {
+    yield* loadHousehold;
+    yield* todayIs(TODAY);
+    const before = yield* counting;
+
+    const added = yield* adding({
+      body: "The water filter is behind the top shelf.",
+      attach_to: { type: "item", id: "seed-item-fridge", property: "Maple Street house" },
+    });
+
+    expect(added).toEqual({
+      refused: "attach_to.property: There is no field with this name. The fields are: type, id.",
+    });
     expect(yield* counting).toEqual(before);
   }).pipe(Effect.provide(TestDatabase)),
 );

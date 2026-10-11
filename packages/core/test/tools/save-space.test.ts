@@ -395,8 +395,31 @@ it.effect("the spaces around a name are dropped, and a name of nothing but space
       updated: [{ type: "space", id: "seed-space-kitchen", name: "Kitchen" }],
     });
     expect(yield* saving({ name: "   " })).toEqual({
-      refused: "Expected a name with something in it.",
+      refused: "name: Expected a name with something in it.",
     });
     expect((yield* counting)?.spaces).toBe(before!.spaces);
+  }).pipe(Effect.provide(TestDatabase)),
+);
+
+// A room's size goes inside `data`, and a Space has no `clear` and no Note of its own. Each
+// of these was once dropped, and the save went through as if it had been taken.
+it.effect("a field save_space does not have is turned away by name, and nothing is saved", () =>
+  Effect.gen(function* () {
+    yield* loadHousehold;
+    yield* todayIs(TODAY);
+    const before = yield* counting;
+
+    const fields =
+      "There is no field with this name. The fields are: id, name, property, data. A fact with no field of its own goes inside data.";
+    for (const [field, value] of [
+      ["sqft", 240],
+      ["note", "Repainted in the spring."],
+      ["clear", ["name"]],
+    ] as const) {
+      expect(yield* saving({ name: "Kitchen", [field]: value }), field).toEqual({
+        refused: `${field}: ${fields}`,
+      });
+    }
+    expect(yield* counting).toEqual(before);
   }).pipe(Effect.provide(TestDatabase)),
 );

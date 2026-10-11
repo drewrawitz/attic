@@ -275,10 +275,10 @@ it.effect("a field left out, or sent as null, is unchanged, and role can be clea
 it.effect("a name or a Note of nothing but spaces is refused", () =>
   Effect.gen(function* () {
     expect(yield* saving({ name: "   " })).toEqual({
-      refused: "Expected a name with something in it.",
+      refused: "name: Expected a name with something in it.",
     });
     expect(yield* saving({ name: "Sparrow Roofing", note: "  " })).toEqual({
-      refused: "Expected a Note with something in it.",
+      refused: "note: Expected a Note with something in it.",
     });
     expect(yield* counting).toEqual({ vendors: 0, notes: 0, changes: 0 });
   }).pipe(Effect.provide(TestDatabase)),
