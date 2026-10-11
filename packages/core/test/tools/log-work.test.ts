@@ -139,7 +139,7 @@ it.effect("Work logged with a Vendor, a Space, and an Item shows on each of the 
 );
 
 // What the table holds for a piece of Work, which is what `query` returns.
-const stored = (id: string) =>
+const inTable = (id: string) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     const [row] = yield* sql<Record<string, unknown>>`SELECT * FROM work WHERE id = ${id}`;
@@ -158,7 +158,7 @@ it.effect("a cost in dollars is stored as cents, and a Partial date as given", (
       cost: 1850.5,
     });
     expect(logged.record).toMatchObject({ id: "id-0001", date: "2023", cost: 1850.5 });
-    expect(yield* stored("id-0001")).toMatchObject({ date: "2023", cost_cents: 185050 });
+    expect(yield* inTable("id-0001")).toMatchObject({ date: "2023", cost_cents: 185050 });
     expect(yield* inWorkLog("id-0001")).toMatchObject({ date: "2023", cost_cents: 185050 });
 
     // A year and a month, a full date, and an amount that a float cannot hold exactly.
@@ -169,7 +169,7 @@ it.effect("a cost in dollars is stored as cents, and a Partial date as given", (
     ] as const) {
       const { record } = yield* logging({ kind: "repair", title: "Patched the roof", date, cost });
       expect(record, date).toMatchObject({ date, cost });
-      expect(yield* stored((record as { id: string }).id), date).toMatchObject({
+      expect(yield* inTable((record as { id: string }).id), date).toMatchObject({
         date,
         cost_cents: cents,
       });
@@ -231,7 +231,7 @@ it.effect("diy given as true is stored as 1, and Work is not DIY unless it says 
     });
     // A record shows it as it is stored.
     expect(diy.record).toMatchObject({ id: "id-0001", diy: 1, vendor: "Filter Depot" });
-    expect(yield* stored("id-0001")).toMatchObject({ diy: 1 });
+    expect(yield* inTable("id-0001")).toMatchObject({ diy: 1 });
     expect(yield* inWorkLog("id-0001")).toMatchObject({ diy: 1, vendor: "Filter Depot" });
 
     const hired = yield* logging({ kind: "maintenance", title: "Swept the chimney", diy: false });
@@ -1044,7 +1044,7 @@ it.effect("repainting is Work that names the Space, with the old color in data.r
       data: { replaced: { paint: { walls: gray } }, payments: [{ amount: 180 }] },
     });
     const { id } = painted.record as { id: string };
-    expect(JSON.parse((yield* stored(id))!.data as string)).toMatchObject({
+    expect(JSON.parse((yield* inTable(id))!.data as string)).toMatchObject({
       payments: [{ amount_cents: 18000 }],
     });
 
@@ -1197,4 +1197,43 @@ it.effect(
         },
       ]);
     }).pipe(Effect.provide(TestDatabase)),
+);
+
+// A Project is at one Property, and so is a Schedule that is not an Item's.
+it.effect("Work in a Project, or logged against a Property's Schedule, stays at its Property", () =>
+  Effect.gen(function* () {
+    yield* loadHousehold;
+    yield* todayIs(TODAY);
+    const before = yield* counting;
+    const TRENCH = "seed-work-lighting-trench";
+
+    expect(yield* logging({ id: TRENCH, property: "Elm Court apartment" })).toEqual({
+      refused:
+        '"Trenched and laid cable for the path lights" stays at its Property, because it is in the Project "Outdoor lighting", and a Project is at one Property. Leave `property` as it is.',
+    });
+    // Going to no Property is a move too.
+    expect(
+      yield* logging({ id: "seed-work-furnace", item_ids: [FRIDGE], clear: ["property"] }),
+    ).toEqual({
+      refused:
+        '"Annual furnace service" stays at its Property, because it was logged against "Service the furnace", a Schedule on that Property. Leave `property` as it is.',
+    });
+    expect(yield* counting).toEqual(before);
+
+    // Naming the Property it is at is no move, so the rest of the save goes through.
+    const same = yield* logging({ id: TRENCH, property: "Maple Street house", cost: 460 });
+    expect(same.record).toMatchObject({
+      cost: 460,
+      property: "Maple Street house",
+      project: "Outdoor lighting",
+    });
+
+    // The fridge filter's Schedule is the fridge's, and an Item moves with the User. So Work
+    // logged against it can be put right.
+    const filter = yield* logging({ id: "seed-work-filter-2026", property: "Elm Court apartment" });
+    expect(filter.record).toMatchObject({
+      property: "Elm Court apartment",
+      schedule: "Replace fridge water filter",
+    });
+  }).pipe(Effect.provide(TestDatabase)),
 );

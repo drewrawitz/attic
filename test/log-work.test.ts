@@ -19,11 +19,11 @@ import { mcp } from "./support/mcp-client.ts";
 // loaded. Its Maple Street house is the one Current property.
 
 // What these tests save. Nothing else in the database has these names.
-const JOB = "Shed job";
+const TITLE = "Shed work";
 const SHED = "Potting shed";
 const LEANTO = "Shed lean-to";
 const BUILDER = "Shed and Fence Plumbing";
-const JOBS = `SELECT id FROM work WHERE title GLOB '${JOB}*'`;
+const LOGGED = `SELECT id FROM work WHERE title GLOB '${TITLE}*'`;
 
 // Takes out what these tests wrote. No tool deletes a record yet, and the database is kept
 // between runs, so each test starts and ends with this. The Items and the Spaces a piece of
@@ -31,13 +31,13 @@ const JOBS = `SELECT id FROM work WHERE title GLOB '${JOB}*'`;
 const cleanUp = onDatabase(
   `DELETE FROM changes WHERE id IN (
      SELECT change_id FROM change_records
-      WHERE (entity_type = 'work' AND entity_id IN (${JOBS}))
+      WHERE (entity_type = 'work' AND entity_id IN (${LOGGED}))
          OR (entity_type = 'space'
              AND entity_id IN (SELECT id FROM spaces WHERE name IN ('${SHED}', '${LEANTO}')))
          OR (entity_type = 'vendor'
              AND entity_id IN (SELECT id FROM vendors WHERE name = '${BUILDER}')))`,
-  `DELETE FROM notes WHERE entity_type = 'work' AND entity_id IN (${JOBS})`,
-  `DELETE FROM work WHERE title GLOB '${JOB}*'`,
+  `DELETE FROM notes WHERE entity_type = 'work' AND entity_id IN (${LOGGED})`,
+  `DELETE FROM work WHERE title GLOB '${TITLE}*'`,
   `DELETE FROM spaces WHERE name IN ('${SHED}', '${LEANTO}')`,
   `DELETE FROM vendors WHERE name = '${BUILDER}'`,
 );
@@ -113,11 +113,13 @@ test(
       "Work is always finished.",
       "It belongs to a Project, and is logged here once it is done.",
       "Work needs a Property or at least one Item.",
-      "everything paid for the job, materials included",
+      "everything paid for the Work, materials included",
       "It is never added to an Item's price.",
       "On DIY Work the Vendor is where the materials came from.",
       "Each list replaces the whole set",
       "Work at no Property takes no Spaces",
+      "Work that is in a Project, or was logged against a Schedule on a Property, stays at its Property.",
+      "It is stored as 1 or 0, which is how a record shows it.",
       "Repainting is Work that names the Space.",
       "`data.replaced`",
       "save_space",
@@ -129,10 +131,10 @@ test(
 );
 
 // How many pieces of Work these tests have logged, as `query` counts them.
-const jobs = (call: Call) =>
+const howMany = (call: Call) =>
   Effect.map(
-    call("query", { sql: `SELECT count(*) AS jobs FROM work WHERE title GLOB '${JOB}*'` }),
-    (counted) => (counted.rows as [{ jobs: number }])[0].jobs,
+    call("query", { sql: `SELECT count(*) AS pieces FROM work WHERE title GLOB '${TITLE}*'` }),
+    (counted) => (counted.rows as [{ pieces: number }])[0].pieces,
   );
 
 test(
@@ -141,7 +143,7 @@ test(
     Effect.gen(function* () {
       const logged = yield* call("log_work", {
         kind: "improvement",
-        title: `${JOB}: ran a water line to the shed`,
+        title: `${TITLE}: ran a water line to the shed`,
         description: "A frost-proof line from the garage, with a shutoff inside.",
         date: "2026-05",
         cost: 1240.5,
@@ -160,7 +162,7 @@ test(
           {
             type: "work",
             id: expect.stringMatching(ULID),
-            name: `${JOB}: ran a water line to the shed`,
+            name: `${TITLE}: ran a water line to the shed`,
           },
           {
             type: "note",
@@ -177,7 +179,7 @@ test(
         property_id: "seed-property-maple",
         project_id: null,
         kind: "improvement",
-        title: `${JOB}: ran a water line to the shed`,
+        title: `${TITLE}: ran a water line to the shed`,
         description: "A frost-proof line from the garage, with a shutoff inside.",
         date: "2026-05",
         cost: 1240.5,
@@ -219,7 +221,7 @@ test(
       expect(logged.record).toEqual(record);
 
       // It shows on each Item, on each Space, and on the Vendor, in the same Change.
-      const shown = { id: work.id, title: `${JOB}: ran a water line to the shed` };
+      const shown = { id: work.id, title: `${TITLE}: ran a water line to the shed` };
       const made = { id: logged.change_id, tool: "log_work", before: null };
       expect(
         ((yield* call("get_record", { type: "item", id: TREADMILL })).work as Fields[]).map(
@@ -317,7 +319,7 @@ test(
       // and an Item, and has a Note of its own.
       const list = Array.from({ length: 50 }, (_, at) => ({
         kind: "maintenance",
-        title: `${JOB} ${at + 1}`,
+        title: `${TITLE} ${at + 1}`,
         date: "2026-08",
         cost: at + 0.99,
         diy: at % 2 === 0,
@@ -344,18 +346,18 @@ test(
       expect(created.slice(0, 3)).toEqual([
         { type: "space", id: expect.stringMatching(ULID), name: SHED },
         { type: "vendor", id: expect.stringMatching(ULID), name: BUILDER },
-        { type: "work", id: expect.stringMatching(ULID), name: `${JOB} 1` },
+        { type: "work", id: expect.stringMatching(ULID), name: `${TITLE} 1` },
       ]);
-      expect(yield* jobs(call)).toBe(50);
+      expect(yield* howMany(call)).toBe(50);
       const [space, vendor] = created as [Listed, Listed];
       const last = created[100]!;
-      expect(last).toEqual({ type: "work", id: expect.stringMatching(ULID), name: `${JOB} 50` });
+      expect(last).toEqual({ type: "work", id: expect.stringMatching(ULID), name: `${TITLE} 50` });
 
       // The last of them is in the same Change as the first, and so are the Space and the
       // Vendor.
       const made = { id: logged.change_id, tool: "log_work", before: null };
       expect(yield* call("get_record", { type: "work", id: last.id })).toMatchObject({
-        title: `${JOB} 50`,
+        title: `${TITLE} 50`,
         cost: 49.99,
         diy: 0,
         property: "Maple Street house",
@@ -378,8 +380,8 @@ test(
       // away before the tool runs.
       const bad = yield* call("log_work", {
         work: [
-          { kind: "repair", title: `${JOB} 51`, spaces: [LEANTO] },
-          { kind: "repair", title: `${JOB} 52`, item_ids: ["no-such-item"] },
+          { kind: "repair", title: `${TITLE} 51`, spaces: [LEANTO] },
+          { kind: "repair", title: `${TITLE} 52`, item_ids: ["no-such-item"] },
         ],
       });
       expect(bad.refused).toContain(
@@ -387,12 +389,12 @@ test(
       );
       const long = Array.from({ length: 51 }, (_, at) => ({
         kind: "repair",
-        title: `${JOB} ${at + 60}`,
+        title: `${TITLE} ${at + 60}`,
       }));
       expect((yield* call("log_work", { work: long })).refused).toContain(
         "Expected at most 50 pieces of Work in one call.",
       );
-      expect(yield* jobs(call)).toBe(50);
+      expect(yield* howMany(call)).toBe(50);
       const leantos = yield* call("query", {
         sql: `SELECT count(*) AS spaces FROM spaces WHERE name = '${LEANTO}'`,
       });
@@ -411,19 +413,19 @@ test(
       const logged = yield* call("log_work", {
         work: [
           // In January, before March.
-          { kind: "repair", title: `${JOB}: rehung the door`, date: "2023-01-15", cost: 60 },
+          { kind: "repair", title: `${TITLE}: rehung the door`, date: "2023-01-15", cost: 60 },
           // Dated only to the year, which stands for the whole of it.
-          { kind: "improvement", title: `${JOB}: new roof`, date: "2023", cost: 2100.75 },
+          { kind: "improvement", title: `${TITLE}: new roof`, date: "2023", cost: 2100.75 },
           {
             kind: "repair",
-            title: `${JOB}: fixed the tap`,
+            title: `${TITLE}: fixed the tap`,
             date: "2026-10-01",
             cost: 95,
             vendor: BUILDER,
             spaces: [SHED],
           },
           // Neither a repair nor an improvement.
-          { kind: "maintenance", title: `${JOB}: oiled the hinges`, date: "2026-09", diy: true },
+          { kind: "maintenance", title: `${TITLE}: oiled the hinges`, date: "2026-09", diy: true },
         ],
       });
       expect(logged.refused).toBeUndefined();
@@ -431,7 +433,7 @@ test(
       const since = yield* call("query", {
         sql: `SELECT date, kind, title, cost_cents, vendor, spaces FROM work_log
                WHERE kind IN ('repair', 'improvement') AND (date >= '2023-03' OR date = '2023')
-                 AND title GLOB '${JOB}*'
+                 AND title GLOB '${TITLE}*'
                ORDER BY date`,
       });
       expect(since).toEqual({
@@ -439,7 +441,7 @@ test(
           {
             date: "2023",
             kind: "improvement",
-            title: `${JOB}: new roof`,
+            title: `${TITLE}: new roof`,
             cost_cents: 210075,
             vendor: null,
             spaces: "[]",
@@ -447,7 +449,7 @@ test(
           {
             date: "2026-10-01",
             kind: "repair",
-            title: `${JOB}: fixed the tap`,
+            title: `${TITLE}: fixed the tap`,
             cost_cents: 9500,
             vendor: BUILDER,
             spaces: `["${SHED}"]`,

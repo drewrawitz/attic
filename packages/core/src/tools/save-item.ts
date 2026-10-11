@@ -4,34 +4,32 @@ import { categoryAmong, everyCategory } from "../category.ts";
 import { partialDate, today } from "../dates.ts";
 import { amount, formatCents, inCents } from "../money.ts";
 import { newNote, noteOn, notesMovedTo } from "../note.ts";
-import { propertyFor } from "../property.ts";
+import { propertyForOnce } from "../property.ts";
 import {
-  askedOnce,
   dataPatch,
   definedColumns,
   entriesOf,
   insertRow,
   listOf,
   MOST_IN_ONE_CALL,
-  nameKey,
   nameText,
   noteText,
   planEvery,
-  referredOnce,
   refuseGivenAndCleared,
   replaceLinks,
   runSave,
   SAVE_ANNOTATIONS,
   updateRow,
+  valueOrCleared,
 } from "../save.ts";
-import { spaceOrNew } from "../space.ts";
+import { spaceOrNewOnce } from "../space.ts";
 import { defineTool, optional, ToolError } from "../tool.ts";
-import { vendorOrNew } from "../vendor.ts";
+import { vendorOrNewOnce } from "../vendor.ts";
 import { Ids } from "../write.ts";
 import { noRecord, readRecord } from "./get-record.ts";
 
-// What the list of a call is given in, and what its entries are.
-const LIST = { field: "items", one: "Item", many: "Items" };
+// What a call's list is called, and what its entries are.
+const LIST_WORDS = { field: "items", singular: "Item", plural: "Items" };
 
 const NO_NAME = "Give a name to create an Item, or the id of the Item to update.";
 
@@ -229,13 +227,9 @@ const sharedByEntries = Effect.gen(function* () {
     sql: yield* SqlClient.SqlClient,
     categories: yield* Effect.cached(everyCategory),
     day: yield* today,
-    // A name is the same in any case. With none given, it is the Current property.
-    property: askedOnce(propertyFor, (given) => (given === undefined ? undefined : nameKey(given))),
-    space: referredOnce(
-      (propertyId: string, name: string) => spaceOrNew(propertyId, name),
-      (propertyId, name) => `${propertyId} ${nameKey(name)}`,
-    ),
-    vendor: referredOnce((name: string) => vendorOrNew(name), nameKey),
+    property: propertyForOnce(),
+    space: spaceOrNewOnce(),
+    vendor: vendorOrNewOnce(),
   };
 });
 
@@ -253,10 +247,7 @@ const stepsFor = Effect.fnUntraced(function* (
   if (called === undefined) return yield* new ToolError({ message: NO_NAME });
 
   yield* refuseGivenAndCleared(entry, clear);
-  // What the save does with a field that can be emptied: its new value, null to empty it, or
-  // undefined to leave it as it is.
-  const wanted = <Value>(field: (typeof CLEARABLE)[number], value: Value | undefined) =>
-    clear.includes(field) ? null : value;
+  const wanted = valueOrCleared(clear);
 
   // Where the Item is after the save. A new Item is at the Current property unless the save
   // says where, and an Item that is there already stays where it is.
@@ -378,11 +369,11 @@ const stepsFor = Effect.fnUntraced(function* (
 export const saveItem = defineTool({
   name: "save_item",
   description: DESCRIPTION,
-  input: Schema.Struct({ ...FIELDS, items: optional(listOf(Entry, LIST)) }),
+  input: Schema.Struct({ ...FIELDS, items: optional(listOf(Entry, LIST_WORDS)) }),
   annotations: SAVE_ANNOTATIONS,
   run: ({ items, ...one }) =>
     Effect.gen(function* () {
-      const entries = yield* entriesOf(LIST, one, items);
+      const entries = yield* entriesOf(LIST_WORDS, one, items);
       const shared = yield* sharedByEntries;
       const existing = yield* itemsNow(entries.ids);
 

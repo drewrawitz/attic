@@ -1,6 +1,6 @@
 import { Effect } from "effect";
 import { SqlClient } from "effect/sql";
-import { insertRow, type Referred } from "./save.ts";
+import { insertRow, nameKey, referredOnce, type Referred } from "./save.ts";
 import { Ids } from "./write.ts";
 
 /**
@@ -24,3 +24,13 @@ export const spaceOrNew = Effect.fnUntraced(function* (
   const created = insertRow(sql, space, { property_id: propertyId, name }, data);
   return { ...space, steps: [created] } satisfies Referred;
 });
+
+/**
+ * `spaceOrNew` for a call that takes a list: a Space several entries name is read once, and
+ * one that is new is created once, by the first entry that names it.
+ */
+export const spaceOrNewOnce = () =>
+  referredOnce(
+    (propertyId: string, name: string) => spaceOrNew(propertyId, name),
+    (propertyId, name) => `${propertyId} ${nameKey(name)}`,
+  );

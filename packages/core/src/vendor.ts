@@ -1,6 +1,6 @@
 import { Effect } from "effect";
 import { SqlClient } from "effect/sql";
-import { insertRow, type Referred } from "./save.ts";
+import { insertRow, nameKey, referredOnce, type Referred } from "./save.ts";
 import { Ids } from "./write.ts";
 
 /**
@@ -26,3 +26,9 @@ export const vendorOrNew = Effect.fnUntraced(function* (
     steps: [insertRow(sql, vendor, { ...columns, name }, data)],
   } satisfies Referred;
 });
+
+/**
+ * `vendorOrNew` for a call that takes a list: a Vendor several entries name is read once, and
+ * one that is new is created once, by the first entry that names it.
+ */
+export const vendorOrNewOnce = () => referredOnce((name: string) => vendorOrNew(name), nameKey);

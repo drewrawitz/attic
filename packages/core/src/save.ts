@@ -83,6 +83,15 @@ export const columnsToSet = (
   });
 
 /**
+ * What a save does with a field that can be emptied, given the fields it names in `clear`: the
+ * field's new value, null to empty it, or undefined to leave it as it is.
+ */
+export const valueOrCleared =
+  <Field extends string>(clear: ReadonlyArray<Field>) =>
+  <Value>(field: Field, value: Value | undefined) =>
+    clear.includes(field) ? null : value;
+
+/**
  * The columns among these that a save has something to say of: a value to set, or null to
  * empty the column. One that is undefined is left out, and so left as it is.
  */
@@ -281,23 +290,26 @@ export interface ListWords {
   /** The field the list is given in, such as `items`. */
   readonly field: string;
   /** What one entry saves, such as Item, and what several save, such as Items. */
-  readonly one: string;
-  readonly many: string;
+  readonly singular: string;
+  readonly plural: string;
 }
 
 /**
  * The list a tool takes beside the fields of one record: at least one entry and at most fifty,
  * each with the fields `entry` has.
  */
-export const listOf = <Entry extends Schema.Constraint>(entry: Entry, { one, many }: ListWords) =>
+export const listOf = <EntrySchema extends Schema.Constraint>(
+  entry: EntrySchema,
+  { singular, plural }: ListWords,
+) =>
   Schema.Array(entry)
     .annotate({
-      description: `A list of up to ${MOST_IN_ONE_CALL} ${many} to save in one call, all or nothing. Each entry has the fields of one ${one}. Leave every other field out when this is given.`,
+      description: `A list of up to ${MOST_IN_ONE_CALL} ${plural} to save in one call, all or nothing. Each entry has the fields of one ${singular}. Leave every other field out when this is given.`,
     })
     .check(
-      Schema.isMinLength(1, { message: `Expected at least one ${one} in the list.` }),
+      Schema.isMinLength(1, { message: `Expected at least one ${singular} in the list.` }),
       Schema.isMaxLength(MOST_IN_ONE_CALL, {
-        message: `Expected at most ${MOST_IN_ONE_CALL} ${many} in one call. Save a longer list in several calls.`,
+        message: `Expected at most ${MOST_IN_ONE_CALL} ${plural} in one call. Save a longer list in several calls.`,
       }),
     );
 
@@ -327,11 +339,11 @@ export const entriesOf = <Entry extends MayHaveId>(
   list: ReadonlyArray<Entry> | undefined,
 ): Effect.Effect<Entries<Entry>, ToolError> => {
   const beside = Object.keys(one);
-  const { field } = words;
+  const { field, singular } = words;
   if (list !== undefined && beside.length > 0) {
     return Effect.fail(
       new ToolError({
-        message: `Give one ${words.one}'s fields, or \`${field}\` for a list, and not both. Beside \`${field}\` there was: ${beside.join(", ")}. Each entry of a list has fields of its own.`,
+        message: `Give one ${singular}'s fields, or \`${field}\` for a list, and not both. Beside \`${field}\` there was: ${beside.join(", ")}. Each entry of a list has fields of its own.`,
       }),
     );
   }
@@ -343,16 +355,16 @@ export const entriesOf = <Entry extends MayHaveId>(
 // What an error says of a list that was not saved: each entry that was refused, by where it is
 // in the list, and why. Entries refused for the same reason are named together, so fifty Items
 // with no Property to be at say so once.
-const listRefused = (
-  refused: ReadonlyArray<readonly [at: number, why: string]>,
+const listRefusal = (
+  refusals: ReadonlyArray<readonly [at: number, why: string]>,
   of: number,
   field: string,
 ) => {
-  const lines = [...Map.groupBy(refused, ([, why]) => why)].map(
+  const lines = [...Map.groupBy(refusals, ([, why]) => why)].map(
     ([why, forThat]) => `${forThat.map(([at]) => `${field}.${at}`).join(", ")}: ${why}`,
   );
-  const were = refused.length === 1 ? "was" : "were";
-  return `Nothing was saved, because ${refused.length} of the ${of} entries in \`${field}\` ${were} refused. Entries are counted from 0.\n${lines.join("\n")}`;
+  const were = refusals.length === 1 ? "was" : "were";
+  return `Nothing was saved, because ${refusals.length} of the ${of} entries in \`${field}\` ${were} refused. Entries are counted from 0.\n${lines.join("\n")}`;
 };
 
 /**
@@ -365,7 +377,7 @@ const listRefused = (
  * order of the list.
  */
 export const planEvery = Effect.fnUntraced(function* <Entry extends MayHaveId, Planned, Needs>(
-  { words: { field, one }, all, asList }: Entries<Entry>,
+  { words: { field, singular }, all, asList }: Entries<Entry>,
   plan: (entry: Entry) => Effect.Effect<Planned, ToolError | SqlError, Needs>,
 ) {
   const outcomes = yield* Effect.forEach(all, (entry, at) => {
@@ -375,7 +387,7 @@ export const planEvery = Effect.fnUntraced(function* <Entry extends MayHaveId, P
       earlier < at
         ? Effect.fail(
             new ToolError({
-              message: `The ${one} "${id}" is in this list already, at ${field}.${earlier}. Give each ${one} once.`,
+              message: `The ${singular} "${id}" is in this list already, at ${field}.${earlier}. Give each ${singular} once.`,
             }),
           )
         : plan(entry);
@@ -384,13 +396,13 @@ export const planEvery = Effect.fnUntraced(function* <Entry extends MayHaveId, P
       Effect.catchTag("ToolError", ({ message }) => Effect.succeed(Result.fail(message))),
     );
   });
-  const refused = outcomes.flatMap((outcome, at) =>
+  const refusals = outcomes.flatMap((outcome, at) =>
     Result.isFailure(outcome) ? [[at, outcome.failure] as const] : [],
   );
-  const [first] = refused;
+  const [first] = refusals;
   if (first !== undefined) {
     return yield* new ToolError({
-      message: asList ? listRefused(refused, all.length, field) : first[1],
+      message: asList ? listRefusal(refusals, all.length, field) : first[1],
     });
   }
   return outcomes.flatMap((outcome) => (Result.isSuccess(outcome) ? [outcome.success] : []));
