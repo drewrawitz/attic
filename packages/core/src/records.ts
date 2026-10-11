@@ -75,6 +75,31 @@ export const SHAPES = {
       { name: "extra_categories", table: "item_categories", from: "item_id", to: "category_id" },
     ],
   },
+  work: {
+    table: "work",
+    columns: [
+      "id",
+      "property_id",
+      "project_id",
+      "kind",
+      "title",
+      "description",
+      "date",
+      "cost_cents",
+      "diy",
+      "vendor_id",
+      "schedule_id",
+      "data",
+      "created_at",
+      "updated_at",
+    ],
+    // The Items it was done to, and the Spaces it was done in. With the 14 columns these make
+    // a snapshot of 16 fields, which is the most D1 takes in one JSON object, as an Item's is.
+    links: [
+      { name: "items", table: "work_items", from: "work_id", to: "item_id" },
+      { name: "spaces", table: "work_spaces", from: "work_id", to: "space_id" },
+    ],
+  },
   note: {
     table: "notes",
     columns: ["id", "property_id", "entity_type", "entity_id", "body", "data", "created_at"],
