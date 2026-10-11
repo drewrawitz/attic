@@ -144,6 +144,7 @@ it.effect(
             id: "seed-doc-fridge-manual",
             title: "Fridge user manual",
             property: "Maple Street house",
+            attached_to: [{ type: "item", id: "seed-item-fridge", name: "Fridge" }],
             matched: { text: MANUAL_TEXT },
           },
         ],
@@ -199,10 +200,12 @@ it.effect("Gone Items are left out, and come back when they are asked for", () =
   Effect.gen(function* () {
     yield* loadHousehold;
 
-    expect(yield* searching({ words: "bike" })).toEqual({ results: [] });
-    expect(yield* searching({ words: "bike", include_gone: false })).toEqual({ results: [] });
+    // The two bikes are left out. The Notes on them are Notes, and are still found.
+    const notes = ["note seed-note-ebike", "note seed-note-exercise-bike"];
+    expect(yield* found({ words: "bike" })).toEqual(notes);
+    expect(yield* found({ words: "bike", include_gone: false })).toEqual(notes);
 
-    expect(yield* searching({ words: "bike", include_gone: true })).toEqual({
+    expect(yield* searching({ words: "bike", types: ["item"], include_gone: true })).toEqual({
       results: [
         {
           type: "item",
@@ -250,7 +253,7 @@ it.effect("a search for plumbing finds the Work plumbers did, latest first, and 
           property: "Maple Street house",
           date: "2023-06-12",
           matched: {
-            vendors: ["Pipewise Plumbing"],
+            vendors: ["Pipewise Plumbing (plumber)"],
             documents: [
               {
                 id: "seed-doc-faucet-receipt",
@@ -267,7 +270,7 @@ it.effect("a search for plumbing finds the Work plumbers did, latest first, and 
           property: "Maple Street house",
           date: "2023",
           matched: {
-            vendors: ["Pipewise Plumbing"],
+            vendors: ["Pipewise Plumbing (plumber)"],
             documents: [
               {
                 id: "seed-doc-water-heater-receipt",
@@ -283,23 +286,37 @@ it.effect("a search for plumbing finds the Work plumbers did, latest first, and 
           title: "Cleared the kitchen drain",
           property: "Elm Court apartment",
           date: "2021-03-02",
-          matched: { vendors: ["Old Town Plumbing"] },
+          matched: { vendors: ["Old Town Plumbing (plumber)"] },
         },
         { type: "vendor", id: "seed-vendor-old-town", name: "Old Town Plumbing", property: null },
         { type: "vendor", id: "seed-vendor-pipewise", name: "Pipewise Plumbing", property: null },
+        // The Note on Pipewise, found by the name of the Vendor it is attached to.
+        {
+          type: "note",
+          id: "seed-note-pipewise",
+          body: "Ask for Dana. A text gets a faster answer than a call.",
+          property: null,
+          attached_to: [{ type: "vendor", id: "seed-vendor-pipewise", name: "Pipewise Plumbing" }],
+        },
         {
           type: "document",
           id: "seed-doc-faucet-receipt",
           title: "Pipewise invoice 1187",
           property: "Maple Street house",
-          matched: { text: faucetReceipt, vendors: ["Pipewise Plumbing"] },
+          attached_to: [
+            { type: "work", id: "seed-work-faucet", name: "Replaced the kitchen faucet cartridge" },
+          ],
+          matched: { text: faucetReceipt, vendors: ["Pipewise Plumbing (plumber)"] },
         },
         {
           type: "document",
           id: "seed-doc-water-heater-receipt",
           title: "Water heater invoice",
           property: "Maple Street house",
-          matched: { text: heaterReceipt, vendors: ["Pipewise Plumbing"] },
+          attached_to: [
+            { type: "work", id: "seed-work-water-heater", name: "Replaced the water heater" },
+          ],
+          matched: { text: heaterReceipt, vendors: ["Pipewise Plumbing (plumber)"] },
         },
       ],
     });
@@ -321,7 +338,7 @@ it.effect("a Project is found by a Vendor that quoted it, and a Note by what it 
           title: "Outdoor lighting",
           property: "Maple Street house",
           matched: {
-            vendors: ["Glow Landscape Lighting"],
+            vendors: ["Glow Landscape Lighting (landscape lighting)"],
             documents: [
               { id: "seed-doc-glow-quote", title: "Glow quote for outdoor lighting", text: quote },
             ],
@@ -339,7 +356,10 @@ it.effect("a Project is found by a Vendor that quoted it, and a Note by what it 
           id: "seed-doc-glow-quote",
           title: "Glow quote for outdoor lighting",
           property: "Maple Street house",
-          matched: { text: quote, vendors: ["Glow Landscape Lighting"] },
+          attached_to: [
+            { type: "project", id: "seed-project-outdoor-lighting", name: "Outdoor lighting" },
+          ],
+          matched: { text: quote, vendors: ["Glow Landscape Lighting (landscape lighting)"] },
         },
       ],
     });
@@ -364,6 +384,7 @@ const PLUMBING = [
   "work seed-work-elm-drain",
   "vendor seed-vendor-old-town",
   "vendor seed-vendor-pipewise",
+  "note seed-note-pipewise",
   "document seed-doc-faucet-receipt",
   "document seed-doc-water-heater-receipt",
 ];
@@ -592,6 +613,7 @@ it.effect("money inside data comes back in dollars", () =>
           id: "seed-note-desk",
           body: "2026-09-20: listed on Craigslist for $250.",
           property: "Maple Street house",
+          attached_to: [{ type: "item", id: "seed-item-desk", name: "Standing desk" }],
         },
       ],
     });
@@ -638,4 +660,103 @@ it.effect("a long Note comes back cut, and still shows the part a word was found
       },
     ]);
   }).pipe(Effect.provide(TestDatabase)),
+);
+
+// A plumber need not have "plumbing" in its name. Its role says what it is either way, so the
+// Work it did is found by the role, and that Work is what has a date.
+it.effect("a record is found by the role of its Vendor as well as by the name", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* loadHousehold;
+
+    expect(yield* found({ words: "plumber", types: ["work"] })).toEqual([
+      "work seed-work-faucet",
+      "work seed-work-water-heater",
+      "work seed-work-elm-drain",
+    ]);
+    expect(yield* searching({ words: "hvac", types: ["work"] })).toEqual({
+      results: [
+        {
+          type: "work",
+          id: "seed-work-furnace",
+          title: "Annual furnace service",
+          property: "Maple Street house",
+          date: "2025-09-08",
+          matched: { vendors: ["Hearth Heating and Air (hvac)"] },
+        },
+      ],
+    });
+
+    // A Vendor with no role is shown by its name alone, and Work with no date has none.
+    yield* sql`INSERT INTO vendors (id, name) VALUES ('vendor-gutters', 'Gutter Guys')`;
+    yield* sql`
+      INSERT INTO work (id, property_id, kind, title, vendor_id)
+      VALUES ('work-gutters', 'seed-property-maple', 'maintenance', 'Cleaned out the downspouts', 'vendor-gutters')`;
+    expect(yield* searching({ words: "gutter guys", types: ["work"] })).toEqual({
+      results: [
+        {
+          type: "work",
+          id: "work-gutters",
+          title: "Cleaned out the downspouts",
+          property: "Maple Street house",
+          matched: { vendors: ["Gutter Guys"] },
+        },
+      ],
+    });
+  }).pipe(Effect.provide(TestDatabase)),
+);
+
+// The Note on Pipewise says to ask for Dana. Neither record has both words.
+it.effect(
+  "a Note is found by the name of what it is attached to, and always says what that is",
+  () =>
+    Effect.gen(function* () {
+      yield* loadHousehold;
+
+      const note = {
+        type: "note",
+        id: "seed-note-pipewise",
+        body: "Ask for Dana. A text gets a faster answer than a call.",
+        property: null,
+        attached_to: [{ type: "vendor", id: "seed-vendor-pipewise", name: "Pipewise Plumbing" }],
+      };
+      expect(yield* searching({ words: "pipewise dana" })).toEqual({ results: [note] });
+      expect(yield* searching({ words: "dana" })).toEqual({ results: [note] });
+    }).pipe(Effect.provide(TestDatabase)),
+);
+
+it.effect(
+  "a Document is found by the name of what it is attached to, and says every record that is",
+  () =>
+    Effect.gen(function* () {
+      yield* loadHousehold;
+
+      // "Updated" is in the title of the Work this Receipt is attached to, and not in the Receipt.
+      expect(yield* found({ words: "updated confirmation", types: ["document"] })).toEqual([
+        "document seed-doc-thermostat-receipt",
+      ]);
+
+      // One Receipt, attached to the Work it paid for and to the Item the Part went into.
+      expect(yield* searching({ words: "20418", types: ["document"] })).toEqual({
+        results: [
+          {
+            type: "document",
+            id: "seed-doc-filter-receipt",
+            title: "Filter Depot order confirmation",
+            property: "Maple Street house",
+            attached_to: [
+              { type: "item", id: "seed-item-fridge", name: "Fridge" },
+              {
+                type: "work",
+                id: "seed-work-filter-2026",
+                name: "Replaced the fridge water filter",
+              },
+            ],
+            matched: {
+              text: "Filter Depot. Order 20418. 1 x DA97-17376B refrigerator water filter. Total $49.99.",
+            },
+          },
+        ],
+      });
+    }).pipe(Effect.provide(TestDatabase)),
 );

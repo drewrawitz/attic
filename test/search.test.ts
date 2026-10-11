@@ -100,14 +100,17 @@ test(
 test(
   "one search answers who did the plumbing last time, and one what fitness Items there are",
   asking(async (search) => {
-    // Work comes latest first, and says which Vendor it matched on.
-    const plumbing = await search({ words: "plumbing", types: ["work"] });
-    expect(plumbing.results![0]).toMatchObject({
-      type: "work",
-      title: "Replaced the kitchen faucet cartridge",
-      date: "2023-06-12",
-      matched: { vendors: ["Pipewise Plumbing"] },
-    });
+    // Work comes newest first, and says which Vendor it matched on. A plumber is found by its
+    // role too, which is what finds one with no "plumbing" in its name.
+    for (const words of ["plumbing", "plumber"]) {
+      const { results } = await search({ words, types: ["work"] });
+      expect(results![0], words).toMatchObject({
+        type: "work",
+        title: "Replaced the kitchen faucet cartridge",
+        date: "2023-06-12",
+        matched: { vendors: ["Pipewise Plumbing (plumber)"] },
+      });
+    }
 
     // The treadmill is under Cardio, a child of Fitness, and the exercise bike was sold.
     const fitness = await search({ words: "fitness" });
@@ -116,6 +119,24 @@ test(
       "item Running watch",
       "item Treadmill",
     ]);
+  }),
+);
+
+// The Note says to ask for Dana, and the Vendor it is attached to is Pipewise.
+test(
+  "search finds a Note on D1 by the name of what it is attached to, and says what that is",
+  asking(async (search) => {
+    expect(await search({ words: "pipewise dana" })).toEqual({
+      results: [
+        {
+          type: "note",
+          id: "seed-note-pipewise",
+          body: "Ask for Dana. A text gets a faster answer than a call.",
+          property: null,
+          attached_to: [{ type: "vendor", id: "seed-vendor-pipewise", name: "Pipewise Plumbing" }],
+        },
+      ],
+    });
   }),
 );
 

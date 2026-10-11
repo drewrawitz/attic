@@ -1,6 +1,6 @@
 import { Array as Arr, Effect, Schema } from "effect";
 import { SqlClient } from "effect/sql";
-import { formatRow } from "../output.ts";
+import { formatJson } from "../output.ts";
 import { propertyNamed } from "../property.ts";
 import { defineTool, optional, ToolError } from "../tool.ts";
 
@@ -22,9 +22,9 @@ const union = (selects: ReadonlyArray<string>): string => {
   return union(groups);
 };
 
-// The records that are searched, with what a result says about each one: the column that says
-// what the record is, which the result shows under the column's own name, then its Property, an
-// Item's status, and the date of Work.
+// The records that are searched, with what a result says about each one. First the field a
+// result shows the record's name under, and the name itself: an Item's name, the title of Work,
+// the body of a Note. Then its Property, an Item's status, and the date of Work.
 const RECORDS = [
   `SELECT 'item', id, 'name', name, property_id, status, NULL FROM items`,
   `SELECT 'work', id, 'title', title, property_id, NULL, date FROM work`,
@@ -37,7 +37,7 @@ const RECORDS = [
 
 // Every piece of text a record can be found by, one row for each: the record, the field the
 // text is in, and for text that belongs to another record, which one. The field is the name the
-// text goes under in a result's `matched`.
+// text goes under in a result's `matched`. `named_vendor` and `attached` are parts of SEARCH.
 const PIECES = [
   `SELECT 'item', id, 'name', NULL, name FROM items`,
   `SELECT 'item', id, 'data', NULL, data FROM items`,
@@ -46,22 +46,22 @@ const PIECES = [
      FROM item_in_category AS under JOIN categories ON categories.id = under.category_id`,
   `SELECT 'item', items.id, 'spaces', spaces.id, spaces.name
      FROM items JOIN spaces ON spaces.id = items.space_id`,
-  `SELECT 'item', items.id, 'vendors', vendors.id, vendors.name
-     FROM items JOIN vendors ON vendors.id = items.vendor_id`,
+  `SELECT 'item', items.id, 'vendors', vendor.id, vendor.text
+     FROM items JOIN named_vendor AS vendor ON vendor.id = items.vendor_id`,
   `SELECT 'work', id, 'title', NULL, title FROM work`,
   `SELECT 'work', id, 'description', NULL, description FROM work`,
   `SELECT 'work', id, 'data', NULL, data FROM work`,
   `SELECT 'work', done_in.work_id, 'spaces', spaces.id, spaces.name
      FROM work_spaces AS done_in JOIN spaces ON spaces.id = done_in.space_id`,
-  `SELECT 'work', work.id, 'vendors', vendors.id, vendors.name
-     FROM work JOIN vendors ON vendors.id = work.vendor_id`,
+  `SELECT 'work', work.id, 'vendors', vendor.id, vendor.text
+     FROM work JOIN named_vendor AS vendor ON vendor.id = work.vendor_id`,
   `SELECT 'project', id, 'title', NULL, title FROM projects`,
   `SELECT 'project', id, 'data', NULL, data FROM projects`,
   `SELECT 'project', covers.project_id, 'spaces', spaces.id, spaces.name
      FROM project_spaces AS covers JOIN spaces ON spaces.id = covers.space_id`,
   // A Project's Vendors are the ones on its Quotes.
-  `SELECT 'project', quotes.project_id, 'vendors', vendors.id, vendors.name
-     FROM quotes JOIN vendors ON vendors.id = quotes.vendor_id`,
+  `SELECT 'project', quotes.project_id, 'vendors', vendor.id, vendor.text
+     FROM quotes JOIN named_vendor AS vendor ON vendor.id = quotes.vendor_id`,
   `SELECT 'vendor', id, 'name', NULL, name FROM vendors`,
   `SELECT 'vendor', id, 'role', NULL, role FROM vendors`,
   `SELECT 'vendor', id, 'data', NULL, data FROM vendors`,
@@ -72,11 +72,13 @@ const PIECES = [
   `SELECT 'document', id, 'title', NULL, title FROM documents`,
   `SELECT 'document', id, 'text', NULL, text FROM documents`,
   `SELECT 'document', id, 'data', NULL, data FROM documents`,
-  `SELECT 'document', documents.id, 'vendors', vendors.id, vendors.name
-     FROM documents JOIN vendors ON vendors.id = documents.vendor_id`,
+  `SELECT 'document', documents.id, 'vendors', vendor.id, vendor.text
+     FROM documents JOIN named_vendor AS vendor ON vendor.id = documents.vendor_id`,
   // The text of a record's Documents, whatever the record is.
   `SELECT link.entity_type, link.entity_id, 'documents', documents.id, documents.text
      FROM document_links AS link JOIN documents ON documents.id = link.document_id`,
+  // The name of what a Note or a Document is attached to.
+  `SELECT type, id, 'attached_to', to_type || ' ' || to_id, name FROM attached`,
 ];
 
 // The most records one call returns. The statement asks for one more, which is how a result
@@ -94,27 +96,45 @@ const LEAD = 100;
 // One statement finds the records and says why. It is given the words, the types to keep,
 // whether to keep Gone Items, and the Property to keep to, if any.
 //
-//   word    the words, each with the LIKE pattern that finds it, in plain text and in `data`
-//   piece   every piece of text of every record
-//   hit     a piece, once for each word it holds
-//   found   the records whose pieces hold every word between them
-//   page    the found records that pass the filters, in order, and one more than a call returns
-//   shown   each piece that holds a word, once, with where its excerpt starts
+//   word          the words, each with the LIKE pattern that finds it, in text and in `data`
+//   record        every record that is searched, with what a result says about it
+//   named_vendor  a Vendor as another record shows it: its name, and its role when it has one
+//   attached      what each Note and each Document is attached to
+//   piece         every piece of text of every record
+//   hit           a piece, once for each word it holds
+//   found         the records whose pieces hold every word between them
+//   page          the found records that pass the filters, in order, and one more than a call
+//                 returns
+//   shown         each piece that holds a word, once, with where its excerpt starts
 //
 // What comes back is a row for each piece shown of each record on the page. Work is ordered by
 // its date as text, which puts a Partial date after the full dates inside it. LIKE and lower()
 // both ignore case for ASCII letters only, so they agree on where a word is.
 const SEARCH = `
 WITH
-  word (lowered, pattern, in_data) AS (
-    SELECT lower(value ->> 'word'), value ->> 'pattern', value ->> 'in_data' FROM json_each(?1)
+  word (lowered, pattern, data_pattern) AS (
+    SELECT lower(value ->> 'word'), value ->> 'pattern', value ->> 'data_pattern'
+      FROM json_each(?1)
   ),
-  record (type, id, called, title, property_id, status, date) AS (${union(RECORDS)}),
+  record (type, id, name_field, name, property_id, status, date) AS (${union(RECORDS)}),
+  named_vendor (id, text) AS (
+    SELECT id, name || coalesce(' (' || nullif(role, '') || ')', '') FROM vendors
+  ),
+  attached (type, id, to_type, to_id, name) AS (
+    SELECT 'note', notes.id, record.type, record.id, record.name
+      FROM notes
+      JOIN record ON record.type = notes.entity_type AND record.id = notes.entity_id
+    UNION ALL
+    SELECT 'document', link.document_id, record.type, record.id, record.name
+      FROM document_links AS link
+      JOIN record ON record.type = link.entity_type AND record.id = link.entity_id
+  ),
   piece (type, id, field, ref, text) AS (${union(PIECES)}),
   hit AS (
     SELECT piece.*, word.lowered AS word
       FROM piece
-      JOIN word ON piece.text LIKE iif(piece.field = 'data', word.in_data, word.pattern) ESCAPE '\\'
+      JOIN word
+        ON piece.text LIKE iif(piece.field = 'data', word.data_pattern, word.pattern) ESCAPE '\\'
   ),
   found AS (
     SELECT type, id FROM hit GROUP BY type, id
@@ -123,7 +143,7 @@ WITH
   page AS (
     SELECT record.*, property.name AS property,
            row_number() OVER (
-             ORDER BY wanted.key, record.date DESC, record.title COLLATE NOCASE, record.id
+             ORDER BY wanted.key, record.date DESC, record.name COLLATE NOCASE, record.id
            ) AS position
       FROM found
       JOIN record ON record.type = found.type AND record.id = found.id
@@ -139,9 +159,13 @@ WITH
            max(1, min(instr(lower(text), word)) - ${LEAD}) AS start
       FROM hit GROUP BY type, id, field, ref
   )
-SELECT page.position, page.type, page.id, page.called, page.property, page.status, page.date,
-       iif(length(page.title) > ${EXCERPT},
-           substr(page.title, 1, ${EXCERPT}) || '…', page.title) AS title,
+SELECT page.position, page.type, page.id, page.name_field, page.property, page.status, page.date,
+       iif(length(page.name) > ${EXCERPT},
+           substr(page.name, 1, ${EXCERPT}) || '…', page.name) AS name,
+       (SELECT json_group_array(json_object('type', to_type, 'id', to_id, 'name', name))
+          FROM (SELECT to_type, to_id, name FROM attached
+                 WHERE attached.type = page.type AND attached.id = page.id
+                 ORDER BY to_type, to_id)) AS attached_to,
        shown.field, shown.ref, document.title AS document,
        CASE WHEN shown.field = 'data' OR length(shown.text) <= ${EXCERPT} THEN shown.text
             ELSE iif(shown.start > 1, '…', '')
@@ -158,11 +182,12 @@ interface Row {
   readonly position: number;
   readonly type: string;
   readonly id: string;
-  readonly called: string;
-  readonly title: string | null;
+  readonly name_field: string;
+  readonly name: string | null;
   readonly property: string | null;
   readonly status: string | null;
   readonly date: string | null;
+  readonly attached_to: string;
   readonly field: string;
   readonly ref: string | null;
   readonly document: string | null;
@@ -194,10 +219,12 @@ const matchedIn = (rows: ReadonlyArray<Row>) => {
   const own: Record<string, unknown> = {};
   const others: Record<string, unknown[]> = {};
   for (const row of rows) {
-    // What the result already shows of the record is not said twice.
-    if (row.field === row.called && row.text === row.title) continue;
+    // What the result already shows of the record is not said twice: its name, as long as that
+    // was not cut, and what it is attached to.
+    if (row.field === row.name_field && row.text === row.name) continue;
+    if (row.field === "attached_to") continue;
     if (row.ref === null) {
-      own[row.field] = row.field === "data" ? formatRow({ data: row.text }).data : row.text;
+      own[row.field] = row.field === "data" ? formatJson(row.text) : row.text;
     } else {
       (others[row.field] ??= []).push(
         row.field === "documents" ? { id: row.ref, title: row.document, text: row.text } : row.text,
@@ -210,21 +237,23 @@ const matchedIn = (rows: ReadonlyArray<Row>) => {
 // One result, from the rows of one record.
 const result = (rows: Arr.NonEmptyReadonlyArray<Row>) => {
   const [record] = rows;
+  const attachedTo = formatJson(record.attached_to);
   const matched = matchedIn(rows);
   return {
     type: record.type,
     id: record.id,
-    [record.called]: record.title,
+    [record.name_field]: record.name,
     property: record.property,
     ...(record.status === null ? {} : { status: record.status }),
     ...(record.date === null ? {} : { date: record.date }),
+    ...(Array.isArray(attachedTo) && attachedTo.length > 0 ? { attached_to: attachedTo } : {}),
     ...(Object.keys(matched).length === 0 ? {} : { matched }),
   };
 };
 
 export const search = defineTool({
   name: "search",
-  description: `Finds records by words: Items, Work, Projects, Vendors, Spaces, Notes, and Documents. Every word must be somewhere in the record, and the words can be in different places of it: its name or title, its description, its \`data\`, the text of its Documents, or the name of its Category, Space, or Vendor. So \`samsung kitchen\` finds the Samsung fridge in the Kitchen. An Item is found by every Category it sits under, parents included. \`data\` is searched as text, keys included, so \`paint\` finds every Space with paint on record. A word matches anywhere in a text, so \`plumb\` finds both plumber and plumbing, and case is ignored for the letters a to z. Give a few words, not a sentence. With no property, every Property is searched, former ones included. Each result has the record's type, id, name or title, and Property. A Note has its body, an Item its status, and Work its date. Work comes newest first by that date as text, so Work dated only 2023 comes after Work dated 2023-06-12. \`matched\` shows where else the words were found. A long text is cut to the part around the first word found in it. Pass a result's type and id to get_record for the whole record. At most ${MOST_RESULTS} records come back, with a note when there were more.`,
+  description: `Finds records by words: Items, Work, Projects, Vendors, Spaces, Notes, and Documents. Every word must be somewhere in the record, and the words can be in different places of it: its name or title, its description, its \`data\`, the text of its Documents, or the name of its Category, Space, or Vendor. So \`samsung kitchen\` finds the Samsung fridge in the Kitchen. An Item is found by every Category it sits under, parents included. A Vendor's role counts with its name, so \`plumber\` finds the Work a plumber did. A Note or a Document is also found by the name of what it is attached to. \`data\` is searched as text, keys included, so \`paint\` finds every Space with paint on record. A word matches anywhere in a text, so \`plumb\` finds both plumber and plumbing, and case is ignored for the letters a to z. Give a few words, not a sentence. With no property, every Property is searched, former ones included. Each result has the record's type, id, name or title, and Property. A Note has its body, an Item its status, and Work its date. Work comes newest first by that date as text, so Work dated only 2023 comes after Work dated 2023-06-12. A Note or a Document says what it is attached to. \`matched\` shows where else the words were found. A long text is cut to the part around the first word found in it. Pass a result's type and id to get_record for the whole record. At most ${MOST_RESULTS} records come back, with a note when there were more.`,
   input: Schema.Struct({
     words: Schema.String.annotate({
       description: "The words to look for, with spaces between them. Every one must be found.",
@@ -237,7 +266,7 @@ export const search = defineTool({
     property: optional(
       Schema.String.annotate({
         description:
-          "Only records at this Property, given by its id or its name. Leave it out to search every Property. A Vendor has no Property, so this leaves Vendors out.",
+          "Only records at this Property, given by its id or its name. Leave it out to search every Property. A record with no Property of its own is left out, and no Vendor has one.",
       }),
     ),
     include_gone: optional(
@@ -253,12 +282,14 @@ export const search = defineTool({
       const words = (input.words.match(/\S+/g) ?? []).map((word) => ({
         word,
         pattern: pattern(word),
-        in_data: pattern(asJsonWritesIt(word)),
+        data_pattern: pattern(asJsonWritesIt(word)),
       }));
       if (words.length === 0) return yield* new ToolError({ message: NO_WORDS });
       // The pattern for `data` is the longer of the two whenever they differ.
-      const long = words.find((each) => encoder.encode(each.in_data).length > LONGEST_PATTERN);
-      if (long !== undefined) return yield* new ToolError({ message: tooLong(long.word) });
+      const overlong = words.find(
+        (each) => encoder.encode(each.data_pattern).length > LONGEST_PATTERN,
+      );
+      if (overlong !== undefined) return yield* new ToolError({ message: tooLong(overlong.word) });
 
       // A list that names no type is the same as no list.
       const asked = input.types ?? [];

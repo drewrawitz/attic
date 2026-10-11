@@ -1,5 +1,5 @@
 import { expect, it } from "@effect/vitest";
-import { formatRow } from "../src/output.ts";
+import { formatJson, formatRow } from "../src/output.ts";
 
 it("a JSON column comes out parsed", () => {
   const row = {
@@ -56,4 +56,12 @@ it("text that is not a JSON object or list is left as it is", () => {
   const row = { documents: "2023", data: "not json", items: null };
 
   expect(formatRow(row)).toEqual({ documents: "2023", data: "not json", items: null });
+});
+
+// For a tool that reads a JSON column apart from its row, such as the `data` a search matched.
+it("the text of one JSON column on its own comes out parsed, with money in dollars", () => {
+  expect(formatJson('{"listing":{"where":"Craigslist","asking_cents":25000}}')).toEqual({
+    listing: { where: "Craigslist", asking: 250 },
+  });
+  expect(formatJson("not json")).toBe("not json");
 });
