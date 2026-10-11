@@ -2,6 +2,12 @@ import { Effect } from "effect";
 import { SqlClient } from "effect/sql";
 import { ToolError } from "./tool.ts";
 
+/** The Properties there are, by name, for an error about one that is not among them. */
+export const propertiesThere = (properties: ReadonlyArray<{ readonly name: string }>) =>
+  properties.length === 0
+    ? "There are no Properties yet."
+    : `The Properties are: ${properties.map(({ name }) => name).join(", ")}.`;
+
 /**
  * The Property a caller named, by its id or by its name. One that is not there is an error
  * that lists the ones that are.
@@ -16,9 +22,7 @@ export const propertyNamed = (given: string) =>
     const property = properties.find(({ named }) => named === 1);
     if (property !== undefined) return { id: property.id, name: property.name };
 
-    const there =
-      properties.length === 0
-        ? "There are no Properties yet."
-        : `The Properties are: ${properties.map(({ name }) => name).join(", ")}.`;
-    return yield* new ToolError({ message: `There is no Property "${given}". ${there}` });
+    return yield* new ToolError({
+      message: `There is no Property "${given}". ${propertiesThere(properties)}`,
+    });
   });

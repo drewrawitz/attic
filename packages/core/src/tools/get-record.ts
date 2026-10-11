@@ -2,6 +2,7 @@ import { Effect, Schema } from "effect";
 import { SqlClient } from "effect/sql";
 import { formatRow } from "../output.ts";
 import { propertyNamed } from "../property.ts";
+import { jsonObject } from "../sql.ts";
 import { defineTool, ToolError } from "../tool.ts";
 
 // The types of record there are to get. A Quote is not one: it comes back with its Project.
@@ -33,20 +34,9 @@ const RECENT_CHANGES = 5;
 // The fields that hold JSON text. In a list they go in as JSON, not as a string of it.
 const JSON_FIELDS = new Set(["data", "last_work", "before", "after"]);
 
-// D1's limits page allows a function 32 arguments, which is 16 fields. Local D1 took more on
-// 2026-10-10, so no test would catch a longer entry, and this does.
-const MOST_FIELDS = 16;
-
 // One entry of a list: an object with these fields, each read from the column of that name.
-const entry = (fields: ReadonlyArray<string>) => {
-  if (fields.length > MOST_FIELDS) {
-    throw new Error(`A list entry has ${fields.length} fields. D1 takes ${MOST_FIELDS}.`);
-  }
-  const pairs = fields.map(
-    (field) => `'${field}', ${JSON_FIELDS.has(field) ? `json(${field})` : field}`,
-  );
-  return `json_object(${pairs.join(", ")})`;
-};
+const entry = (fields: ReadonlyArray<string>) =>
+  jsonObject(fields.map((field) => [field, JSON_FIELDS.has(field) ? `json(${field})` : field]));
 
 // A list that hangs off the record, as one JSON column: an entry for each of the first rows of
 // `rows`, in the order `rows` puts them. The entries are built outside `rows`, because a JSON
@@ -430,6 +420,29 @@ Every record comes back with its own fields, with \`data\` as an object and mone
 
 A list with dates comes newest first. Newest is by the date as text, so Work dated only 2023 comes after Work dated 2023-06-12, and Work with no date comes last. A list has at most ${MOST_ENTRIES} entries, and \`lists_cut\` names the ones that were cut. A Document in a list comes without its text. \`diy\` and \`active\` are 1 or 0. Pass the type and id of anything in a list back to get_record for the whole of it.`;
 
+/**
+ * Reads one record with what hangs off it, the way get_record returns it. A tool that saves a
+ * record sends it back through this, so the two never differ.
+ */
+export const readRecord = Effect.fnUntraced(function* (type: Type, id: string) {
+  const sql = yield* SqlClient.SqlClient;
+  const [row] = yield* sql.unsafe<object>(RECORDS[type], [id]);
+  if (row === undefined) {
+    // A Property that is not there is an error that lists the ones that are.
+    if (type === "property") yield* propertyNamed(id);
+    return yield* new ToolError({
+      message: `There is no ${term(type)} with the id "${id}". Ids come from search and from the records get_record returns.`,
+    });
+  }
+
+  const record = cut(formatRow({ type, ...row }));
+  // A Space's statement reads the whole of its Property's `data` as `from_property`.
+  if (type !== "space" || !isObject(record.data) || !isObject(record.from_property)) {
+    return record;
+  }
+  return { ...record, from_property: fromProperty(record.data, record.from_property) };
+});
+
 export const getRecord = defineTool({
   name: "get_record",
   description: DESCRIPTION,
@@ -441,23 +454,5 @@ export const getRecord = defineTool({
     }),
   }),
   annotations: { readOnlyHint: true },
-  run: ({ type, id }) =>
-    Effect.gen(function* () {
-      const sql = yield* SqlClient.SqlClient;
-      const [row] = yield* sql.unsafe<object>(RECORDS[type], [id]);
-      if (row === undefined) {
-        // A Property that is not there is an error that lists the ones that are.
-        if (type === "property") yield* propertyNamed(id);
-        return yield* new ToolError({
-          message: `There is no ${term(type)} with the id "${id}". Ids come from search and from the records get_record returns.`,
-        });
-      }
-
-      const record = cut(formatRow({ type, ...row }));
-      // A Space's statement reads the whole of its Property's `data` as `from_property`.
-      if (type !== "space" || !isObject(record.data) || !isObject(record.from_property)) {
-        return record;
-      }
-      return { ...record, from_property: fromProperty(record.data, record.from_property) };
-    }),
+  run: ({ type, id }) => readRecord(type, id),
 });

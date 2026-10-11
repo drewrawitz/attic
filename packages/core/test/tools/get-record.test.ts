@@ -2,17 +2,13 @@ import { expect, it } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { SqlClient } from "effect/sql";
 import { getRecord } from "../../src/tools/get-record.ts";
-import { call } from "../call.ts";
+import { answer, call } from "../call.ts";
 import { loadHousehold } from "../household.ts";
 import { TestDatabase } from "../TestDatabase.ts";
 
 // What `get_record` sends back: the record, or the text of a refusal.
-type Answer = Record<string, unknown> & { readonly refused?: string };
-
 const getting = (type: string, id: string) =>
-  call(getRecord, { type, id }).pipe(
-    Effect.map(({ text, isError }): Answer => (isError ? { refused: text } : JSON.parse(text))),
-  );
+  call(getRecord, { type, id }).pipe(Effect.map((sent) => answer(sent)));
 
 // The ids of a list's entries, in the order they came back.
 const ids = (list: unknown) => (list as ReadonlyArray<{ id: string }>).map(({ id }) => id);

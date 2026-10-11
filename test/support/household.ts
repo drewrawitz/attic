@@ -23,18 +23,21 @@ export const householdClient = beforeAll(
 // What a tool sends back to a test: what it returned, or the text of a refusal.
 export type Answer<Returned> = Partial<Returned> & { readonly refused?: string };
 
+// Calls one tool as a signed-in client, and reads what it sent back.
+export const answerFrom = async <Returned>(
+  { url, token }: { readonly url: string; readonly token: string },
+  tool: string,
+  input: unknown,
+) => {
+  const { result } = await callOnWorker(url, token, tool, input);
+  const text = result!.content[0].text;
+  return (result!.isError === true ? { refused: text } : JSON.parse(text)) as Answer<Returned>;
+};
+
 // A test body that calls one tool, as a signed-in client, with the made-up household loaded.
 export const calling =
   <Returned>(tool: string) =>
   (body: (call: (input: unknown) => Promise<Answer<Returned>>) => Promise<void>) =>
-    Effect.flatMap(householdClient, ({ url, token }) =>
-      Effect.promise(() =>
-        body(async (input) => {
-          const { result } = await callOnWorker(url, token, tool, input);
-          const text = result!.content[0].text;
-          return (
-            result!.isError === true ? { refused: text } : JSON.parse(text)
-          ) as Answer<Returned>;
-        }),
-      ),
+    Effect.flatMap(householdClient, (client) =>
+      Effect.promise(() => body((input) => answerFrom<Returned>(client, tool, input))),
     );
