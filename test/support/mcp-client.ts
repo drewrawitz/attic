@@ -67,3 +67,17 @@ export const mcp = async (
   const data = /^data: (.*)$/m.exec(text)?.[1] ?? text;
   return { response, message: data === "" ? undefined : (JSON.parse(data) as unknown) };
 };
+
+// A call to a tool, and the tool result the Worker answers with.
+export const callOnWorker = async (
+  url: string,
+  token: string,
+  name: string,
+  input: unknown = {},
+) => {
+  const call = { method: "tools/call", params: { name, arguments: input } };
+  return (await mcp(url, call, token)).message as {
+    result?: { isError?: boolean; content: [{ type: string; text: string }] };
+    error?: { code: number; message: string };
+  };
+};
