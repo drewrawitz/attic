@@ -262,7 +262,6 @@ const RECORDS: ReadonlyArray<readonly [table: string, rows: ReadonlyArray<Row>]>
           brand: "Schwinn",
           model: "IC4",
           sold_to: "a neighbor",
-          where: "Facebook Marketplace",
         },
       },
       {

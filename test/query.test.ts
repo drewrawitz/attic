@@ -1,7 +1,7 @@
 import { expect } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import { test } from "./support/harness.ts";
-import { signedIn } from "./support/household.ts";
+import { householdClient } from "./support/household.ts";
 import { callOnWorker, mcp } from "./support/mcp-client.ts";
 
 // `query` is guarded by how D1 behaves, and the Node SQLite under the tests in packages/core is
@@ -23,7 +23,9 @@ const ask = async (client: { url: string; token: string }, sql: string): Promise
 
 // A test body that asks `query` things, as a signed-in client.
 const asking = (body: (query: (sql: string) => Promise<Answer>) => Promise<void>) =>
-  Effect.flatMap(signedIn, (client) => Effect.promise(() => body((sql) => ask(client, sql))));
+  Effect.flatMap(householdClient, (client) =>
+    Effect.promise(() => body((sql) => ask(client, sql))),
+  );
 
 test(
   "query returns the rows of a SELECT as stored: cents as integers and data as text",
@@ -45,7 +47,7 @@ test(
 test(
   "a signed-in client is told that query takes one SQL string, only reads, and to call get_schema first",
   Effect.gen(function* () {
-    const { url, token } = yield* signedIn;
+    const { url, token } = yield* householdClient;
     const { message } = yield* Effect.promise(() => mcp(url, { method: "tools/list" }, token));
     const { result } = message as { result: { tools: { name: string }[] } };
 
