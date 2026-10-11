@@ -2,9 +2,16 @@ import { readdirSync, readFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { expect } from "@effect/vitest";
 import * as Effect from "effect/Effect";
-import * as Schedule from "effect/Schedule";
 import { browser, newAddress, newNetwork } from "./support/browser.ts";
-import { deployWith, google, GOOGLE_CLIENT, onWorker, stack, test } from "./support/harness.ts";
+import {
+  deployWith,
+  eventually,
+  google,
+  GOOGLE_CLIENT,
+  onWorker,
+  stack,
+  test,
+} from "./support/harness.ts";
 import {
   authorizeUrl,
   callOnWorker,
@@ -394,16 +401,6 @@ test(
     expect((await fetch(`${url}/callback`, { method: "POST" })).status).toBe(404);
   }),
 );
-
-// A second deploy returns a moment before the restarted Worker takes over, and until then
-// the old one still answers. So what follows a change of settings is checked until it holds.
-const eventually = (check: (url: string) => Promise<void>) =>
-  Effect.flatMap(stack, ({ url }) =>
-    Effect.retry(
-      Effect.tryPromise(() => check(url!)),
-      Schedule.max([Schedule.spaced("50 millis"), Schedule.recurs(100)]),
-    ),
-  );
 
 // Puts the settings back for whatever runs next.
 const restoreSettings = deployWith().pipe(

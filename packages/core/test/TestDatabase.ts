@@ -6,6 +6,7 @@ import { randomUUID } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { AtomicBatch, Ids } from "../src/write.ts";
+import { InUtc } from "./call.ts";
 
 const migrationsDir = new URL("../../../migrations/", import.meta.url);
 
@@ -37,8 +38,9 @@ const KnownIds = Layer.sync(Ids, () => {
 
 /**
  * A fresh in-memory SQLite database with every migration applied as written and foreign
- * keys on, and with it what a tool that writes needs: an atomic batch, and ids that start
- * over at id-0001. Provide it once per test, and each test gets a database of its own.
+ * keys on, and with it what a tool needs beside a database: an atomic batch, ids that start
+ * over at id-0001, and UTC for a timezone. Provide it once per test, and each test gets a
+ * database of its own.
  */
 export const TestDatabase = Layer.unwrap(
   Effect.sync(() => {
@@ -60,7 +62,7 @@ export const TestDatabase = Layer.unwrap(
       yield* sql`PRAGMA foreign_keys = ON`;
     });
 
-    return Layer.mergeAll(Layer.effectDiscard(migrate), InOneTransaction, KnownIds).pipe(
+    return Layer.mergeAll(Layer.effectDiscard(migrate), InOneTransaction, KnownIds, InUtc).pipe(
       Layer.provideMerge(SqliteClient.layer({ filename })),
     );
   }),

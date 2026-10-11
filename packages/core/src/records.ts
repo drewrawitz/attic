@@ -43,6 +43,18 @@ export const SHAPES = {
     ],
     links: [],
   },
+  space: { table: "spaces", columns: ["id", "property_id", "name", "data"], links: [] },
+  vendor: {
+    table: "vendors",
+    columns: ["id", "name", "role", "data", "created_at", "updated_at"],
+    links: [],
+  },
+  category: { table: "categories", columns: ["id", "name", "parent_id", "data"], links: [] },
+  note: {
+    table: "notes",
+    columns: ["id", "property_id", "entity_type", "entity_id", "body", "data", "created_at"],
+    links: [],
+  },
 } as const satisfies Readonly<Record<string, RecordShape>>;
 
 export type RecordType = keyof typeof SHAPES;

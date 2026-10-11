@@ -403,8 +403,14 @@ const cut = (record: JsonObject): JsonObject => {
   };
 };
 
-// A type as the glossary writes it: Item, Space.
-const term = (type: Type) => `${type.charAt(0).toUpperCase()}${type.slice(1)}`;
+/** A type as the glossary writes it: Item, Space. */
+export const term = (type: Type) => `${type.charAt(0).toUpperCase()}${type.slice(1)}`;
+
+/** The error for a record that is not there, which names its type and the id that was given. */
+export const noRecord = (type: Type, id: string) =>
+  new ToolError({
+    message: `There is no ${term(type)} with the id "${id}". Ids come from search and from the records get_record returns.`,
+  });
 
 const DESCRIPTION = `Returns one record with what hangs off it. Give the record's type and its id, as search or another record gives them. A Property can be given by its name instead. A Quote is not a type of its own: it comes back with its Project.
 
@@ -430,9 +436,7 @@ export const readRecord = Effect.fnUntraced(function* (type: Type, id: string) {
   if (row === undefined) {
     // A Property that is not there is an error that lists the ones that are.
     if (type === "property") yield* propertyNamed(id);
-    return yield* new ToolError({
-      message: `There is no ${term(type)} with the id "${id}". Ids come from search and from the records get_record returns.`,
-    });
+    return yield* noRecord(type, id);
   }
 
   const record = cut(formatRow({ type, ...row }));

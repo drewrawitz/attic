@@ -2,7 +2,7 @@ import { Effect, Schema, SchemaTransformation } from "effect";
 import type { SqlClient } from "effect/sql";
 import { SHAPES, type RecordShape, type RecordType } from "./records.ts";
 import { ToolError, type ToolAnnotations } from "./tool.ts";
-import type { Step } from "./write.ts";
+import { Write, type Step } from "./write.ts";
 
 // The rules every tool that saves a record follows.
 
@@ -12,22 +12,31 @@ import type { Step } from "./write.ts";
  */
 export const SAVE_ANNOTATIONS: ToolAnnotations = { readOnlyHint: false, destructiveHint: false };
 
-/**
- * A name or a title in a tool's input: text with something in it. The spaces around it are
- * dropped, so "Kitchen " is never a second Kitchen. It is given what the name is of.
- */
-export const nameText = (description: string) =>
+// Text with something in it, once the spaces around it are dropped.
+const filled = (description: string, whenEmpty: string) =>
   Schema.String.annotate({ description }).pipe(
     Schema.decodeTo(
-      Schema.String.check(Schema.isNonEmpty({ message: "Expected a name with something in it." })),
+      Schema.String.check(Schema.isNonEmpty({ message: whenEmpty })),
       SchemaTransformation.trim(),
     ),
   );
 
 /**
+ * A name or a title in a tool's input: text with something in it. The spaces around it are
+ * dropped, so "Kitchen " is never a second Kitchen. It is given what the name is of.
+ */
+export const nameText = (description: string) =>
+  filled(description, "Expected a name with something in it.");
+
+/** The body of a Note in a tool's input: text with something in it. */
+export const noteText = (description: string) =>
+  filled(description, "Expected a Note with something in it.");
+
+/**
  * A record's `data` in a tool's input: a JSON merge patch on what is stored. It is applied with
  * `json_patch`, and nothing in it is converted on the way in. It is given what the `data` of
- * this kind of record holds, and adds how a patch is applied.
+ * this kind of record holds, and adds how a patch is applied. It points at the well-known keys
+ * get_schema lists, so a tool that takes `data` for a kind of record adds a list for it there.
  */
 export const dataPatch = (description: string) =>
   Schema.Record(Schema.String, Schema.Unknown).annotate({
@@ -69,6 +78,35 @@ const namesOf = (shape: RecordShape, columns: Readonly<Record<string, unknown>>)
   return names;
 };
 
+/** A record as a save's reply lists it: by its type, its id, and its name. */
+export interface Listed {
+  readonly type: RecordType;
+  readonly id: string;
+  /** Its name, or what stands for one: the title of Work, the body of a Note. */
+  readonly name: string;
+}
+
+/**
+ * One step of a save: a statement, and the record it creates or updates, as the reply names
+ * it. A save hands one list of these to its write and to its reply. So a record the call wrote
+ * is in its Change and in what comes back, and never in only one of them.
+ */
+export interface SaveStep extends Step, Listed {
+  readonly created: boolean;
+}
+
+/**
+ * A record a save names, which is created on first use when it is not there yet: a Space or a
+ * Vendor. `steps` is what creates it, and is empty when it was there already. The caller puts
+ * them in its batch, which puts the new record in the caller's Change and in its reply. A
+ * misspelled name makes a new record, and the reply is where a client sees that it did. A
+ * caller that names the same record more than once in a call asks for it once: every ask that
+ * finds none hands back an INSERT, and the database takes only one.
+ */
+export interface Referred extends Listed {
+  readonly steps: ReadonlyArray<SaveStep>;
+}
+
 /**
  * The step that creates a record's row: its id, the columns that were given, and `data`. A
  * column that was not given gets the table's own default. `data` goes in as a merge patch on
@@ -76,19 +114,18 @@ const namesOf = (shape: RecordShape, columns: Readonly<Record<string, unknown>>)
  */
 export const insertRow = (
   sql: SqlClient.SqlClient,
-  type: RecordType,
-  id: string,
+  record: Listed,
   columns: Readonly<Record<string, unknown>>,
   data: object = {},
-): Step => {
-  const shape: RecordShape = SHAPES[type];
+): SaveStep => {
+  const shape: RecordShape = SHAPES[record.type];
   const names = ["id", ...namesOf(shape, columns)];
   const statement = sql.unsafe(
     `INSERT INTO ${shape.table} (${names.join(", ")}, data)
      VALUES (${names.map(() => "?").join(", ")}, json_patch('{}', ?))`,
-    [id, ...Object.values(columns), JSON.stringify(data)],
+    [record.id, ...Object.values(columns), JSON.stringify(data)],
   );
-  return { type, id, statement };
+  return { ...record, created: true, statement };
 };
 
 // The time now, the way every timestamp is stored.
@@ -101,12 +138,11 @@ const NOW = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')";
  */
 export const updateRow = (
   sql: SqlClient.SqlClient,
-  type: RecordType,
-  id: string,
+  record: Listed,
   columns: Readonly<Record<string, unknown>>,
   data: object = {},
-): Step => {
-  const shape: RecordShape = SHAPES[type];
+): SaveStep => {
+  const shape: RecordShape = SHAPES[record.type];
   const sets = [
     ...namesOf(shape, columns).map((column) => `${column} = ?`),
     "data = json_patch(data, ?)",
@@ -115,28 +151,22 @@ export const updateRow = (
   const statement = sql.unsafe(`UPDATE ${shape.table} SET ${sets.join(", ")} WHERE id = ?`, [
     ...Object.values(columns),
     JSON.stringify(data),
-    id,
+    record.id,
   ]);
-  return { type, id, statement };
+  return { ...record, created: false, statement };
 };
-
-/** A record that a save created or updated, as the reply names it. */
-export interface Saved {
-  readonly type: RecordType;
-  readonly id: string;
-  readonly name: string;
-  readonly created: boolean;
-}
 
 /**
- * What every save sends back: the id of its Change, and every record it created or updated,
- * by type, id, and name. A call that saves one record adds that record to this, as get_record
- * returns it.
+ * Runs the steps of a save as the one write of its call. Returns what every save sends back:
+ * the id of its Change, and every record it created or updated, by type, id, and name. A call
+ * that saves one record adds that record to this, as get_record returns it.
  */
-export const saved = (change: string, records: ReadonlyArray<Saved>) => {
+export const runSave = Effect.fnUntraced(function* (steps: ReadonlyArray<SaveStep>) {
+  const write = yield* Write;
+  const change = yield* write.run(steps);
   const those = (created: boolean) =>
-    records
-      .filter((record) => record.created === created)
+    steps
+      .filter((step) => step.created === created)
       .map(({ type, id, name }) => ({ type, id, name }));
   return { change_id: change, created: those(true), updated: those(false) };
-};
+});

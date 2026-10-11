@@ -1,8 +1,11 @@
 import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Config from "effect/Config";
+import * as ConfigProvider from "effect/ConfigProvider";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Redacted from "effect/Redacted";
 
 // Attic's infrastructure. Alchemy only declares resources here (ADR 0005). The Worker itself
@@ -38,6 +41,25 @@ export const AUTHORIZE_LIMIT = Cloudflare.RateLimit("AUTHORIZE_LIMIT", {
 // Where the Worker reaches Google once a person has signed in there.
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 const GOOGLE_USERINFO_URL = "https://openidconnect.googleapis.com/v1/userinfo";
+
+// The timezone the User's day is in, which is what "today" means to a tool: an IANA name such
+// as America/New_York. Unset and empty both mean UTC. A name that is not a timezone stops
+// here, so a deploy stops before it changes anything.
+const timezone = Config.String("ATTIC_TIMEZONE").pipe(
+  Config.withDefault(""),
+  Config.map((given) => given.trim() || "UTC"),
+  Config.mapEffect((name) =>
+    Option.isSome(DateTime.zoneMakeNamed(name))
+      ? Effect.succeed(name)
+      : Effect.fail(
+          new Config.ConfigError(
+            new ConfigProvider.SourceError({
+              message: `ATTIC_TIMEZONE is "${name}", which is not a timezone. Give an IANA name such as America/New_York, or leave it empty for UTC.`,
+            }),
+          ),
+        ),
+  ),
+);
 
 export const Worker = Cloudflare.Worker(
   "Worker",
@@ -78,6 +100,7 @@ export const Worker = Cloudflare.Worker(
         GOOGLE_USERINFO_URL: yield* googleUrl("GOOGLE_USERINFO_URL", GOOGLE_USERINFO_URL),
         ALLOWED_EMAILS: yield* secret("ALLOWED_EMAILS"),
         CONSENT_SECRET: consentSecret.text,
+        ATTIC_TIMEZONE: yield* timezone,
       },
       // Local dev has no use for a domain.
       ...(domain !== "" && !dev ? { domain } : {}),

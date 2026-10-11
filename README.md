@@ -10,6 +10,7 @@ Attic has no app. It is a remote MCP server on Cloudflare (Workers, D1, R2, KV) 
 - `packages/core` is the domain logic, written with Effect. Nothing in it is specific to Workers, so its tests run in Node.
   Every tool is declared there with `defineTool`, one file each in `src/tools/`, and listed in `src/index.ts`. The Worker registers whatever is on that list.
   A tool that writes does its reads, builds its statements, and hands them to `Write` in `src/write.ts`. That runs them as one atomic batch, together with the Change that records them. `src/records.ts` is the one place that says what a record of each type is, and `src/save.ts` holds the rules every save tool follows.
+  The rules about what a save names are each in one place too. `src/property.ts` works out the Current property, with today's date in the configured timezone. `src/space.ts` and `src/vendor.ts` find a Space or a Vendor by its name, or create it on first use. `src/category.ts` finds a Category, or lists the closest matches. `src/note.ts` writes the optional Note of a save.
 - `alchemy.run.ts` declares the Cloudflare resources: the Worker, the D1 database, the R2 bucket, and the KV namespace.
 - `migrations/` is the database schema. It is applied on every deploy, and to the local database on every start.
 - `test/` runs the stack in `alchemy.run.ts` on local simulators.
@@ -53,6 +54,8 @@ vp run -r test
 Both suites apply the real files in `migrations/`. The tests in `packages/core` run in Node and pin the rules the schema enforces, on an in-memory Node SQLite database. Node SQLite and D1 are not the same build (ADR 0006), so the tests in `test/` also run the real Worker and the real migration on local D1. They use [Alchemy's test harness](https://alchemy.run/testing/test-harness) in dev mode, which runs the same local simulators as `vp run dev`. Neither suite needs a Cloudflare account.
 
 The tests in `test/` also sign in, and they need no Google account and no `.env`. They bring their own settings, and a stand-in for Google on your machine answers the two calls the Worker makes to it. The Worker finds Google through `GOOGLE_TOKEN_URL` and `GOOGLE_USERINFO_URL`, which only dev mode reads. A deploy always uses Google's own addresses.
+
+A test in `packages/core` starts on the first day of 1970, because Effect gives each test a clock that stands still. One that goes by today's date sets the day first, with `todayIs` in `test/call.ts`. The tests in `test/` run on the real clock, with the timezone left at UTC.
 
 The files in `test/` that run the Worker share one stage, one Worker, and one port, so they run one after another. The tests of a tool that reads load [the made-up household](#the-made-up-household) first. The local database is kept between runs, so a test of a tool that writes takes its own rows out again.
 
@@ -117,14 +120,16 @@ Attic asks Google for the account's email and name and nothing else, and it does
 
 ### Deploy
 
-1. Copy `.env.example` to `.env` and fill it in. Leave `ATTIC_DOMAIN` empty to use the workers.dev address.
+1. Copy `.env.example` to `.env` and fill it in.
+   - Leave `ATTIC_DOMAIN` empty to use the workers.dev address.
+   - Set `ATTIC_TIMEZONE` to the timezone you live in, as an IANA name such as `America/New_York`. It is where the tools read today's date, which decides whether a Property is still current on its last day. Left empty it is `UTC`, where the date is a day ahead or behind yours for part of every day.
 2. Deploy:
 
 ```bash
 vp run deploy
 ```
 
-This is `alchemy deploy --stage prod`. It shows a plan and asks before it changes anything. It creates a Worker named `attic`, a D1 database, an R2 bucket, and a KV namespace, applies any migration in `migrations/` that the database has not seen, and prints the address. It stops if one of the three Google values is empty.
+This is `alchemy deploy --stage prod`. It shows a plan and asks before it changes anything. It creates a Worker named `attic`, a D1 database, an R2 bucket, and a KV namespace, applies any migration in `migrations/` that the database has not seen, and prints the address. It stops if one of the three Google values is empty, or if `ATTIC_TIMEZONE` is not a timezone.
 
 The Worker also gets a secret that you do not set. It signs the cookie that remembers which clients a browser has already allowed. Alchemy makes it on the first deploy and keeps it in its state store, so later deploys bind the same value.
 
