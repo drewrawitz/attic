@@ -1,4 +1,15 @@
-import { Data, Effect, Layer, Option, Predicate, Schema, SchemaTransformation } from "effect";
+import {
+  Data,
+  Effect,
+  Layer,
+  Option,
+  Predicate,
+  Schema,
+  SchemaAST,
+  SchemaIssue,
+  SchemaTransformation,
+  type StandardSchema,
+} from "effect";
 import type { SqlClient } from "effect/sql";
 import type { SqlError } from "effect/sql/SqlError";
 import { Write, type AtomicBatch, type Ids } from "./write.ts";
@@ -13,7 +24,10 @@ export class ToolError extends Data.TaggedError("ToolError")<{ readonly message:
  * The input of a tool that takes nothing. An empty `Schema.Struct({})` will not do: it means
  * any value that is not null, and describes itself with a `not`, which some clients turn away.
  */
-export const NoInput = Schema.Record(Schema.String, Schema.Never);
+export const NoInput = Schema.Record(
+  Schema.String,
+  Schema.Never.annotate({ message: "This tool takes no input." }),
+);
 
 /**
  * An optional field of a tool's input. `Schema.optional` will not do: it publishes the field
@@ -41,18 +55,81 @@ export interface ToolAnnotations {
   readonly destructiveHint?: boolean;
 }
 
+/**
+ * A tool's input as the MCP layer registers it: a Standard Schema that checks a call's input,
+ * and describes itself as JSON Schema for the client.
+ */
+export interface ToolInput {
+  readonly "~standard": StandardSchema.StandardSchemaV1.Props &
+    StandardSchema.StandardJSONSchemaV1.Props;
+}
+
+// A key the schema does not declare is an error. Effect drops one unless it is told this, and
+// a model is the only writer: a fact it put in a field that is not there would be lost, and the
+// call would look as if it had worked. The check and the JSON Schema are told the same thing,
+// so what a client reads is what the check does (ADR 0014). A record's `data` is a
+// `Schema.Record`, which declares every key, so it still takes any.
+const NO_OTHER_KEYS = { onExcessProperty: "error" } as const;
+
+// The JSON Schema dialect the MCP SDK asks every tool to describe its input in.
+const DIALECT = "draft-2020-12";
+
+// What a client is told of a key that is not declared: the fields there are. The MCP SDK puts
+// the key in front. The struct Effect hands over is the one the key was sent in, which may be
+// one inside a field.
+const explainIssue: SchemaIssue.LeafHook = (issue) => {
+  if (issue._tag !== "UnexpectedKey" || !SchemaAST.isObjects(issue.ast)) {
+    return SchemaIssue.defaultLeafHook(issue);
+  }
+  const fields = issue.ast.propertySignatures.map(({ name }) => String(name));
+  const goesInData = fields.includes("data")
+    ? " A fact with no field of its own goes inside data."
+    : "";
+  return `There is no field with this name. The fields are: ${fields.join(", ")}.${goesInData}`;
+};
+
+// Converts a tool's schema, once, when the tool is declared. Effect keeps the first check it
+// builds on a schema and hands that one back whatever options come later, so no other code
+// converts a tool's schema. It also works the JSON Schema out afresh each time it is asked,
+// and the MCP SDK asks whenever a tool is registered, which is on every request. So that is
+// worked out here too, and handed back from then on.
+const toolInput = (schema: Schema.ConstraintDecoder<unknown>): ToolInput => {
+  const { "~standard": standard } = Schema.toStandardJSONSchemaV1(
+    Schema.toStandardSchemaV1(schema, { parseOptions: NO_OTHER_KEYS, leafHook: explainIssue }),
+  );
+  const document = Schema.toJsonSchemaDocument(schema, NO_OTHER_KEYS);
+  const described =
+    Object.keys(document.definitions).length === 0
+      ? document.schema
+      : { ...document.schema, $defs: document.definitions };
+  return {
+    "~standard": {
+      ...standard,
+      jsonSchema: {
+        ...standard.jsonSchema,
+        input: ({ target }) => {
+          if (target === DIALECT) return described;
+          throw new Error(`A tool's input is described in ${DIALECT} only, not in ${target}.`);
+        },
+      },
+    },
+  };
+};
+
 /** A tool as the server registers it. Declare one with `defineTool`. */
 export interface Tool {
   readonly name: string;
   readonly description: string;
-  readonly input: Schema.ConstraintDecoder<unknown>;
+  readonly input: ToolInput;
   readonly annotations: ToolAnnotations;
   readonly run: (input: unknown) => Program;
 }
 
 /**
  * The one way to declare a tool: its name, its description, an Effect Schema for its input,
- * its annotations, and the program that does the work.
+ * its annotations, and the program that does the work. The schema is turned here into what
+ * the MCP layer registers, so every tool checks a call the same way: a key the schema does not
+ * declare is turned away by name, and is never dropped.
  */
 export const defineTool = <Input extends Schema.ConstraintDecoder<unknown>>(
   tool: Omit<Tool, "input" | "run"> & {
@@ -61,6 +138,7 @@ export const defineTool = <Input extends Schema.ConstraintDecoder<unknown>>(
   },
 ): Tool => ({
   ...tool,
+  input: toolInput(tool.input),
   // The MCP layer checks a call's input against the schema before the tool runs, so what
   // arrives here is what the schema describes.
   run: (input) => tool.run(input as Input["Type"]),

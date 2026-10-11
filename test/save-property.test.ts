@@ -71,6 +71,8 @@ test(
               items: { type: "string", enum: ["address", "start_on", "end_on"] },
             }),
           },
+          // No key but these. `data` above says nothing of the kind, so it takes any key.
+          additionalProperties: false,
         }),
         // MCP has a client assume a tool may destroy things unless it says otherwise.
         annotations: { readOnlyHint: false, destructiveHint: false },
@@ -157,6 +159,31 @@ test(
         sql: `SELECT count(*) AS properties FROM properties WHERE name IN (${NAMES})`,
       });
       expect(there).toEqual({ rows: [{ properties: 0 }] });
+    }),
+  ),
+);
+
+// A fact with no field of its own goes in `data`. Sent beside the fields it is turned away,
+// where it was once dropped and the save went through without it.
+test(
+  "a field save_property does not have is turned away by name, and nothing is saved",
+  asClient((call) =>
+    Effect.gen(function* () {
+      const { refused } = yield* call("save_property", { name: BIRCH, sqft: 240, note: "x" });
+      const fields =
+        "There is no field with this name. The fields are: id, name, tenure, address, start_on, end_on, data, clear. A fact with no field of its own goes inside data.";
+      expect(refused).toBe(
+        `Input validation error: Invalid arguments for tool save_property: sqft: ${fields}, note: ${fields}`,
+      );
+
+      const there = yield* call("query", {
+        sql: `SELECT count(*) AS properties FROM properties WHERE name IN (${NAMES})`,
+      });
+      expect(there).toEqual({ rows: [{ properties: 0 }] });
+
+      // Inside `data` the same fact is kept.
+      const saved = yield* call("save_property", { name: BIRCH, data: { sqft: 240 } });
+      expect(saved.record).toMatchObject({ name: BIRCH, data: { sqft: 240 } });
     }),
   ),
 );

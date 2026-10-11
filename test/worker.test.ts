@@ -288,9 +288,13 @@ test(
     const { result } = await callOnWorker(url, token, "get_schema", { property: "Maple Street" });
     expect(result).toEqual({
       isError: true,
-      content: [{ type: "text", text: expect.stringContaining("Input validation error") }],
+      content: [
+        {
+          type: "text",
+          text: "Input validation error: Invalid arguments for tool get_schema: property: This tool takes no input.",
+        },
+      ],
     });
-    expect(result!.content[0].text).toContain("property");
   }),
 );
 

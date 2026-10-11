@@ -265,10 +265,27 @@ it.effect("the spaces around a name are dropped, and a name of nothing but space
 
     for (const name of ["", "   "]) {
       expect(yield* saving({ name }), name).toEqual({
-        refused: "Expected a name with something in it.",
+        refused: "name: Expected a name with something in it.",
       });
     }
     expect((yield* counting)?.properties).toBe(1);
+  }).pipe(Effect.provide(TestDatabase)),
+);
+
+// A fact with no field of its own belongs in `data`. Sent beside the fields, it was once
+// dropped, and the save went through without it.
+it.effect("a field save_property does not have is turned away by name, and nothing is saved", () =>
+  Effect.gen(function* () {
+    const { refused } = yield* saving({ name: "Maple Street house", sqft: 240, note: "x" });
+
+    const fields =
+      "There is no field with this name. The fields are: id, name, tenure, address, start_on, end_on, data, clear. A fact with no field of its own goes inside data.";
+    expect(refused).toBe(`sqft: ${fields}, note: ${fields}`);
+    expect(yield* counting).toEqual({ properties: 0, changes: 0, change_records: 0 });
+
+    // Inside `data` the same fact is kept.
+    const saved = yield* saving({ name: "Maple Street house", data: { sqft: 240 } });
+    expect((saved.record as Answer).data).toEqual({ sqft: 240 });
   }).pipe(Effect.provide(TestDatabase)),
 );
 

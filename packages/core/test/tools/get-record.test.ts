@@ -1,5 +1,5 @@
 import { expect, it } from "@effect/vitest";
-import { Effect, Schema } from "effect";
+import { Effect } from "effect";
 import { SqlClient } from "effect/sql";
 import { getRecord } from "../../src/tools/get-record.ts";
 import { answer, call } from "../call.ts";
@@ -1122,7 +1122,7 @@ it.effect("a list has at most 50 entries, and the record names the lists that we
 // The MCP layer checks a call against the tool's input before the tool runs, and sends what the
 // check says to the client. A Quote is not a type: it comes back with its Project.
 it("a type that does not exist is turned away with a list of the types there are", async () => {
-  const { validate } = Schema.toStandardSchemaV1(getRecord.input)["~standard"];
+  const { validate } = getRecord.input["~standard"];
 
   const { issues } = await validate({ type: "quote", id: "seed-quote-glow" });
   expect(issues).toHaveLength(1);

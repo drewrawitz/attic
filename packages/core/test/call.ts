@@ -1,4 +1,4 @@
-import { Cause, Effect, Layer, Logger, Schema } from "effect";
+import { Cause, Effect, Layer, Logger, type StandardSchema } from "effect";
 import { SqlClient } from "effect/sql";
 import { callTool, type Tool, type ToolResult } from "../src/tool.ts";
 import { AtomicBatch, Ids } from "../src/write.ts";
@@ -50,17 +50,24 @@ export const NoWrites = Layer.merge(
   Layer.succeed(Ids, Ids.of({ next: Effect.die("this tool only reads") })),
 );
 
+// What the check found wrong, the way the MCP SDK writes it for the client: the field it is
+// about, then what is wrong with it.
+const written = ({ path = [], message }: StandardSchema.StandardSchemaV1.Issue) => {
+  const field = path.map((part) => String(typeof part === "object" ? part.key : part)).join(".");
+  return field === "" ? message : `${field}: ${message}`;
+};
+
 /**
- * Calls a tool the way the MCP layer does: the input is checked against the tool's schema
- * first, and the tool is handed what the check returns. Input the check turns away never
- * reaches the tool, and what comes back is what the check said.
+ * Calls a tool the way the MCP layer does: the input is checked by the check the tool carries,
+ * which is the one the Worker registers, and the tool is handed what the check returns. Input
+ * the check turns away never reaches the tool, and what comes back is what the check said.
  */
 export const callAsClient = (tool: Tool, input: unknown) =>
   Effect.gen(function* () {
-    const { validate } = Schema.toStandardSchemaV1(tool.input)["~standard"];
+    const { validate } = tool.input["~standard"];
     const checked = yield* Effect.promise(async () => validate(input));
     if (checked.issues !== undefined) {
-      const text = checked.issues.map(({ message }) => message).join("\n");
+      const text = checked.issues.map(written).join(", ");
       return { text, isError: true } satisfies ToolResult;
     }
     return yield* call(tool, checked.value);
