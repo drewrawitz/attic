@@ -1,26 +1,12 @@
 import { expect } from "@effect/vitest";
 import * as Effect from "effect/Effect";
-import { householdStack, type Operation } from "../household/stack.ts";
-import { beforeAll, deploy, stack, test } from "./support/harness.ts";
+import { test } from "./support/harness.ts";
+import { signedIn } from "./support/household.ts";
 import { callOnWorker, mcp } from "./support/mcp-client.ts";
-import { ALLOWED_ACCOUNT, tokenFor } from "./support/sign-in.ts";
 
 // `query` is guarded by how D1 behaves, and the Node SQLite under the tests in packages/core is
-// not the same build (ADR 0006). So everything here goes through the real Worker on local D1.
-
-// Runs one of the two commands the way `vp run household:load` and `vp run household:remove`
-// run them: by deploying the stack in household/, which finds the Worker's database and runs
-// one batch on it. `force` makes it run even when its last run did the same thing.
-const command = (operation: Operation) => deploy(householdStack(operation), { force: true });
-
-// A client that has signed in, with the made-up household loaded.
-const signedIn = beforeAll(
-  Effect.gen(function* () {
-    const { url } = yield* stack;
-    yield* command("load");
-    return { url: url!, token: yield* Effect.promise(() => tokenFor(url!, ALLOWED_ACCOUNT)) };
-  }),
-);
+// not the same build (ADR 0006). So everything here goes through the real Worker on local D1,
+// with the made-up household loaded.
 
 // What `query` sends back: the rows, and a note when there were more. A refusal is its text.
 interface Answer {
@@ -35,7 +21,7 @@ const ask = async (client: { url: string; token: string }, sql: string): Promise
   return result!.isError === true ? { refused: text } : (JSON.parse(text) as Answer);
 };
 
-// A test body that asks `query` things, as that client.
+// A test body that asks `query` things, as a signed-in client.
 const asking = (body: (query: (sql: string) => Promise<Answer>) => Promise<void>) =>
   Effect.flatMap(signedIn, (client) => Effect.promise(() => body((sql) => ask(client, sql))));
 
@@ -106,6 +92,9 @@ test(
     const vendors = `SELECT * FROM vendors ORDER BY id`;
     const before = await query(vendors);
     expect(before.rows).toHaveLength(8);
+    // The PRAGMA below aims at a setting, not a table.
+    const foreignKeys = `SELECT foreign_keys FROM pragma_foreign_keys`;
+    expect(await query(foreignKeys)).toEqual({ rows: [{ foreign_keys: 1 }] });
 
     for (const statement of [
       `DELETE FROM vendors`,
@@ -121,6 +110,7 @@ test(
     expect((await query(`DELETE FROM vendors`)).refused).toContain(`near "DELETE": syntax error`);
 
     expect(await query(vendors)).toEqual(before);
+    expect(await query(foreignKeys)).toEqual({ rows: [{ foreign_keys: 1 }] });
   }),
 );
 
@@ -425,46 +415,4 @@ test(
       await query(`SELECT title FROM schedules WHERE active = 1 AND next_due_on <= '2026-10-10'`),
     ).toEqual({ rows: [{ title: "Service the furnace" }] });
   }),
-);
-
-// This takes the made-up household out part-way through, so it is the last test in the file,
-// and it puts the set back when it is done.
-test(
-  "the load and remove commands leave every table as it was, and say how many rows went each way",
-  Effect.gen(function* () {
-    const client = yield* signedIn;
-    const rowsOf = async (sql: string) => (await ask(client, sql)).rows!;
-    // Every row of every table of Attic's, by table. D1 and Alchemy keep tables of their own
-    // in the same database, and theirs start with an underscore.
-    const everyTable = Effect.promise(async () => {
-      const tables = await rowsOf(`
-        SELECT name FROM sqlite_master
-         WHERE type = 'table' AND name NOT GLOB '_*' AND name NOT GLOB 'sqlite_*'
-         ORDER BY name`);
-      const rows: Record<string, ReadonlyArray<unknown>> = {};
-      for (const { name } of tables) {
-        rows[String(name)] = await rowsOf(`SELECT * FROM ${String(name)} ORDER BY rowid`);
-      }
-      return rows;
-    });
-    const count = (tables: Record<string, ReadonlyArray<unknown>>) =>
-      Object.values(tables).reduce((sum, rows) => sum + rows.length, 0);
-
-    yield* command("remove");
-    const without = yield* everyTable;
-
-    const loaded = yield* command("load");
-    const withIt = yield* everyTable;
-    const inTheSet = count(withIt) - count(without);
-    expect(inTheSet).toBeGreaterThan(50);
-    expect(loaded).toEqual({ removed: 0, loaded: inTheSet });
-
-    // A second load replaces the first copy and leaves one.
-    expect(yield* command("load")).toEqual({ removed: inTheSet, loaded: inTheSet });
-    expect(count(yield* everyTable)).toBe(count(withIt));
-
-    // Removing says how many rows it took out, and leaves none behind.
-    expect(yield* command("remove")).toEqual({ removed: inTheSet, loaded: 0 });
-    expect(yield* everyTable).toEqual(without);
-  }).pipe(Effect.ensuring(Effect.orDie(command("load")))),
 );

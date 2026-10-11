@@ -10,7 +10,7 @@
 // else: a record of the User's own has a ULID for its id, and a ULID has no hyphen.
 
 /** One SQL statement and the values bound to it, for whichever database client runs it. */
-export interface Statement {
+export interface BoundStatement {
   readonly sql: string;
   readonly params: ReadonlyArray<string | number | null>;
 }
@@ -771,7 +771,7 @@ const stored = (value: Value) =>
 // copy loaded from an earlier version of this file too. Categories are the exception, because
 // a Category's id is a name the User picks, and one of theirs could start the same way. Those
 // go by the ids listed here and no others.
-const clear = (table: string, rows: ReadonlyArray<Row>): Statement =>
+const clear = (table: string, rows: ReadonlyArray<Row>): BoundStatement =>
   table === "categories"
     ? {
         sql: `DELETE FROM categories WHERE id IN (${rows.map(() => "?").join(", ")})`,
@@ -779,7 +779,7 @@ const clear = (table: string, rows: ReadonlyArray<Row>): Statement =>
       }
     : { sql: `DELETE FROM ${table} WHERE ${MARKED_BY[table] ?? "id"} GLOB 'seed-*'`, params: [] };
 
-const insert = (table: string, row: Row): Statement => {
+const insert = (table: string, row: Row): BoundStatement => {
   const columns = Object.keys(row);
   return {
     sql: `INSERT INTO ${table} (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`,
@@ -792,16 +792,15 @@ const insert = (table: string, row: Row): Statement => {
  * first, so that a row goes before the one it points at. Each removes only rows the set put
  * there, which is what makes the number of rows it reports exact.
  */
-export const removeStatements: ReadonlyArray<Statement> = RECORDS.map(([table, rows]) =>
+export const removeStatements: ReadonlyArray<BoundStatement> = RECORDS.map(([table, rows]) =>
   clear(table, rows),
 ).reverse();
 
 /**
- * The statements that put the made-up household in. They open with `removeStatements`, so
- * loading twice leaves one copy, and a set that has changed since it was last loaded replaces
- * the old one. The INSERTs follow.
+ * The statements that put the made-up household in: one INSERT for each row. A load runs
+ * `removeStatements` first and then these. That way loading twice leaves one copy, and a set
+ * that has changed since it was last loaded replaces the old one.
  */
-export const loadStatements: ReadonlyArray<Statement> = [
-  ...removeStatements,
-  ...RECORDS.flatMap(([table, rows]) => rows.map((row) => insert(table, row))),
-];
+export const insertStatements: ReadonlyArray<BoundStatement> = RECORDS.flatMap(([table, rows]) =>
+  rows.map((row) => insert(table, row)),
+);

@@ -3,7 +3,7 @@ import * as Cloudflare from "alchemy/Cloudflare";
 import { State } from "alchemy/State";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import { loadStatements, removeStatements } from "./records.ts";
+import { insertStatements, removeStatements } from "./records.ts";
 
 // The stack in alchemy.run.ts and its database, by the names they have there.
 const ATTIC = "attic";
@@ -52,15 +52,19 @@ export const householdStack = (operation: Operation) =>
           const db = yield* Cloudflare.D1.QueryDatabase(database);
           return (input: { operation: Operation }) =>
             Effect.gen(function* () {
-              const statements = input.operation === "load" ? loadStatements : removeStatements;
+              // A load is the DELETEs and then the INSERTs. A remove is the DELETEs alone.
+              const inserts = input.operation === "load" ? insertStatements : [];
               const results = yield* db.batch(
-                statements.map(({ sql, params }) => db.prepare(sql).bind(...params)),
+                [...removeStatements, ...inserts].map(({ sql, params }) =>
+                  db.prepare(sql).bind(...params),
+                ),
               );
-              const rows = (from: number, to?: number) =>
-                results.slice(from, to).reduce((sum, result) => sum + result.meta.changes, 0);
-              // Both lists open with the same DELETEs, and a load goes on to its INSERTs.
-              const deletes = removeStatements.length;
-              return { removed: rows(0, deletes), loaded: rows(deletes) };
+              const rowsChanged = (part: typeof results) =>
+                part.reduce((sum, result) => sum + result.meta.changes, 0);
+              return {
+                removed: rowsChanged(results.slice(0, removeStatements.length)),
+                loaded: rowsChanged(results.slice(removeStatements.length)),
+              };
             });
         }).pipe(Effect.provide(Cloudflare.D1.QueryDatabaseLocal)),
       );
