@@ -30,7 +30,7 @@ Pin exact versions. Each `package.json` is the source of truth for what is insta
 - **MCP:** build on `createMcpHandler` and `@modelcontextprotocol/server` v2. `McpAgent` and the v1 `@modelcontextprotocol/sdk` are off the table (ADR 0001). The agents API moved recently, so read `apps/server/node_modules/agents/docs/mcp-servers.md` and `mcp-transports.md` before writing against it.
 - **OAuth:** use the built-in helpers in `@cloudflare/workers-oauth-provider` 1.x, and read `apps/server/node_modules/@cloudflare/workers-oauth-provider/docs/upstream-sign-in.md` and `consent-page.md` first. The auth code in Cloudflare's old `remote-mcp-google-oauth` template (`workers-oauth-utils.ts`) is obsolete.
 - **Layers:** Effect in tool handlers and `packages/core`. OAuth and the MCP transport stay on Cloudflare's libraries (ADR 0004). The Worker is a plain `export default { fetch }` module, and in `alchemy.run.ts` Alchemy only declares resources (ADR 0005).
-- **Writes:** reads first, then one atomic batch that also records the Change (ADR 0011). Never call `withTransaction`, which dies on D1 (ADR 0006).
+- **Writes:** reads first, then one atomic batch that also records the Change (ADR 0011). A tool writes through `Write` in `packages/core/src/write.ts`, and a type of record it writes is first added to `packages/core/src/records.ts`. Never call `withTransaction`, which dies on D1 (ADR 0006).
 - **Tool schemas:** Effect Schema, converted with `Schema.toStandardJSONSchemaV1(Schema.toStandardSchemaV1(schema))`. Use `Schema.Finite` for numbers, because plain `Schema.Number` advertises Infinity and NaN.
 - **Migrations:** a schema change is a new numbered file. An applied migration is never edited. No virtual tables (ADR 0003).
 - **Any client:** tools work without client extras such as prompts, images in tool results, or scheduled tasks (ADR 0007).
@@ -47,12 +47,13 @@ Every tool follows these.
 - **Spaces and Vendors:** referenced by name, matched ignoring case, created on first use.
 - **Categories:** must already exist. An unknown one is an error that lists the closest matches.
 - **Money:** dollars (the configured currency) at the tool boundary, integer cents in the database.
-- **Dates:** ISO text, possibly partial (`2023`, `2023-06`, `2023-06-12`). In a range filter a Partial date counts as its whole period, and a match by overlap is marked approximate. "Today" is in the configured timezone.
-- **`data`:** a JSON merge patch applied with `json_patch`. Keys come from the well-known list that `get_schema` publishes.
+- **Dates:** ISO text, possibly partial (`2023`, `2023-06`, `2023-06-12`). Anything else, and a date that does not exist such as `2023-13`, is a validation error that shows the three forms. In a range filter a Partial date counts as its whole period, and a match by overlap is marked approximate. "Today" is in the configured timezone.
+- **`data`:** a JSON merge patch applied with `json_patch`, and stored as written. So money inside it goes in as integer cents under a key ending in `_cents`, though a curated tool shows it in dollars. Keys come from the well-known list that `get_schema` publishes.
+- **Saving:** with an `id` a save updates that record, and an id that is not there is an error. Without one it creates, except that where no two records can have the same name, a save under a name that is taken updates the record that has it. A field left out, or sent as null, is left alone. A field is emptied by naming it in `clear`. It cannot be both given and cleared, and a field that must have a value cannot be cleared. The reply has the id of the Change and every record the call created or updated, by type, id, and name. A call that saves one record also returns it as `get_record` does. The shared pieces are in `packages/core/src/save.ts`.
 - **Status changes:** changing an Item's status writes a dated Note. `status_on` defaults to today.
 - **Deleting:** a record's Notes go with it, and so does any Document attached to nothing else. A Vendor, Space, Category, or Project that other records point at is refused unless the call names a replacement. Properties are never deleted.
 - **Output:** curated tools parse JSON columns and format money. `query` returns raw rows.
-- **Annotations:** `readOnlyHint` on read tools, `destructiveHint` on `delete_record`.
+- **Annotations:** `readOnlyHint` on read tools, `destructiveHint` on `delete_record`. A save sets both to false, because a client assumes a tool may destroy things when `destructiveHint` is left out.
 - **Ids:** ULIDs generated in code.
 
 <!--VITE PLUS START-->

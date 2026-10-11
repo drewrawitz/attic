@@ -1,6 +1,7 @@
-import { Data, Effect, type Layer, Option, Predicate, Schema, SchemaTransformation } from "effect";
+import { Data, Effect, Layer, Option, Predicate, Schema, SchemaTransformation } from "effect";
 import type { SqlClient } from "effect/sql";
 import type { SqlError } from "effect/sql/SqlError";
+import { Write, type AtomicBatch, type Ids } from "./write.ts";
 
 /**
  * A failure the caller can act on, such as a record that does not exist. The message goes to
@@ -31,8 +32,9 @@ export const optional = <Field extends Schema.Constraint>(field: Field) =>
     ),
   );
 
-// What a tool does once its input has been checked: a program over the database.
-type Program = Effect.Effect<unknown, ToolError | SqlError, SqlClient.SqlClient>;
+// What a tool does once its input has been checked: a program over the database. A tool that
+// writes also needs ids for the records it creates, and the one write its call makes.
+type Program = Effect.Effect<unknown, ToolError | SqlError, SqlClient.SqlClient | Ids | Write>;
 
 export interface ToolAnnotations {
   readonly readOnlyHint?: boolean;
@@ -74,21 +76,24 @@ export interface ToolResult {
 const UNEXPECTED = "Attic hit an error it did not expect. The details are in the Worker's log.";
 
 /**
- * Runs a tool on a database and turns how it ended into what the client is sent. A
- * `ToolError` goes out as the tool wrote it. Anything else is logged, and the client is told
- * only that there was a failure: a query the database turned down, a tool that threw, a
- * database that could not be opened. Nothing gets past this as a thrown error, because the
- * MCP SDK would send the client its message.
+ * Runs a tool and turns how it ended into what the client is sent. It is given what the tool
+ * runs on: a database, that database's atomic batch, and a maker of ids. To those it adds the
+ * one write of this call, which records a Change under the tool's name. A `ToolError` goes out
+ * as the tool wrote it.
+ * Anything else is logged, and the client is told only that there was a failure: a query or a
+ * batch the database turned down, a tool that threw, a database that could not be opened.
+ * Nothing gets past this as a thrown error, because the MCP SDK would send the client its
+ * message.
  */
 export const callTool = (
   tool: Tool,
   input: unknown,
-  database: Layer.Layer<SqlClient.SqlClient, unknown>,
+  services: Layer.Layer<SqlClient.SqlClient | AtomicBatch | Ids, unknown>,
 ): Effect.Effect<ToolResult> =>
   Effect.suspend(() => tool.run(input)).pipe(
     Effect.map((result) => ({ text: JSON.stringify(result), isError: false })),
     Effect.catchTag("ToolError", ({ message }) => Effect.succeed({ text: message, isError: true })),
-    Effect.provide(database),
+    Effect.provide(Write.layer(tool.name).pipe(Layer.provideMerge(services))),
     Effect.catchCause((cause) =>
       Effect.logError(`The ${tool.name} tool failed.`, cause).pipe(
         Effect.as({ text: UNEXPECTED, isError: true }),

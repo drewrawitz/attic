@@ -1,8 +1,8 @@
 import { expect, it } from "@effect/vitest";
-import { Cause, Effect, Layer, Logger, Schema } from "effect";
+import { Effect, Layer, Schema } from "effect";
 import { SqlClient } from "effect/sql";
 import { callTool, defineTool, NoInput, optional, ToolError } from "../src/tool.ts";
-import { call } from "./call.ts";
+import { call, readingLog, UNEXPECTED } from "./call.ts";
 import { TestDatabase } from "./TestDatabase.ts";
 
 // Made-up tools. Each one stands for a kind of ending a real tool can come to.
@@ -76,24 +76,6 @@ const throwsFirst = defineTool({
   },
 });
 
-// All a client hears of a failure nobody planned for.
-const UNEXPECTED = {
-  text: "Attic hit an error it did not expect. The details are in the Worker's log.",
-  isError: true,
-};
-
-// Runs a tool with the log kept in memory. Returns what the client was sent and what was
-// logged, each line with the cause it carried.
-const readingLog = <R>(called: Effect.Effect<unknown, never, R>) =>
-  Effect.gen(function* () {
-    const logged: string[] = [];
-    const keep = Logger.make(({ message, cause }) => {
-      logged.push(`${String(message)} ${Cause.pretty(cause)}`);
-    });
-    const result = yield* called.pipe(Effect.provide(Logger.layer([keep])));
-    return { result, logged };
-  });
-
 it.effect("a query the database turns down is logged, and the client is told nothing of it", () =>
   Effect.gen(function* () {
     const { result, logged } = yield* readingLog(call(badQuery, {}));
@@ -126,8 +108,7 @@ it.effect("a tool that throws before its program starts ends the same way", () =
 
 it.effect("a database that cannot be opened ends the same way", () =>
   Effect.gen(function* () {
-    const unreachable = Layer.effect(
-      SqlClient.SqlClient,
+    const unreachable: Parameters<typeof callTool>[2] = Layer.effectContext(
       Effect.fail(new Error("no database is bound as DB")),
     );
     const { result, logged } = yield* readingLog(

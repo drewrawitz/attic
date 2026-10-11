@@ -1,8 +1,8 @@
-import { callTool, tools, type Tool, type ToolResult } from "@attic/core";
+import { AtomicBatch, callTool, Ids, tools, type Tool, type ToolResult } from "@attic/core";
 import { D1Client } from "@effect/sql-d1";
 import { McpServer, type CallToolResult } from "@modelcontextprotocol/server";
 import { createMcpHandler, getMcpAuthContext } from "agents/mcp/server";
-import { Effect, Schema } from "effect";
+import { Effect, Layer, Schema } from "effect";
 import type { WorkerEnv } from "../../../alchemy.run.ts";
 import { isAllowed } from "./allowlist.ts";
 
@@ -54,12 +54,25 @@ const NOT_ALLOWED: ToolResult = {
   isError: true,
 };
 
+// D1 has no interactive transactions (ADR 0006). Its batch is the atomic write: every
+// statement in it happens, or none does.
+const D1Batch = Layer.effect(
+  AtomicBatch,
+  Effect.map(D1Client.D1Client, (d1) =>
+    AtomicBatch.of({ run: (statements) => Effect.asVoid(d1.batch(statements)) }),
+  ),
+);
+
+// What a tool runs on in the Worker: the D1 database, its batch, and ULIDs for new records.
+const services = (env: WorkerEnv) =>
+  Layer.merge(D1Batch, Ids.layer).pipe(Layer.provideMerge(D1Client.layer({ db: env.DB })));
+
 // Runs a tool for the signed-in caller, on the Worker's database, and puts what it sends back
 // in the shape MCP expects. The caller is checked here, before anything starts, because the
 // MCP handler only keeps it within reach for the length of this call.
 const runTool = async (env: WorkerEnv, tool: Tool, input: unknown): Promise<CallToolResult> => {
   const { text, isError } = callerIsAllowed(env)
-    ? await Effect.runPromise(callTool(tool, input, D1Client.layer({ db: env.DB })))
+    ? await Effect.runPromise(callTool(tool, input, services(env)))
     : NOT_ALLOWED;
   return { content: [{ type: "text", text }], isError };
 };

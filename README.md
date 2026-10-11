@@ -9,6 +9,7 @@ Attic has no app. It is a remote MCP server on Cloudflare (Workers, D1, R2, KV) 
 - `apps/server` is the Worker.
 - `packages/core` is the domain logic, written with Effect. Nothing in it is specific to Workers, so its tests run in Node.
   Every tool is declared there with `defineTool`, one file each in `src/tools/`, and listed in `src/index.ts`. The Worker registers whatever is on that list.
+  A tool that writes does its reads, builds its statements, and hands them to `Write` in `src/write.ts`. That runs them as one atomic batch, together with the Change that records them. `src/records.ts` is the one place that says what a record of each type is, and `src/save.ts` holds the rules every save tool follows.
 - `alchemy.run.ts` declares the Cloudflare resources: the Worker, the D1 database, the R2 bucket, and the KV namespace.
 - `migrations/` is the database schema. It is applied on every deploy, and to the local database on every start.
 - `test/` runs the stack in `alchemy.run.ts` on local simulators.
@@ -53,7 +54,7 @@ Both suites apply the real files in `migrations/`. The tests in `packages/core` 
 
 The tests in `test/` also sign in, and they need no Google account and no `.env`. They bring their own settings, and a stand-in for Google on your machine answers the two calls the Worker makes to it. The Worker finds Google through `GOOGLE_TOKEN_URL` and `GOOGLE_USERINFO_URL`, which only dev mode reads. A deploy always uses Google's own addresses.
 
-The files in `test/` that run the Worker share one stage, one Worker, and one port, so they run one after another. The tests of a tool that reads load [the made-up household](#the-made-up-household) first.
+The files in `test/` that run the Worker share one stage, one Worker, and one port, so they run one after another. The tests of a tool that reads load [the made-up household](#the-made-up-household) first. The local database is kept between runs, so a test of a tool that writes takes its own rows out again.
 
 - Run all of the above checks before pushing:
 

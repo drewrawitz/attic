@@ -6,8 +6,8 @@ import * as Layer from "effect/Layer";
 import { insertStatements, removeStatements } from "./records.ts";
 
 // The stack in alchemy.run.ts and its database, by the names they have there.
-const ATTIC = "attic";
-const DATABASE = "DB";
+export const ATTIC = "attic";
+export const DATABASE = "DB";
 
 // A stage that `vp run dev` or the tests made keeps its state in .alchemy/ on this machine, and
 // a deployed stage keeps it in the Cloudflare state store (ADR 0013). A command is told only

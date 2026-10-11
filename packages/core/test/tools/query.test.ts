@@ -4,6 +4,7 @@ import { Reactivity } from "effect/reactivity";
 import { SqlClient, Statement } from "effect/sql";
 import { callTool } from "../../src/tool.ts";
 import { query } from "../../src/tools/query.ts";
+import { NoWrites } from "../call.ts";
 
 // `query` is tested through the real Worker on local D1, in test/query.test.ts at the root,
 // because its guard leans on how D1 behaves. Nothing gets past that guard, so the check behind
@@ -40,7 +41,7 @@ const asked = (result: unknown) =>
     const sent = yield* callTool(
       query,
       { sql: "SELECT name FROM vendors" },
-      answering(result),
+      Layer.merge(answering(result), NoWrites),
     ).pipe(Effect.provide(Logger.layer([keep])));
     return { sent, logged };
   });

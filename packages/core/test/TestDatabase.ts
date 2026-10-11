@@ -5,6 +5,7 @@ import type { SqlError } from "effect/sql/SqlError";
 import { randomUUID } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
+import { AtomicBatch, Ids } from "../src/write.ts";
 
 const migrationsDir = new URL("../../../migrations/", import.meta.url);
 
@@ -14,9 +15,30 @@ export const migrations = readdirSync(migrationsDir)
   .sort()
   .map((name) => readFileSync(new URL(name, migrationsDir), "utf8"));
 
+// On Node SQLite an atomic batch is an ordinary transaction (ADR 0006). D1 has none, which is
+// why this lives with the tests and not in src.
+const InOneTransaction = Layer.effect(
+  AtomicBatch,
+  Effect.map(SqlClient.SqlClient, (sql) =>
+    AtomicBatch.of({
+      run: (statements) =>
+        sql.withTransaction(
+          Effect.forEach(statements, (statement) => statement, { discard: true }),
+        ),
+    }),
+  ),
+);
+
+// Ids a test knows before it asks: id-0001, id-0002, and so on, in the order they are made.
+const KnownIds = Layer.sync(Ids, () => {
+  let made = 0;
+  return Ids.of({ next: Effect.sync(() => `id-${String(++made).padStart(4, "0")}`) });
+});
+
 /**
  * A fresh in-memory SQLite database with every migration applied as written and foreign
- * keys on. Provide it once per test, and each test gets a database of its own.
+ * keys on, and with it what a tool that writes needs: an atomic batch, and ids that start
+ * over at id-0001. Provide it once per test, and each test gets a database of its own.
  */
 export const TestDatabase = Layer.unwrap(
   Effect.sync(() => {
@@ -38,7 +60,9 @@ export const TestDatabase = Layer.unwrap(
       yield* sql`PRAGMA foreign_keys = ON`;
     });
 
-    return Layer.effectDiscard(migrate).pipe(Layer.provideMerge(SqliteClient.layer({ filename })));
+    return Layer.mergeAll(Layer.effectDiscard(migrate), InOneTransaction, KnownIds).pipe(
+      Layer.provideMerge(SqliteClient.layer({ filename })),
+    );
   }),
 );
 
