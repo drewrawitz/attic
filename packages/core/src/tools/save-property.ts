@@ -75,7 +75,7 @@ export const saveProperty = defineTool({
       const columns = yield* columnsToSet(given, clear);
 
       const properties = yield* everyProperty(given.name);
-      const byName = properties.find((property) => property.named);
+      const byName = properties.find((property) => property.hasName);
       const existing =
         id === undefined ? byName : properties.find((property) => property.id === id);
 

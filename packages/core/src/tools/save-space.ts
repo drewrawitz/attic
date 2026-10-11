@@ -2,7 +2,7 @@ import { Effect, Schema } from "effect";
 import { SqlClient } from "effect/sql";
 import { propertyFor, propertyNamed } from "../property.ts";
 import { dataPatch, nameText, runSave, SAVE_ANNOTATIONS, updateRow } from "../save.ts";
-import { spaceNamed } from "../space.ts";
+import { spaceOrNew } from "../space.ts";
 import { defineTool, optional, ToolError } from "../tool.ts";
 import { readRecord } from "./get-record.ts";
 
@@ -43,10 +43,9 @@ export const saveSpace = defineTool({
       ),
     ),
     property: optional(
-      Schema.String.annotate({
-        description:
-          "The Property the Space is at, by its id or its name. Leave it out for the one Current property.",
-      }),
+      nameText(
+        "The Property the Space is at, by its id or its name. Leave it out for the one Current property.",
+      ),
     ),
     data: optional(
       dataPatch(
@@ -64,7 +63,7 @@ export const saveSpace = defineTool({
       const byName = Effect.gen(function* () {
         if (name === undefined) return yield* new ToolError({ message: NO_NAME });
         const property = yield* propertyFor(given);
-        const space = yield* spaceNamed(property.id, name, data);
+        const space = yield* spaceOrNew(property.id, name, data);
         const [created] = space.steps;
         return created ?? updateRow(sql, space, {}, data);
       });

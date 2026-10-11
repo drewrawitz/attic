@@ -7,7 +7,7 @@ import { Ids } from "./write.ts";
  * The Vendor with a name, whatever the name's case, created on first use. `columns` and `data`
  * are what a new Vendor starts with beside its name.
  */
-export const vendorNamed = Effect.fnUntraced(function* (
+export const vendorOrNew = Effect.fnUntraced(function* (
   name: string,
   columns: Readonly<Record<string, unknown>> = {},
   data?: object,

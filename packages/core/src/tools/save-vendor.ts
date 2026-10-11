@@ -11,7 +11,7 @@ import {
   updateRow,
 } from "../save.ts";
 import { defineTool, optional, ToolError } from "../tool.ts";
-import { vendorNamed } from "../vendor.ts";
+import { vendorOrNew } from "../vendor.ts";
 import { readRecord } from "./get-record.ts";
 
 const NO_NAME = "Give a name to create a Vendor, or the id of the Vendor to update.";
@@ -69,7 +69,7 @@ export const saveVendor = defineTool({
       // its name as it was first written, and takes what was given.
       const byName = Effect.gen(function* () {
         if (name === undefined) return yield* new ToolError({ message: NO_NAME });
-        const vendor = yield* vendorNamed(name, columns, data);
+        const vendor = yield* vendorOrNew(name, columns, data);
         const [created] = vendor.steps;
         return created ?? updateRow(sql, vendor, columns, data);
       });

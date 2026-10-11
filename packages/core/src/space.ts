@@ -7,7 +7,7 @@ import { Ids } from "./write.ts";
  * The Space with a name at a Property, whatever the name's case, created on first use. `data`
  * is what a new Space starts with.
  */
-export const spaceNamed = Effect.fnUntraced(function* (
+export const spaceOrNew = Effect.fnUntraced(function* (
   propertyId: string,
   name: string,
   data?: object,

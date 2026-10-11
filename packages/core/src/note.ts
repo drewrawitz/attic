@@ -14,7 +14,7 @@ export interface Noted {
 
 // A Note has no name. A reply names it by its body, and by only the start of a long one.
 const NAMED_BY = 80;
-const named = (body: string) => (body.length > NAMED_BY ? `${body.slice(0, NAMED_BY)}…` : body);
+const opening = (body: string) => (body.length > NAMED_BY ? `${body.slice(0, NAMED_BY)}…` : body);
 
 /**
  * The step that writes a Note, under an id of its own. `on` is the record it is attached to,
@@ -26,7 +26,7 @@ export const newNote = Effect.fnUntraced(function* (
   on?: Noted,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const note = { type: "note", id: yield* (yield* Ids).next, name: named(body) } as const;
+  const note = { type: "note", id: yield* (yield* Ids).next, name: opening(body) } as const;
   return insertRow(sql, note, {
     property_id: propertyId,
     entity_type: on?.type ?? null,

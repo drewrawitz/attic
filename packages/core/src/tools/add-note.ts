@@ -2,7 +2,7 @@ import { Effect, Schema } from "effect";
 import { SqlClient } from "effect/sql";
 import { newNote, NOTED, type Noted } from "../note.ts";
 import { propertyFor, propertyNamed } from "../property.ts";
-import { noteText, runSave, SAVE_ANNOTATIONS } from "../save.ts";
+import { nameText, noteText, runSave, SAVE_ANNOTATIONS } from "../save.ts";
 import { defineTool, optional, ToolError } from "../tool.ts";
 import { noRecord, readRecord, term } from "./get-record.ts";
 
@@ -62,10 +62,9 @@ export const addNote = defineTool({
       }),
     ),
     property: optional(
-      Schema.String.annotate({
-        description:
-          "For a Note that stands alone: the Property it is at, by its id or its name. Leave it out for the one Current property. A Note attached to a record takes that record's Property.",
-      }),
+      nameText(
+        "For a Note that stands alone: the Property it is at, by its id or its name. Leave it out for the one Current property. A Note attached to a record takes that record's Property.",
+      ),
     ),
   }),
   annotations: SAVE_ANNOTATIONS,

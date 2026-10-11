@@ -82,8 +82,8 @@ const namesOf = (shape: RecordShape, columns: Readonly<Record<string, unknown>>)
   return names;
 };
 
-/** A record as a save's reply names it. */
-export interface Named {
+/** A record as a save's reply lists it: by its type, its id, and its name. */
+export interface Listed {
   readonly type: RecordType;
   readonly id: string;
   /** Its name, or what stands for one: the title of Work, the body of a Note. */
@@ -95,7 +95,7 @@ export interface Named {
  * it. A save hands one list of these to its write and to its reply. So a record the call wrote
  * is in its Change and in what comes back, and never in only one of them.
  */
-export interface SaveStep extends Step, Named {
+export interface SaveStep extends Step, Listed {
   readonly created: boolean;
 }
 
@@ -107,7 +107,7 @@ export interface SaveStep extends Step, Named {
  * caller that names the same record more than once in a call asks for it once: every ask that
  * finds none hands back an INSERT, and the database takes only one.
  */
-export interface Referred extends Named {
+export interface Referred extends Listed {
   readonly steps: ReadonlyArray<SaveStep>;
 }
 
@@ -118,7 +118,7 @@ export interface Referred extends Named {
  */
 export const insertRow = (
   sql: SqlClient.SqlClient,
-  record: Named,
+  record: Listed,
   columns: Readonly<Record<string, unknown>>,
   data: object = {},
 ): SaveStep => {
@@ -142,7 +142,7 @@ const NOW = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')";
  */
 export const updateRow = (
   sql: SqlClient.SqlClient,
-  record: Named,
+  record: Listed,
   columns: Readonly<Record<string, unknown>>,
   data: object = {},
 ): SaveStep => {

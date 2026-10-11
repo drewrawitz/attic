@@ -14,8 +14,8 @@ export interface Property {
   readonly id: string;
   readonly name: string;
   readonly end_on: string | null;
-  /** Whether it has the name `everyProperty` was asked about, whatever the name's case. */
-  readonly named: boolean;
+  /** Whether its name is the one `everyProperty` was asked to look for, whatever the case. */
+  readonly hasName: boolean;
 }
 
 /**
@@ -25,24 +25,29 @@ export interface Property {
  */
 export const everyProperty = Effect.fnUntraced(function* (name?: string) {
   const sql = yield* SqlClient.SqlClient;
-  const properties = yield* sql<Omit<Property, "named"> & { readonly named: number | null }>`
-    SELECT id, name, end_on, (name = ${name ?? null}) AS named FROM properties ORDER BY name`;
-  return properties.map((property): Property => ({ ...property, named: property.named === 1 }));
+  const properties = yield* sql<{
+    readonly id: string;
+    readonly name: string;
+    readonly end_on: string | null;
+    readonly has_name: number | null;
+  }>`SELECT id, name, end_on, (name = ${name ?? null}) AS has_name FROM properties ORDER BY name`;
+  return properties.map(({ has_name, ...property }): Property => ({
+    ...property,
+    hasName: has_name === 1,
+  }));
 });
 
 /**
- * The Property a caller named, by its id or by its name. The spaces around what was given are
- * dropped, as they are around a name that is saved. One that is not there is an error that
- * lists the ones that are.
+ * The Property a caller named, by its id or by its name. One that is not there is an error
+ * that lists the ones that are.
  */
 export const propertyNamed = Effect.fnUntraced(function* (given: string) {
-  const asked = given.trim();
-  const properties = yield* everyProperty(asked);
-  const property = properties.find(({ id, named }) => id === asked || named);
+  const properties = yield* everyProperty(given);
+  const property = properties.find(({ id, hasName }) => id === given || hasName);
   if (property !== undefined) return { id: property.id, name: property.name };
 
   return yield* new ToolError({
-    message: `There is no Property "${asked}". ${propertiesThere(properties)}`,
+    message: `There is no Property "${given}". ${propertiesThere(properties)}`,
   });
 });
 
