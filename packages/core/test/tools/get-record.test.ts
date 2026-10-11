@@ -335,9 +335,10 @@ it.effect(
 );
 
 // A Property's `data` holds what is true of the whole place. A Space shows the entries it has
-// none of its own for. Paint is a list kept by surface, each surface an entry of its own, so it
-// is compared surface by surface, and so is any list kept that way. Flooring is one entry, so a
-// Space with flooring of its own gets none of the Property's.
+// none of its own for. Paint is a list kept by surface, each surface an object of its own, so it
+// is compared surface by surface, and so is any list kept that way. Flooring is one entry with
+// nothing but plain values in it, so a Space with flooring of its own gets none of the
+// Property's.
 it.effect("a Space's own entry for a house-wide fact wins, and paint goes by surface", () =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
@@ -385,6 +386,29 @@ it.effect("a Space's own entry for a house-wide fact wins, and paint goes by sur
     // A Property with no house-wide facts.
     expect(yield* fromProperty("seed-space-elm-kitchen")).toEqual({});
   }).pipe(Effect.provide(TestDatabase)),
+);
+
+// A Property's paint is kept by surface, and nothing stops it from holding something else too.
+// The year it was last repainted is not a surface, and the trim beside it still is.
+it.effect(
+  "a Space still gets the Property's trim when the Property's paint holds more than surfaces",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* loadHousehold;
+      yield* sql`
+        UPDATE properties SET data = json_patch(data, '{"paint":{"repainted":"2024"}}')
+         WHERE id = 'seed-property-maple'`;
+
+      // The living room has wall paint of its own, so it says for itself when it was painted.
+      expect((yield* getting("space", "seed-space-living-room")).from_property).toEqual({
+        paint: { trim: TRIM },
+      });
+      // The garage has no paint of its own, so it gets all of the Property's.
+      expect((yield* getting("space", "seed-space-garage")).from_property).toEqual({
+        paint: { trim: TRIM, repainted: "2024" },
+      });
+    }).pipe(Effect.provide(TestDatabase)),
 );
 
 // The fridge and the microwave are in the Kitchen, and the faucet was repaired there. The
@@ -1126,3 +1150,56 @@ it("a type that does not exist is turned away with a list of the types there are
   });
   expect(await validate({ type: "item" })).toHaveProperty("issues");
 });
+
+// Notes, Documents, and Changes each point at a record by its type and its id. A Note cannot
+// be attached to a Property, a Document, a Schedule, or another Note, and a Document cannot be
+// attached to a Document, a Schedule, or a Note.
+it.effect(
+  "a record of every type shows the Notes, Documents, and Changes recorded against it",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* loadHousehold;
+      const records: ReadonlyArray<readonly [type: string, id: string]> = [
+        ["property", "seed-property-maple"],
+        ["space", "seed-space-garage"],
+        ["item", "seed-item-microwave"],
+        ["work", "seed-work-gutter"],
+        ["project", "seed-project-outdoor-lighting"],
+        ["vendor", "seed-vendor-hearth"],
+        ["document", "seed-doc-fridge-photo"],
+        ["schedule", "seed-schedule-furnace"],
+        ["note", "seed-note-breaker"],
+      ];
+      const withNotes = ["space", "item", "work", "project", "vendor"];
+      const withDocuments = ["property", "space", "item", "work", "project", "vendor"];
+      for (const [type, id] of records) {
+        yield* sql`INSERT INTO changes (id, tool) VALUES (${`change-${type}`}, 'save')`;
+        yield* sql`
+          INSERT INTO change_records (change_id, entity_type, entity_id, after)
+          VALUES (${`change-${type}`}, ${type}, ${id}, '{}')`;
+        if (withNotes.includes(type)) {
+          yield* sql`
+            INSERT INTO notes (id, entity_type, entity_id, body)
+            VALUES (${`note-${type}`}, ${type}, ${id}, 'A Note on it.')`;
+        }
+        if (withDocuments.includes(type)) {
+          yield* sql`
+            INSERT INTO documents (id, r2_key, mime_type, sha256)
+            VALUES (${`doc-${type}`}, ${`${type}.pdf`}, 'application/pdf', ${`sha-${type}`})`;
+          yield* sql`
+            INSERT INTO document_links (document_id, entity_type, entity_id)
+            VALUES (${`doc-${type}`}, ${type}, ${id})`;
+        }
+      }
+
+      for (const [type, id] of records) {
+        const record = yield* getting(type, id);
+        expect(ids(record.changes), type).toEqual([`change-${type}`]);
+        if (withNotes.includes(type)) expect(ids(record.notes), type).toContain(`note-${type}`);
+        if (withDocuments.includes(type)) {
+          expect(ids(record.documents), type).toContain(`doc-${type}`);
+        }
+      }
+    }).pipe(Effect.provide(TestDatabase)),
+);

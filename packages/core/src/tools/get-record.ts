@@ -204,13 +204,13 @@ const attachedTo = (links: string) =>
       ORDER BY type, id`,
   );
 
-// The statement that reads a record of each type. Each is given the record's id and returns one
-// row, or none when there is no such record. A column that points at another record has that
-// record's name or title beside it.
-const RECORDS: Readonly<Record<Type, string>> = {
+// What builds the statement that reads a record of each type. Each is handed its own type, so
+// the lists that point at a record by type and id cannot be given another record's. A column that
+// points at another record has that record's name or title beside it.
+const STATEMENTS: Readonly<Record<Type, (type: Type) => string>> = {
   // A Property is found by its id or by its name. Its Notes are the ones that stand alone at
   // it: a Note cannot be attached to a Property.
-  property: `
+  property: (type) => `
     SELECT record.id, record.name, record.tenure, record.address,
            record.start_on, record.end_on, record.data,
            ${spaces("space.property_id = record.id")},
@@ -218,24 +218,24 @@ const RECORDS: Readonly<Record<Type, string>> = {
            ${schedules("schedule.property_id = record.id")},
            ${items(`item.property_id = record.id AND ${NOT_GONE}`)},
            ${work("work.property_id = record.id")},
-           ${documents("property")},
+           ${documents(type)},
            ${notes("property_id = record.id AND entity_type IS NULL")},
-           ${changes("property")},
+           ${changes(type)},
            record.created_at, record.updated_at
       FROM properties AS record
      WHERE record.id = ?1 OR record.name = ?1`,
 
   // `from_property` is read as the whole of the Property's `data`. `fromProperty` below keeps
   // the part of it the Space has no entry of its own for.
-  space: `
+  space: (type) => `
     SELECT record.id, record.name, record.property_id, property.name AS property,
            record.data, property.data AS from_property,
            ${items(`item.space_id = record.id AND ${NOT_GONE}`)},
            ${work("work.id IN (SELECT work_id FROM work_spaces WHERE space_id = record.id)")},
            ${projects("project.id IN (SELECT project_id FROM project_spaces WHERE space_id = record.id)")},
-           ${documents("space")},
-           ${notes(onRecord("space"))},
-           ${changes("space")}
+           ${documents(type)},
+           ${notes(onRecord(type))},
+           ${changes(type)}
       FROM spaces AS record
       JOIN properties AS property ON property.id = record.property_id
      WHERE record.id = ?1`,
@@ -243,7 +243,7 @@ const RECORDS: Readonly<Record<Type, string>> = {
   // An Item's Parts are in its `data`. A Schedule on the Item says when a Part was last changed
   // and where it was bought. Work logged against one of its Schedules is Work on the Item,
   // whether or not it names the Item as well.
-  item: `
+  item: (type) => `
     SELECT record.id, record.name, record.scope, record.status, record.status_on,
            record.property_id, property.name AS property,
            record.space_id, space.name AS space,
@@ -263,9 +263,9 @@ const RECORDS: Readonly<Record<Type, string>> = {
            ${schedules("schedule.item_id = record.id")},
            ${work(`work.id IN (SELECT work_id FROM work_items WHERE item_id = record.id)
                    OR work.schedule_id IN (SELECT id FROM schedules WHERE item_id = record.id)`)},
-           ${documents("item")},
-           ${notes(onRecord("item"))},
-           ${changes("item")},
+           ${documents(type)},
+           ${notes(onRecord(type))},
+           ${changes(type)},
            record.created_at, record.updated_at
       FROM items AS record
       JOIN categories AS category ON category.id = record.category_id
@@ -274,7 +274,7 @@ const RECORDS: Readonly<Record<Type, string>> = {
       LEFT JOIN vendors AS vendor ON vendor.id = record.vendor_id
      WHERE record.id = ?1`,
 
-  work: `
+  work: (type) => `
     SELECT record.id, record.kind, record.title, record.description, record.date,
            record.cost_cents, record.diy,
            record.property_id, property.name AS property,
@@ -284,9 +284,9 @@ const RECORDS: Readonly<Record<Type, string>> = {
            record.data,
            ${items("item.id IN (SELECT item_id FROM work_items WHERE work_id = record.id)")},
            ${spaces("space.id IN (SELECT space_id FROM work_spaces WHERE work_id = record.id)")},
-           ${documents("work")},
-           ${notes(onRecord("work"))},
-           ${changes("work")},
+           ${documents(type)},
+           ${notes(onRecord(type))},
+           ${changes(type)},
            record.created_at, record.updated_at
       FROM work AS record
       LEFT JOIN properties AS property ON property.id = record.property_id
@@ -297,37 +297,37 @@ const RECORDS: Readonly<Record<Type, string>> = {
 
   // A Project's total is the sum of the Costs of its Work, and null while none has a Cost: 0
   // would say the Work cost nothing. Its Quotes are not part of it.
-  project: `
+  project: (type) => `
     SELECT record.id, record.title, record.status, record.start_on, record.end_on,
            record.property_id, property.name AS property, record.data,
            ${spaces("space.id IN (SELECT space_id FROM project_spaces WHERE project_id = record.id)")},
            ${quotes("quote.project_id = record.id", "vendor")},
            (SELECT sum(cost_cents) FROM work WHERE project_id = record.id) AS total_cost_cents,
            ${work("work.project_id = record.id")},
-           ${documents("project")},
-           ${notes(onRecord("project"))},
-           ${changes("project")},
+           ${documents(type)},
+           ${notes(onRecord(type))},
+           ${changes(type)},
            record.created_at, record.updated_at
       FROM projects AS record
       JOIN properties AS property ON property.id = record.property_id
      WHERE record.id = ?1`,
 
   // The Items are the ones bought from the Vendor, Gone Items included.
-  vendor: `
+  vendor: (type) => `
     SELECT record.id, record.name, record.role, record.data,
            ${work("work.vendor_id = record.id")},
            ${quotes("quote.vendor_id = record.id", "project")},
            ${items("item.vendor_id = record.id")},
-           ${documents("vendor")},
-           ${notes(onRecord("vendor"))},
-           ${changes("vendor")},
+           ${documents(type)},
+           ${notes(onRecord(type))},
+           ${changes(type)},
            record.created_at, record.updated_at
       FROM vendors AS record
      WHERE record.id = ?1`,
 
   // The file itself stays where it is. What comes back is the Document's index card and its
   // text.
-  document: `
+  document: (type) => `
     SELECT record.id, record.kind, record.status, record.title, record.doc_date,
            record.total_cents,
            record.property_id, property.name AS property,
@@ -335,7 +335,7 @@ const RECORDS: Readonly<Record<Type, string>> = {
            record.source, record.mime_type, record.size_bytes, record.text, record.data,
            ${attachedTo(`SELECT entity_type AS type, entity_id AS id
                            FROM document_links WHERE document_id = record.id`)},
-           ${changes("document")},
+           ${changes(type)},
            record.received_at, record.updated_at
       FROM documents AS record
       LEFT JOIN properties AS property ON property.id = record.property_id
@@ -343,66 +343,67 @@ const RECORDS: Readonly<Record<Type, string>> = {
      WHERE record.id = ?1`,
 
   // A Schedule is on a Property or on an Item, never both.
-  schedule: `
+  schedule: (type) => `
     SELECT record.id, record.title, record.interval_days, record.last_done_on,
            record.next_due_on, record.active,
            record.property_id, property.name AS property,
            record.item_id, item.name AS item,
            record.data,
            ${work("work.schedule_id = record.id")},
-           ${changes("schedule")}
+           ${changes(type)}
       FROM schedules AS record
       LEFT JOIN properties AS property ON property.id = record.property_id
       LEFT JOIN items AS item ON item.id = record.item_id
      WHERE record.id = ?1`,
 
   // A Note is attached to one record or to none.
-  note: `
+  note: (type) => `
     SELECT record.id, record.body,
            record.property_id, property.name AS property, record.data,
            ${attachedTo(`SELECT record.entity_type AS type, record.entity_id AS id
                           WHERE record.entity_type IS NOT NULL`)},
-           ${changes("note")},
+           ${changes(type)},
            record.created_at
       FROM notes AS record
       LEFT JOIN properties AS property ON property.id = record.property_id
      WHERE record.id = ?1`,
 };
 
-type Fields = Readonly<Record<string, unknown>>;
+// The statement that reads a record of each type, built once. Each is given the record's id and
+// returns one row, or none when there is no such record.
+const RECORDS = Object.fromEntries(TYPES.map((type) => [type, STATEMENTS[type](type)])) as Readonly<
+  Record<Type, string>
+>;
 
-const isFields = (value: unknown): value is Fields =>
+type JsonObject = Readonly<Record<string, unknown>>;
+
+const isObject = (value: unknown): value is JsonObject =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
-// The entries of `wide` that `own` has none of its own for.
-const notIn = (own: Fields, wide: Fields): Fields =>
-  Object.fromEntries(Object.entries(wide).filter(([key]) => !Object.hasOwn(own, key)));
-
-// A list kept by slug: an object whose entries are each an object. `data` holds a list that is
-// edited one entry at a time this way (ADR 0002), such as paint by surface.
-const isListBySlug = (value: unknown): value is Fields =>
-  isFields(value) && Object.values(value).every(isFields);
-
 // What a Space shows of its Property's `data`: the house-wide facts it has no entry of its own
-// for. A Space's own entry wins whole. A list kept by slug goes entry by entry, so a Space with
-// wall paint of its own still gets the Property's trim.
-const fromProperty = (own: Fields, houseWide: Fields): Fields =>
+// for. Where both have an entry and both entries are objects, the Space also gets the objects
+// inside the Property's that it has none of its own for. A list kept by slug is an object of
+// objects (ADR 0002), such as paint by surface, so a Space with wall paint of its own still gets
+// the Property's trim. Anything else inside an entry is the Space's own to say: its flooring is
+// never topped up from the Property's.
+const fromProperty = (own: JsonObject, houseWide: JsonObject): JsonObject =>
   Object.fromEntries(
-    Object.entries(houseWide).flatMap(([key, wide]): [string, unknown][] => {
-      if (!Object.hasOwn(own, key)) return [[key, wide]];
+    Object.entries(houseWide).flatMap(([key, theirs]): [string, unknown][] => {
+      if (!Object.hasOwn(own, key)) return [[key, theirs]];
       const mine = own[key];
-      if (!isFields(mine) || !isListBySlug(wide)) return [];
-      const rest = notIn(mine, wide);
-      return Object.keys(rest).length === 0 ? [] : [[key, rest]];
+      if (!isObject(mine) || !isObject(theirs)) return [];
+      const lacking = Object.entries(theirs).filter(
+        ([inner, entry]) => isObject(entry) && !Object.hasOwn(mine, inner),
+      );
+      return lacking.length === 0 ? [] : [[key, Object.fromEntries(lacking)]];
     }),
   );
 
 // Cuts each list that has more entries than a list may, and says which ones were cut. The other
 // read tools call such a remark `note`. A record has Notes of its own, so here it is `lists_cut`.
-const cut = (record: Fields): Fields => {
+const cut = (record: JsonObject): JsonObject => {
   const long = Object.entries(record).filter(
-    (field): field is [string, unknown[]] =>
-      Array.isArray(field[1]) && field[1].length > MOST_ENTRIES,
+    (pair): pair is [string, unknown[]] => Array.isArray(pair[1]) && pair[1].length > MOST_ENTRIES,
   );
   if (long.length === 0) return record;
   return {
@@ -453,8 +454,10 @@ export const getRecord = defineTool({
       }
 
       const record = cut(formatRow({ type, ...row }));
-      return isFields(record.data) && isFields(record.from_property)
-        ? { ...record, from_property: fromProperty(record.data, record.from_property) }
-        : record;
+      // A Space's statement reads the whole of its Property's `data` as `from_property`.
+      if (type !== "space" || !isObject(record.data) || !isObject(record.from_property)) {
+        return record;
+      }
+      return { ...record, from_property: fromProperty(record.data, record.from_property) };
     }),
 });
