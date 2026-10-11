@@ -1,4 +1,6 @@
-# Attic
+<h1 align="center">
+  <img src="docs/assets/logo.png" alt="Attic" width="220">
+</h1>
 
 A personal, self-hosted record of the places its User lives and everything in them: repairs and improvements with receipts, vendors, maintenance schedules, appliance models and part numbers, paint colors, and a catalog of belongings for insurance and resale.
 
