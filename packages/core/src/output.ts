@@ -8,6 +8,16 @@ const JSON_COLUMNS = new Set([
   "spaces",
   "documents",
   "categories",
+  // get_record: the lists that hang off a record, and what a Space shows of its Property's `data`.
+  "extra_categories",
+  "schedules",
+  "work",
+  "projects",
+  "quotes",
+  "notes",
+  "attached_to",
+  "changes",
+  "from_property",
 ]);
 
 // A JSON column always holds an object or a list. Text that parses to anything else, or does

@@ -74,7 +74,7 @@ const DATA_KEYS = {
     lease_until:
       "When the lease runs out. May be a Partial date. It is not the Property's end date.",
     paint:
-      "Paint for the whole Property, in the same shape as a Space's. A Space's own entry wins.",
+      "Paint for the whole Property, in the same shape as a Space's. A Space's own entry wins, surface by surface.",
   },
   work: {
     permit: "The permit number.",
