@@ -80,7 +80,7 @@ export const closestTo = (given: string, categories: ReadonlyArray<Category>) =>
  * does not is an error that lists the closest matches. save_category is the only tool that
  * makes one.
  */
-export const categoryAmong = (categories: ReadonlyArray<Category>, given: string) => {
+export const categoryAmong = (given: string, categories: ReadonlyArray<Category>) => {
   const found = categories.find(({ id }) => id === given);
   return found !== undefined
     ? Effect.succeed(found)
@@ -92,7 +92,7 @@ export const categoryAmong = (categories: ReadonlyArray<Category>, given: string
 };
 
 /** Whether a Category sits under another, however far down. */
-export const isUnder = (categories: ReadonlyArray<Category>, id: string, above: string) => {
+export const isUnder = (id: string, above: string, categories: ReadonlyArray<Category>) => {
   const parents = new Map(categories.map((category) => [category.id, category.parent_id]));
   // Nothing in the schema stops parents from forming a loop, so the walk up stops at a
   // Category it has already passed.

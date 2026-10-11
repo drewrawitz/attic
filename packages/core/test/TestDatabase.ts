@@ -1,11 +1,12 @@
 import { SqliteClient } from "@effect/sql-sqlite-node";
-import { DateTime, Effect, Layer } from "effect";
+import { Effect, Layer } from "effect";
 import { SqlClient } from "effect/sql";
 import type { SqlError } from "effect/sql/SqlError";
 import { randomUUID } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { AtomicBatch, Ids } from "../src/write.ts";
+import { InUtc } from "./call.ts";
 
 const migrationsDir = new URL("../../../migrations/", import.meta.url);
 
@@ -34,9 +35,6 @@ const KnownIds = Layer.sync(Ids, () => {
   let made = 0;
   return Ids.of({ next: Effect.sync(() => `id-${String(++made).padStart(4, "0")}`) });
 });
-
-// The timezone the tests read today's date in, unless a test brings another.
-const InUtc = Layer.orDie(DateTime.layerCurrentZoneNamed("UTC"));
 
 /**
  * A fresh in-memory SQLite database with every migration applied as written and foreign

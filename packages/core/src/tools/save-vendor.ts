@@ -18,7 +18,7 @@ const NO_NAME = "Give a name to create a Vendor, or the id of the Vendor to upda
 
 const DESCRIPTION = `Creates or updates a Vendor: any business or person the User pays, buys from, or gets a Quote from, such as a contractor, a store, a landlord, an HOA, or an insurer. Someone the User sells or gives things to is not a Vendor.
 
-There is one Vendor for each name, whatever the name's case. So without an id, the name says which Vendor it is: if one already has that name it is updated, and otherwise a new one is created. With an id, the Vendor with that id is updated, and a name is its new name. So to rename a Vendor, give its id and the new name.
+There is one Vendor for each name, whatever the name's case, which is ignored for the letters a to z. So without an id, the name says which Vendor it is: if one already has that name it is updated, and otherwise a new one is created. With an id, the Vendor with that id is updated, and a name is its new name. So to rename a Vendor, give its id and the new name.
 
 The other save tools create a Vendor on first use, when they name one that is not there yet. This tool is for a Vendor's role and facts, and for renaming one.
 
@@ -48,7 +48,9 @@ export const saveVendor = defineTool({
         description: "What the Vendor does, in a word or two: plumber, hvac, retailer, landlord.",
       }),
     ),
-    data: optional(dataPatch("Facts about the Vendor, such as phone, email, and url.")),
+    data: optional(
+      dataPatch("Facts about the Vendor, such as phone, email, and url.", { keyList: false }),
+    ),
     note: optional(noteText("A Note to add to the Vendor. It is a new Note each time.")),
     clear: optional(
       Schema.Array(Schema.Literal("role")).annotate({
@@ -97,7 +99,7 @@ export const saveVendor = defineTool({
 
       const step = yield* id === undefined ? byName : byId(id);
       // A Vendor has no Property, so a Note on one has none.
-      const steps = [step, ...(yield* noteOn(note, { type: "vendor", id: step.id }, null))];
+      const steps = [step, ...(yield* noteOn(note, null, { type: "vendor", id: step.id }))];
       return { ...(yield* runSave(steps)), record: yield* readRecord("vendor", step.id) };
     }),
 });

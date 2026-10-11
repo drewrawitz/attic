@@ -84,6 +84,10 @@ it.effect("save_space creates a Space at a named Property, by its name in any ca
 
     const byId = yield* saving({ name: "Hall", property: "seed-property-elm" });
     expect(byId.record).toMatchObject({ name: "Hall", property: "Elm Court apartment" });
+
+    // The spaces around a Property's name are dropped, as they are around a Space's.
+    const spaced = yield* saving({ name: "Loft", property: "  Elm Court apartment " });
+    expect(spaced.record).toMatchObject({ name: "Loft", property: "Elm Court apartment" });
   }).pipe(Effect.provide(TestDatabase)),
 );
 

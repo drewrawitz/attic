@@ -1,7 +1,6 @@
 import { Cause, DateTime, Effect, Layer, Logger, Schema } from "effect";
-import { SqlClient } from "effect/sql";
 import { TestClock } from "effect/testing";
-import { callTool, type Tool, type ToolResult } from "../src/tool.ts";
+import { callTool, type Tool, type ToolResult, type ToolServices } from "../src/tool.ts";
 import { AtomicBatch, Ids } from "../src/write.ts";
 
 /**
@@ -9,9 +8,8 @@ import { AtomicBatch, Ids } from "../src/write.ts";
  * database first and then see what the client is sent.
  */
 export const call = (tool: Tool, input: unknown) =>
-  Effect.flatMap(
-    Effect.context<SqlClient.SqlClient | AtomicBatch | Ids | DateTime.CurrentTimeZone>(),
-    (services) => callTool(tool, input, Layer.succeedContext(services)),
+  Effect.flatMap(Effect.context<ToolServices>(), (services) =>
+    callTool(tool, input, Layer.succeedContext(services)),
   );
 
 /**
@@ -49,6 +47,9 @@ export const readingLog = <A, R>(called: Effect.Effect<A, never, R>) =>
     return { result, logged };
   });
 
+/** The timezone the tests read today's date in, unless a test brings another. */
+export const InUtc = Layer.orDie(DateTime.layerCurrentZoneNamed("UTC"));
+
 /**
  * What a tool is handed beside the database, for a test that brings a database of its own to
  * a tool that only reads. Such a tool asks for none of it.
@@ -56,7 +57,7 @@ export const readingLog = <A, R>(called: Effect.Effect<A, never, R>) =>
 export const NoWrites = Layer.mergeAll(
   Layer.succeed(AtomicBatch, AtomicBatch.of({ run: () => Effect.die("this tool only reads") })),
   Layer.succeed(Ids, Ids.of({ next: Effect.die("this tool only reads") })),
-  Layer.orDie(DateTime.layerCurrentZoneNamed("UTC")),
+  InUtc,
 );
 
 /**

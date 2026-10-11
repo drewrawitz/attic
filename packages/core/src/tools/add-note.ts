@@ -6,7 +6,7 @@ import { noteText, runSave, SAVE_ANNOTATIONS } from "../save.ts";
 import { defineTool, optional, ToolError } from "../tool.ts";
 import { noRecord, readRecord, term } from "./get-record.ts";
 
-const DESCRIPTION = `Adds a Note: a dated piece of free text for a fact that fits nowhere else, such as "Breaker 14 is the garage" or "The HOA approved the fence color". First check that the fact has no better home. A model number or a paint color goes in a record's \`data\`, and something that was done is logged as Work.
+const DESCRIPTION = `Adds a Note: a dated piece of free text for a fact that fits nowhere else, such as "Breaker 14 is the garage" or "The HOA approved the fence color". First check that the fact has no better place. A model number or a paint color goes in a record's \`data\`, and something that was done is logged as Work.
 
 A Note stands alone at a Property, or is attached to one record: an Item, Work, a Vendor, a Space, or a Project. To attach it, give \`attach_to\` the record's type and id, as search and get_record give them. A Note on a record takes that record's Property, so \`property\` is left out. A Note that stands alone goes to the Property given in \`property\`, or to the one Current property when none is given, and it shows on that Property's record.
 
@@ -14,7 +14,7 @@ Each call adds a new Note, and none replaces an earlier one. What comes back is 
 
 // Where each type of record a Note can be attached to is kept: its table, and the column its
 // name or title is in.
-const KEPT: Readonly<Record<Noted["type"], { table: string; name: string }>> = {
+const TABLES: Readonly<Record<Noted["type"], { table: string; name: string }>> = {
   item: { table: "items", name: "name" },
   work: { table: "work", name: "title" },
   vendor: { table: "vendors", name: "name" },
@@ -32,7 +32,7 @@ interface Attached {
 const attached = ({ type, id }: Noted) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
-    const { table, name } = KEPT[type];
+    const { table, name } = TABLES[type];
     // A Vendor is the one type that is at no Property.
     const at = type === "vendor" ? "NULL" : "record.property_id";
     const [record] = yield* sql.unsafe<Attached>(

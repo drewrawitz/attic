@@ -42,8 +42,8 @@ export const newNote = Effect.fnUntraced(function* (
  */
 export const noteOn = (
   body: string | undefined,
-  on: Noted,
   propertyId: string | null,
+  on: Noted,
 ): Effect.Effect<ReadonlyArray<SaveStep>, never, SqlClient.SqlClient | Ids> =>
   body === undefined
     ? Effect.succeed([])

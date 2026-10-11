@@ -9,43 +9,40 @@ export const propertiesThere = (properties: ReadonlyArray<{ readonly name: strin
     ? "There are no Properties yet."
     : `The Properties are: ${properties.map(({ name }) => name).join(", ")}.`;
 
-/** A Property as a tool finds it, with what `everyProperty` was asked about it. */
+/** A Property as a tool finds it. */
 export interface Property {
   readonly id: string;
   readonly name: string;
   readonly end_on: string | null;
-  /** 1 on the Property that has the id that was asked about. */
-  readonly has_id: number | null;
-  /** 1 on the Property that has the name that was asked about, whatever its case. */
-  readonly has_name: number | null;
+  /** Whether it has the name `everyProperty` was asked about, whatever the name's case. */
+  readonly named: boolean;
 }
 
 /**
- * Every Property, by name. A caller that is looking for one gives its id, its name, or both,
- * and each Property says whether it is the one. The database compares the name, so case is
- * ignored the same way it is everywhere else.
+ * Every Property, by name. A caller that is looking for one by its name gives the name, and
+ * each Property says whether it has it. The database compares the name, so case is ignored the
+ * same way it is everywhere else.
  */
-export const everyProperty = Effect.fnUntraced(function* (
-  asked: { readonly id?: string | undefined; readonly name?: string | undefined } = {},
-) {
+export const everyProperty = Effect.fnUntraced(function* (name?: string) {
   const sql = yield* SqlClient.SqlClient;
-  return yield* sql<Property>`
-    SELECT id, name, end_on,
-           (id = ${asked.id ?? null}) AS has_id, (name = ${asked.name ?? null}) AS has_name
-      FROM properties ORDER BY name`;
+  const properties = yield* sql<Omit<Property, "named"> & { readonly named: number | null }>`
+    SELECT id, name, end_on, (name = ${name ?? null}) AS named FROM properties ORDER BY name`;
+  return properties.map((property): Property => ({ ...property, named: property.named === 1 }));
 });
 
 /**
- * The Property a caller named, by its id or by its name. One that is not there is an error
- * that lists the ones that are.
+ * The Property a caller named, by its id or by its name. The spaces around what was given are
+ * dropped, as they are around a name that is saved. One that is not there is an error that
+ * lists the ones that are.
  */
 export const propertyNamed = Effect.fnUntraced(function* (given: string) {
-  const properties = yield* everyProperty({ id: given, name: given });
-  const property = properties.find(({ has_id, has_name }) => has_id === 1 || has_name === 1);
+  const asked = given.trim();
+  const properties = yield* everyProperty(asked);
+  const property = properties.find(({ id, named }) => id === asked || named);
   if (property !== undefined) return { id: property.id, name: property.name };
 
   return yield* new ToolError({
-    message: `There is no Property "${given}". ${propertiesThere(properties)}`,
+    message: `There is no Property "${asked}". ${propertiesThere(properties)}`,
   });
 });
 

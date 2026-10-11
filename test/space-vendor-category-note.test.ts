@@ -338,16 +338,16 @@ test(
   "today is the date in the configured timezone, on the Worker's own clock",
   asClient((call) =>
     Effect.gen(function* () {
-      // A timezone where it is another date than in UTC right now, and a last day for the
-      // cabin that has passed in one of the two and not in the other: the earlier date.
+      // A timezone where it is another date than in UTC right now, and an end date that has
+      // passed in one of the two and not in the other: the earlier date.
       const elsewhere = dateIn(AHEAD) === dateIn("UTC") ? BEHIND : AHEAD;
       const lastDay = [dateIn("UTC"), dateIn(elsewhere)].sort()[0]!;
       const saved = yield* call("save_property", { name: CABIN, end_on: lastDay });
       expect(saved.refused).toBeUndefined();
 
       // What a Worker in a timezone makes of a save that names no Property. Where it is still
-      // the cabin's last day, the cabin is current beside the house, and the save is refused.
-      // Where that day is over, the house is the one Current property.
+      // the last day of the Juniper Lane cabin, there are two Current properties, and the save
+      // is refused. Where that day is over, the Maple Street house is the one Current property.
       const client = yield* householdClient;
       const holdsIn = (timeZone: string) => async () => {
         const space = await answerFrom<Fields>(client, "save_space", { name: SUNROOM });
@@ -364,8 +364,8 @@ test(
       yield* Effect.promise(holdsIn("UTC"));
       yield* deployWith({ ATTIC_TIMEZONE: elsewhere }).pipe(
         Effect.andThen(eventually(holdsIn(elsewhere))),
-        // Puts the timezone back for whatever runs next, while the cabin is still there to
-        // tell which Worker is answering.
+        // Puts the timezone back for whatever runs next, while the Property that tells which
+        // Worker is answering is still there.
         Effect.ensuring(
           deployWith().pipe(Effect.andThen(eventually(holdsIn("UTC"))), Effect.orDie),
         ),

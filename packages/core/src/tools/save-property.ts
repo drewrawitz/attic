@@ -74,10 +74,10 @@ export const saveProperty = defineTool({
       const ids = yield* Ids;
       const columns = yield* columnsToSet(given, clear);
 
-      const properties = yield* everyProperty({ id, name: given.name });
-      const byName = properties.find((property) => property.has_name === 1);
+      const properties = yield* everyProperty(given.name);
+      const byName = properties.find((property) => property.named);
       const existing =
-        id === undefined ? byName : properties.find((property) => property.has_id === 1);
+        id === undefined ? byName : properties.find((property) => property.id === id);
 
       // Runs the one step of the save, and replies with what it saved and the whole record.
       const save = Effect.fnUntraced(function* (step: SaveStep) {

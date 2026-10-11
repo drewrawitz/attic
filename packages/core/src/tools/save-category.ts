@@ -97,8 +97,8 @@ export const saveCategory = defineTool({
         if (parent === id) {
           return yield* new ToolError({ message: `A Category cannot be its own parent: "${id}".` });
         }
-        yield* categoryAmong(categories, parent);
-        if (isUnder(categories, parent, id)) {
+        yield* categoryAmong(parent, categories);
+        if (isUnder(parent, id, categories)) {
           return yield* new ToolError({
             message: `"${parent}" is under "${id}" already, so "${id}" cannot go under it. That would make a loop.`,
           });

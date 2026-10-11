@@ -10,7 +10,7 @@ const NO_NAME = "Give a name to create a Space, or the id of the Space to update
 
 const DESCRIPTION = `Creates or updates a Space: a room or area of a Property, such as the kitchen, the garage, or the exterior. A Space's size and what is on its surfaces are facts about the Space, kept in \`data\`: its paint, its flooring, its counters. They are not Items.
 
-Give the Space's name, and \`property\` for the Property it is at. With no \`property\` it is the one Current property, and when there is not exactly one, the error lists the Properties to choose from. A Property has one Space for each name, whatever the name's case. So without an id, the name says which Space it is: if the Property already has one by that name it is updated, and otherwise a new one is created. With an id, the Space with that id is updated, and a name is its new name. So to rename a Space, give its id and the new name. A Space does not move to another Property.
+Give the Space's name, and \`property\` for the Property it is at. With no \`property\` it is the one Current property, and when there is not exactly one, the error lists the Properties to choose from. A Property has one Space for each name, whatever the name's case, which is ignored for the letters a to z. So without an id, the name says which Space it is: if the Property already has one by that name it is updated, and otherwise a new one is created. With an id, the Space with that id is updated, and a name is its new name. So to rename a Space, give its id and the new name. A Space does not move to another Property.
 
 The other save tools create a Space on first use, when they name one that is not there yet. This tool is for a Space's facts, and for renaming one.
 

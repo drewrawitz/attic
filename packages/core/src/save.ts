@@ -35,11 +35,16 @@ export const noteText = (description: string) =>
 /**
  * A record's `data` in a tool's input: a JSON merge patch on what is stored. It is applied with
  * `json_patch`, and nothing in it is converted on the way in. It is given what the `data` of
- * this kind of record holds, and adds how a patch is applied.
+ * this kind of record holds, and adds how a patch is applied. `keyList` is whether get_schema
+ * has a list of well-known keys for this kind of record, which it has for an Item, a Space, a
+ * Property, and Work. A field for a kind with no list names its keys in what it is given.
  */
-export const dataPatch = (description: string) =>
+export const dataPatch = (
+  description: string,
+  { keyList = true }: { readonly keyList?: boolean } = {},
+) =>
   Schema.Record(Schema.String, Schema.Unknown).annotate({
-    description: `${description} It is a JSON merge patch on what is stored: keys merge, a key sent as null is removed, and a list is replaced whole. It is stored as written, so money inside it is integer cents under a key ending in _cents. Use the well-known keys that get_schema lists.`,
+    description: `${description} It is a JSON merge patch on what is stored: keys merge, a key sent as null is removed, and a list is replaced whole. It is stored as written, so money inside it is integer cents under a key ending in _cents.${keyList ? " Use the well-known keys that get_schema lists." : ""}`,
   });
 
 /**
