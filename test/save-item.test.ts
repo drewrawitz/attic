@@ -286,12 +286,19 @@ test(
       );
       expect(yield* crates(call)).toBe(0);
 
-      const saved = yield* call("save_item", { items: list });
+      // The last of them has a Note, which is at the Maple Street house with it.
+      const fragile = "Fragile, this way up.";
+      const saved = yield* call("save_item", {
+        items: [...list.slice(0, 3), { ...list[3], note: fragile }],
+      });
       const items = (saved.created as Listed[]).filter(({ type }) => type === "item");
+      const note = (saved.created as Listed[]).find(({ type }) => type === "note")!;
       expect(items).toHaveLength(4);
+      expect(note).toMatchObject({ name: fragile });
 
       // Moving day in small: each one moves to the apartment, loses its Space, and is filed
-      // again. On D1 the extra Categories are replaced by two statements inside the batch.
+      // again. On D1 the extra Categories are replaced by two statements inside the batch,
+      // and the Note on the last of them moves with it.
       const moved = yield* call("save_item", {
         items: items.map(({ id }) => ({
           id,
@@ -304,8 +311,32 @@ test(
       expect(moved).toEqual({
         change_id: expect.stringMatching(ULID),
         created: [],
-        updated: items,
+        updated: [...items, note],
       });
+      expect(yield* call("get_record", { type: "note", id: note.id })).toMatchObject({
+        body: fragile,
+        property: "Elm Court apartment",
+        changes: [
+          {
+            id: moved.change_id,
+            tool: "save_item",
+            before: { property_id: "seed-property-maple" },
+            after: { property_id: "seed-property-elm" },
+          },
+          { id: saved.change_id, before: null },
+        ],
+      });
+
+      // A Fixture stays with its Property, so a list that would move the fridge moves nothing.
+      const stays = yield* call("save_item", {
+        items: [
+          { id: items[0]!.id, property: "Maple Street house" },
+          { id: "seed-item-fridge", property: "Elm Court apartment" },
+        ],
+      });
+      expect(stays.refused).toContain(
+        'items.1: "Fridge" is a Fixture, and a Fixture stays with its Property.',
+      );
       const here = { property_id: "seed-property-maple", category_id: "tools" };
       const there = { property_id: "seed-property-elm", space_id: null, category_id: "office" };
       expect(yield* call("get_record", { type: "item", id: items[3]!.id })).toMatchObject({

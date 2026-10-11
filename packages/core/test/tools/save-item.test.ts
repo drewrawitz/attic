@@ -7,7 +7,8 @@ import type { Listed } from "../../src/save.ts";
 import { getRecord } from "../../src/tools/get-record.ts";
 import { saveItem } from "../../src/tools/save-item.ts";
 import { saveProperty } from "../../src/tools/save-property.ts";
-import { answer, call, callAsClient, todayIs } from "../call.ts";
+import { search } from "../../src/tools/search.ts";
+import { answer, call, callAsClient, todayIs, type Answer } from "../call.ts";
 import { loadHousehold } from "../household.ts";
 import { TestDatabase } from "../TestDatabase.ts";
 
@@ -440,6 +441,39 @@ it.effect("the amount in a Note is the Item's proceeds as the save leaves them",
       body: "Marked given on 2026-10-11.",
     });
   }).pipe(Effect.provide(TestDatabase)),
+);
+
+// Proceeds are what came back for an Item that is gone.
+it.effect(
+  "a Note has no amount for an Item that is still here, or that nothing came back for",
+  () =>
+    Effect.gen(function* () {
+      yield* loadHousehold;
+      yield* todayIs(TODAY);
+      const newest = (saved: Answer) =>
+        (saved.record as { notes: { body: string }[] }).notes[0]?.body;
+
+      // The insurer paid out for the stolen bike, and then the bike turned up.
+      yield* saving({ id: "seed-item-ebike", proceeds: 1900 });
+      const found = yield* saving({ id: "seed-item-ebike", status: "active" });
+      expect(found.record).toMatchObject({ status: "active", proceeds: 1900 });
+      expect(newest(found)).toBe("Marked active on 2026-10-11.");
+
+      // Listed for sale is still here too.
+      const listed = yield* saving({ id: "seed-item-ebike", status: "listed" });
+      expect(newest(listed)).toBe("Marked listed on 2026-10-11.");
+
+      // The claim on the couch was settled, and paid nothing.
+      const destroyed = yield* saving({ id: COUCH, status: "destroyed", proceeds: 0 });
+      expect(destroyed.record).toMatchObject({ status: "destroyed", proceeds: 0 });
+      expect(newest(destroyed)).toBe("Marked destroyed on 2026-10-11.");
+
+      // Every status of a Gone Item has the amount, when something came back.
+      for (const status of ["sold", "given", "lost", "stolen", "destroyed"]) {
+        const gone = yield* saving({ name: `Lamp that was ${status}`, status, proceeds: 12.5 });
+        expect(newest(gone), status).toBe(`Marked ${status} on 2026-10-11 for $12.50.`);
+      }
+    }).pipe(Effect.provide(TestDatabase)),
 );
 
 it.effect("a save that does not change the status writes no Note", () =>
@@ -929,7 +963,12 @@ it.effect("moving day: a list update moves every Belonging and leaves the Fixtur
       "Standing desk",
       "Treadmill",
     ];
-    expect((moved.updated as Listed[]).map(({ name }) => name)).toEqual(names);
+    const updated = moved.updated as Listed[];
+    expect(updated.filter(({ type }) => type === "item").map(({ name }) => name)).toEqual(names);
+    // The Note on the standing desk went with it, and nothing else was touched.
+    expect(updated.filter(({ type }) => type !== "item")).toEqual([
+      { type: "note", id: "seed-note-desk", name: "2026-09-20: listed on Craigslist for $250." },
+    ]);
     expect(moved.created).toEqual([]);
 
     // Every one of them is at the new Property, and in no Space there.
@@ -1063,5 +1102,115 @@ it.effect("a field save_item does not have is turned away by name, in a list as 
 
     const chairs = yield* saving({ name: "Dining chairs", price: 1200, data: { quantity: 6 } });
     expect(chairs.record).toMatchObject({ price: 1200, data: { quantity: 6 } });
+  }).pipe(Effect.provide(TestDatabase)),
+);
+
+const DESK = "seed-item-desk";
+const FRIDGE = "seed-item-fridge";
+
+// What `search` finds at a Property, by type and id.
+const searching = (words: string, property: string) =>
+  call(search, { words, property }).pipe(
+    Effect.map(answer),
+    Effect.map(({ results }) =>
+      (results as { type: string; id: string }[]).map(({ type, id }) => `${type} ${id}`),
+    ),
+  );
+
+// A Note on a record takes that record's Property. `search` looks for a Note at the Property
+// the Note has, so a Note left behind would be found at the place the Item is no longer at.
+it.effect("the Notes on an Item move with it, in the same Change", () =>
+  Effect.gen(function* () {
+    yield* loadHousehold;
+    yield* todayIs(TODAY);
+    const note = { type: "note", id: "seed-note-desk" };
+    expect(yield* searching("craigslist", "Maple Street house")).toContain("note seed-note-desk");
+
+    const moved = yield* saving({ id: DESK, property: "Elm Court apartment", note: "Lent out." });
+    expect(moved).toMatchObject({
+      change_id: "id-0002",
+      created: [{ type: "note", id: "id-0001", name: "Lent out." }],
+      updated: [
+        { type: "item", id: DESK, name: "Standing desk" },
+        { ...note, name: "2026-09-20: listed on Craigslist for $250." },
+      ],
+    });
+    const there = { property_id: "seed-property-elm" };
+    expect(yield* getting("note", "seed-note-desk")).toMatchObject({
+      ...there,
+      property: "Elm Court apartment",
+      attached_to: [{ type: "item", id: DESK }],
+      // The Change has the Note as it was, so undoing the move puts it back.
+      changes: [
+        {
+          id: "id-0002",
+          tool: "save_item",
+          before: { property_id: "seed-property-maple" },
+          after: there,
+        },
+      ],
+    });
+    // The Note the save added is at the new Property from the start.
+    expect(yield* getting("note", "id-0001")).toMatchObject(there);
+    expect(yield* searching("craigslist", "Elm Court apartment")).toContain("note seed-note-desk");
+    expect(yield* searching("craigslist", "Maple Street house")).not.toContain(
+      "note seed-note-desk",
+    );
+
+    // An Item that goes to no Property takes its Notes there too.
+    const stored = yield* saving({ id: DESK, clear: ["property"] });
+    expect((stored.updated as Listed[]).map(({ type, id }) => `${type} ${id}`)).toEqual([
+      `item ${DESK}`,
+      "note id-0001",
+      "note seed-note-desk",
+    ]);
+    expect(yield* getting("note", "seed-note-desk")).toMatchObject({ property_id: null });
+
+    // A save that does not move the Item leaves its Notes alone.
+    const stays = yield* saving({ id: DESK, price: 610 });
+    expect(stays.updated).toEqual([{ type: "item", id: DESK, name: "Standing desk" }]);
+  }).pipe(Effect.provide(TestDatabase)),
+);
+
+const STAYS =
+  "is a Fixture, and a Fixture stays with its Property. Leave it where it is. If it is coming along, it is a Belonging: give `scope` as belonging in the same save.";
+
+it.effect("a Fixture does not move to another Property, unless it becomes a Belonging", () =>
+  Effect.gen(function* () {
+    yield* loadHousehold;
+    yield* todayIs(TODAY);
+    yield* call(saveProperty, { name: "Birch Road house", start_on: "2026-10" });
+    const before = yield* counting;
+
+    expect(yield* saving({ id: FRIDGE, property: "Birch Road house" })).toEqual({
+      refused: `"Fridge" ${STAYS}`,
+    });
+    // On moving day, a list with a Fixture in it moves nothing, and names the Fixture.
+    expect(
+      yield* saving({
+        items: [COUCH, FRIDGE, DESK, "seed-item-water-heater"].map((id) => ({
+          id,
+          property: "Birch Road house",
+        })),
+      }),
+    ).toEqual({
+      refused: `Nothing was saved, because 2 of the 4 entries in \`items\` were refused. Entries are counted from 0.
+items.1: "Fridge" ${STAYS}
+items.3: "Water heater" ${STAYS}`,
+    });
+    expect(yield* counting).toEqual(before);
+    expect(yield* getting("item", COUCH)).toMatchObject({ property: "Maple Street house" });
+
+    // The User takes the fridge along, so it is a Belonging now.
+    const taken = yield* saving({ id: FRIDGE, property: "Birch Road house", scope: "belonging" });
+    expect(taken.record).toMatchObject({
+      scope: "belonging",
+      property: "Birch Road house",
+      space_id: null,
+    });
+
+    // A Belonging that is fitted at the place it moves to becomes a Fixture there.
+    const fitted = yield* saving({ id: COUCH, property: "Birch Road house", scope: "fixture" });
+    expect(fitted.record).toMatchObject({ scope: "fixture", property: "Birch Road house" });
   }).pipe(Effect.provide(TestDatabase)),
 );

@@ -1,19 +1,19 @@
-import { Effect, Schema } from "effect";
+import { Effect, Result, Schema } from "effect";
 import { SqlClient } from "effect/sql";
 import { categoryAmong, everyCategory } from "../category.ts";
 import { partialDate, today } from "../dates.ts";
 import { amount, formatCents, inCents } from "../money.ts";
-import { newNote, noteOn } from "../note.ts";
+import { newNote, noteOn, notesMovedTo } from "../note.ts";
 import { propertyFor } from "../property.ts";
 import {
   askedOnce,
   dataPatch,
-  givenOrCleared,
   insertRow,
   nameKey,
   nameText,
   noteText,
   referredOnce,
+  refuseGivenAndCleared,
   replaceLinks,
   runSave,
   SAVE_ANNOTATIONS,
@@ -50,13 +50,13 @@ Money inside \`data\` is not converted. It is stored as written: integer cents u
 
 \`space\` and \`bought_from\` are names, matched whatever their case. One that is not there yet is created, and the reply lists it, so check the reply for a Space or a Vendor you did not mean to make. A Space is one at the Item's Property.
 
-With no \`property\`, a new Item is at the one Current property, and when there is not exactly one, the error lists the Properties to choose from. A Belonging can be at no Property, such as one in storage: name \`property\` in \`clear\`. A Fixture has to have one. An Item that moves to another Property loses its Space, unless the same save gives it one there.
+With no \`property\`, a new Item is at the one Current property, and when there is not exactly one, the error lists the Properties to choose from. A Belonging can be at no Property, such as one in storage: name \`property\` in \`clear\`. A Fixture has to have one. An Item that moves to another Property loses its Space, unless the same save gives it one there, and its Notes move with it. A Fixture stays with its Property, so a save that would move one is refused. One that is coming along is a Belonging: give \`scope\` as belonging in the same save.
 
-\`status\` says whether the User still has the Item. sold, given, lost, stolen, and destroyed mean it is gone, and the Item is kept for its money trail: the sale, the donation, or the claim. Something that was returned or thrown away is deleted, not given a status. A lost Item that turns up goes back to active. A change of status writes a dated Note on the Item in the same Change, such as "Marked sold on 2026-09-20 for $450.00.", with the Item's proceeds when it has any. The date is \`status_on\`, which is today when it is left out. A new Item starts out active, so one that is saved with another status gets the Note too. Who bought it, or where it went, goes in \`data\` as sold_to or donated_to.
+\`status\` says whether the User still has the Item. sold, given, lost, stolen, and destroyed mean it is gone, and the Item is kept for its money trail: the sale, the donation, or the claim. Something that was returned or thrown away is deleted, not given a status. A lost Item that turns up goes back to active. A change of status writes a dated Note on the Item in the same Change, such as "Marked sold on 2026-09-20 for $450.00.", with the proceeds when the Item is gone and something came back for it. The date is \`status_on\`, which is today when it is left out. A new Item starts out active, so one that is saved with another status gets the Note too. Who bought it, or where it went, goes in \`data\` as sold_to or donated_to.
 
 \`data\` is a merge patch, so a save adds to what is there. Parts are kept by slug, so one is added without touching the others: \`{"parts": {"water-filter": {"name": "Water filter", "part_number": "DA97-17376B"}}}\`.
 
-A list is checked whole before anything is written. If any entry is refused, nothing is saved, and the error says which entries and why. The whole list is one Change. Moving day is a list update: give each Belonging's id with the new \`property\`, and each one moves there and loses its Space. Leave the Fixtures out of the list, because they stay with the Property.
+A list is checked whole before anything is written. If any entry is refused, nothing is saved, and the error says which entries and why. The whole list is one Change. Moving day is a list update: give each Belonging's id with the new \`property\`, and each one moves there and loses its Space. Leave the Fixtures out of the list: they stay with the Property, and one of them in the list refuses the whole list.
 
 What comes back is the id of the Change that recorded the save, and every record it created or updated: the Items, any Space or Vendor made on first use, and the Notes. A save of one Item also returns the whole Item as get_record returns it.`;
 
@@ -67,6 +67,9 @@ type Status = (typeof STATUSES)[number];
 
 // The status a new Item has unless the save gives one, which is the table's own default.
 const ACTIVE: Status = "active";
+
+// The statuses of a Gone Item: the User no longer has it, and its exit left a money trail.
+const GONE: ReadonlySet<Status> = new Set(["sold", "given", "lost", "stolen", "destroyed"]);
 
 // The Category a new Item is in unless the save names one, which is the table's own default.
 const OTHER = "other";
@@ -177,25 +180,36 @@ interface Existing {
   readonly proceeds_cents: number | null;
   /** The ids of its extra Categories. */
   readonly extra_categories: ReadonlyArray<string>;
+  /** The Notes on it, oldest first. */
+  readonly notes: ReadonlyArray<{ readonly id: string; readonly body: string }>;
 }
+
+// The columns of an Item that are read as the text of a JSON list.
+type Lists = "extra_categories" | "notes";
 
 // The Items with these ids as they are now, by id. An id that is not there is not among them.
 // A call that only creates gives no ids, and reads nothing.
 const itemsNow = Effect.fnUntraced(function* (ids: ReadonlyArray<string>) {
   if (ids.length === 0) return new Map<string, Existing>();
   const sql = yield* SqlClient.SqlClient;
-  // The extra Categories come back as the text of a JSON list.
-  const items = yield* sql<Omit<Existing, "extra_categories"> & { extra_categories: string }>`
+  const items = yield* sql<Omit<Existing, Lists> & Readonly<Record<Lists, string>>>`
     SELECT item.id, item.name, item.scope, item.status, item.property_id, item.category_id,
            item.proceeds_cents,
            (SELECT json_group_array(category_id)
-              FROM item_categories WHERE item_id = item.id) AS extra_categories
+              FROM item_categories WHERE item_id = item.id) AS extra_categories,
+           (SELECT json_group_array(json_object('id', id, 'body', body))
+              FROM (SELECT id, body FROM notes
+                     WHERE entity_type = 'item' AND entity_id = item.id ORDER BY id)) AS notes
       FROM items AS item
      WHERE item.id IN (SELECT value FROM json_each(${JSON.stringify(ids)}))`;
   return new Map(
     items.map((item): [string, Existing] => [
       item.id,
-      { ...item, extra_categories: JSON.parse(item.extra_categories) },
+      {
+        ...item,
+        extra_categories: JSON.parse(item.extra_categories),
+        notes: JSON.parse(item.notes),
+      },
     ]),
   );
 });
@@ -210,8 +224,8 @@ const sharedByEntries = Effect.gen(function* () {
     sql: yield* SqlClient.SqlClient,
     categories: yield* Effect.cached(everyCategory),
     day: yield* today,
-    // No Property has a name with nothing in it, so that key is free for the Current property.
-    property: askedOnce(propertyFor, (given) => given ?? ""),
+    // A name is the same in any case. With none given, it is the Current property.
+    property: askedOnce(propertyFor, (given) => (given === undefined ? undefined : nameKey(given))),
     space: referredOnce(
       (propertyId: string, name: string) => spaceOrNew(propertyId, name),
       (propertyId, name) => `${propertyId} ${nameKey(name)}`,
@@ -238,7 +252,7 @@ const stepsFor = Effect.fnUntraced(function* (
   const called = name ?? was?.name;
   if (called === undefined) return yield* new ToolError({ message: NO_NAME });
 
-  yield* givenOrCleared(entry, clear);
+  yield* refuseGivenAndCleared(entry, clear);
   // What the save does with a field that can be emptied: its new value, null to empty it, or
   // undefined to leave it as it is.
   const wanted = <Value>(field: (typeof CLEARABLE)[number], value: Value | undefined) =>
@@ -254,6 +268,13 @@ const stepsFor = Effect.fnUntraced(function* (
   const moved = was !== undefined && propertyId !== was.property_id;
   if ((scope ?? was?.scope) === "fixture" && propertyId === null) {
     return yield* new ToolError({ message: NO_PROPERTY });
+  }
+  // A Fixture stays with its Property. One that is taken along is a Belonging, and the save
+  // that moves it can say so.
+  if (moved && was.scope === "fixture" && scope !== "belonging") {
+    return yield* new ToolError({
+      message: `"${called}" is a Fixture, and a Fixture stays with its Property. Leave it where it is. If it is coming along, it is a Belonging: give \`scope\` as belonging in the same save.`,
+    });
   }
 
   // A Space is one at a Property, so the Space a save names is one at the Item's.
@@ -330,22 +351,27 @@ const stepsFor = Effect.fnUntraced(function* (
           [...new Set(extras)].filter((each) => each !== primary),
         );
 
-  // A change of status writes a dated Note on the Item. The amount is the Item's proceeds as
-  // the save leaves them, whether this save gave them or an earlier one did.
-  const on = { type: "item", id: item.id } as const;
+  // A Note on a record takes that record's Property, so the Notes an Item has move with it.
+  const carried = moved ? notesMovedTo(sql, was.notes, propertyId) : [];
+
+  // A change of status writes a dated Note on the Item. Proceeds are what came back for an
+  // Item that is gone. So the Note has the amount when the new status is a Gone Item's and
+  // something did come back, whether this save gave the proceeds or an earlier one did.
   const cameBack = proceedsCents === undefined ? (was?.proceeds_cents ?? null) : proceedsCents;
   const forAmount =
-    marked === undefined || cameBack === null ? "" : ` for ${yield* formatCents(cameBack)}`;
-  const notes = [
+    marked !== undefined && GONE.has(marked) && cameBack !== null && cameBack > 0
+      ? ` for ${yield* formatCents(cameBack)}`
+      : "";
+  const added = [
     ...(marked === undefined
       ? []
-      : [yield* newNote(`Marked ${marked} on ${statusOn}${forAmount}.`, propertyId, on)]),
-    ...(yield* noteOn(note, propertyId, on)),
+      : [yield* newNote(`Marked ${marked} on ${statusOn}${forAmount}.`, propertyId, item)]),
+    ...(yield* noteOn(note, propertyId, item)),
   ];
 
   return {
     id: item.id,
-    steps: [...(space?.steps ?? []), ...(vendor?.steps ?? []), row, ...links, ...notes],
+    steps: [...(space?.steps ?? []), ...(vendor?.steps ?? []), row, ...links, ...carried, ...added],
   };
 });
 
@@ -395,31 +421,34 @@ export const saveItem = defineTool({
       // others, so that one error names every entry that has to change.
       const outcomes = yield* Effect.forEach(entries, (entry, at) => {
         const { id } = entry;
-        const first = id === undefined ? at : entries.findIndex((other) => other.id === id);
-        const steps =
-          first < at
+        const earlier = id === undefined ? at : entries.findIndex((other) => other.id === id);
+        const planned =
+          earlier < at
             ? Effect.fail(
                 new ToolError({
-                  message: `The Item "${id}" is in this list already, at items.${first}. Give each Item once.`,
+                  message: `The Item "${id}" is in this list already, at items.${earlier}. Give each Item once.`,
                 }),
               )
             : stepsFor(entry, id === undefined ? undefined : existing.get(id), shared);
-        return Effect.catchTag(steps, "ToolError", ({ message }) =>
-          Effect.succeed({ refused: message }),
+        return planned.pipe(
+          Effect.map(Result.succeed),
+          Effect.catchTag("ToolError", ({ message }) => Effect.succeed(Result.fail(message))),
         );
       });
       const refused = outcomes.flatMap((outcome, at) =>
-        "refused" in outcome ? [[at, outcome.refused] as const] : [],
+        Result.isFailure(outcome) ? [[at, outcome.failure] as const] : [],
       );
-      const [refusal] = refused;
-      if (refusal !== undefined) {
+      const [first] = refused;
+      if (first !== undefined) {
         // One Item given by its fields is refused in the words of the refusal alone.
         return yield* new ToolError({
-          message: items === undefined ? refusal[1] : listRefused(refused, entries.length),
+          message: items === undefined ? first[1] : listRefused(refused, entries.length),
         });
       }
 
-      const saves = outcomes.flatMap((outcome) => ("refused" in outcome ? [] : [outcome]));
+      const saves = outcomes.flatMap((outcome) =>
+        Result.isSuccess(outcome) ? [outcome.success] : [],
+      );
       const reply = yield* runSave(saves.flatMap(({ steps }) => steps));
       // A call that saves one Item also returns it as get_record does.
       const [only, ...others] = saves;

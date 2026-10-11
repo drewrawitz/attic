@@ -53,7 +53,7 @@ export const dataPatch = (description: string) =>
  * Refuses a save that gives a field a value and names it in `clear` as well. `given` has a key
  * for each field that was given, and none for one that was left out.
  */
-export const givenOrCleared = (
+export const refuseGivenAndCleared = (
   given: Readonly<Record<string, unknown>>,
   clear: ReadonlyArray<string> = [],
 ): Effect.Effect<void, ToolError> => {
@@ -76,7 +76,7 @@ export const columnsToSet = (
   given: Readonly<Record<string, unknown>>,
   clear: ReadonlyArray<string> = [],
 ): Effect.Effect<Readonly<Record<string, unknown>>, ToolError> =>
-  Effect.as(givenOrCleared(given, clear), {
+  Effect.as(refuseGivenAndCleared(given, clear), {
     ...given,
     ...Object.fromEntries(clear.map((field) => [field, null])),
   });
@@ -127,14 +127,15 @@ export interface Referred extends Listed {
 
 /**
  * Asks for each thing once in a call, however many entries of a list ask for it. `keyOf` says
- * what an ask is for, and two asks with the same key get the one answer. A refusal is an
- * answer too, and comes back to every entry that asks.
+ * what an ask is for, and two asks with the same key get the one answer. An ask that names
+ * nothing has no key, and all of those get one answer too. A refusal is an answer as well,
+ * and comes back to every entry that asks.
  */
 export const askedOnce = <Asked extends ReadonlyArray<unknown>, Answer, Refusal, Needs>(
   ask: (...asked: Asked) => Effect.Effect<Answer, Refusal, Needs>,
-  keyOf: (...asked: Asked) => string,
+  keyOf: (...asked: Asked) => string | undefined,
 ) => {
-  const answers = new Map<string, Effect.Effect<Answer, Refusal, Needs>>();
+  const answers = new Map<string | undefined, Effect.Effect<Answer, Refusal, Needs>>();
   return Effect.fnUntraced(function* (...asked: Asked) {
     const key = keyOf(...asked);
     let answer = answers.get(key);
