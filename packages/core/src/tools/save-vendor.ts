@@ -48,9 +48,7 @@ export const saveVendor = defineTool({
         description: "What the Vendor does, in a word or two: plumber, hvac, retailer, landlord.",
       }),
     ),
-    data: optional(
-      dataPatch("Facts about the Vendor, such as phone, email, and url.", { keyList: false }),
-    ),
+    data: optional(dataPatch("Facts about the Vendor, such as phone, email, and url.")),
     note: optional(noteText("A Note to add to the Vendor. It is a new Note each time.")),
     clear: optional(
       Schema.Array(Schema.Literal("role")).annotate({

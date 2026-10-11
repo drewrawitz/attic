@@ -68,7 +68,6 @@ export const saveCategory = defineTool({
     data: optional(
       dataPatch(
         "Facts about the Category. `expects` is the list of `data` keys an Item in it should have.",
-        { keyList: false },
       ).check(
         Schema.makeFilter(isListOfNames, {
           message:

@@ -123,6 +123,8 @@ it.effect("get_schema publishes the well-known data keys for each kind of record
       space: ["sqft", "paint", "flooring", "counters"],
       property: ["lease_until", "paint"],
       work: ["permit", "payments", "replaced"],
+      vendor: ["phone", "email", "url"],
+      category: ["expects"],
     });
 
     const missingFrom = (text: string | undefined, words: ReadonlyArray<string>) =>

@@ -50,6 +50,29 @@ const changed = (change: string) =>
     }));
   });
 
+// The starter Categories that sit under no other, by id.
+const TOP_LEVEL = [
+  "appliances (Appliances)",
+  "clothing (Clothing)",
+  "decor (Art and decor)",
+  "electronics (Electronics)",
+  "fitness (Fitness)",
+  "furniture (Furniture)",
+  "instruments (Musical instruments)",
+  "jewelry (Jewelry and watches)",
+  "kids (Kids and toys)",
+  "kitchen (Kitchen)",
+  "lighting-plumbing (Lighting and plumbing)",
+  "media (Books and media)",
+  "office (Office)",
+  "other (Other)",
+  "outdoor (Outdoor and yard)",
+  "sports (Sports and recreation)",
+  "systems (Home systems)",
+  "tools (Tools)",
+  "vehicles (Vehicles)",
+].join(", ");
+
 // The starter Categories have `tools`, and `power-tools` under it. A Category's id is the
 // client's to choose, so the only id a save takes is the one for its Change.
 it.effect(
@@ -178,10 +201,10 @@ it.effect("a parent that is not there is refused, with the closest matches by id
     expect(
       (yield* saving({ id: "blenders", name: "Blenders", parent: "applainces" })).refused,
     ).toContain("The closest are: appliances (Appliances).");
-    // Nothing is close to this one, and no list of Categories that are not close is given.
+    // Nothing is close to this one. Three Categories that are not close would read as a
+    // suggestion, so the error lists the top of the tree, which is where to start looking.
     expect(yield* saving({ id: "trowels", name: "Trowels", parent: "gardening" })).toEqual({
-      refused:
-        'There is no Category "gardening". None is close to it. get_schema lists every Category, and save_category adds one.',
+      refused: `There is no Category "gardening". None is close to it. The top-level Categories are: ${TOP_LEVEL}. get_schema lists every Category, and save_category adds one.`,
     });
     expect(yield* counting).toEqual(before);
   }).pipe(Effect.provide(TestDatabase)),

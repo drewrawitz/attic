@@ -46,14 +46,19 @@ const distance = (given: string, own: string) => {
     : edits(given, own);
 };
 
-// The most Categories an error lists.
+// The most close Categories an error lists.
 const MOST_CLOSE = 3;
+
+// Categories as an error lists them, by id and name.
+const listed = (categories: ReadonlyArray<Category>) =>
+  categories.map(({ id, name }) => `${id} (${name})`).join(", ");
 
 /**
  * What an error says of the Categories closest to a text that is no Category's id: up to
  * three, by id and name. A name counts as much as an id, since a name is what a client often
  * has. A misspelling is close when a third of its letters or fewer are wrong. When nothing is
- * close, it says so, and lists nothing.
+ * close, it says so and lists the Categories at the top of the tree. Three that are not close
+ * would read as a suggestion, and the top of the tree is where to start looking.
  */
 export const closestTo = (given: string, categories: ReadonlyArray<Category>) => {
   const asked = plain(given);
@@ -70,9 +75,12 @@ export const closestTo = (given: string, categories: ReadonlyArray<Category>) =>
   // One that is the same but for its case and punctuation is the one that was meant.
   const same = near.filter(({ away }) => away === 0);
   const close = (same.length > 0 ? same : near).slice(0, MOST_CLOSE);
-  return close.length === 0
+  if (close.length > 0) return `The closest are: ${listed(close.map(({ category }) => category))}.`;
+
+  const top = categories.filter(({ parent_id }) => parent_id === null);
+  return top.length === 0
     ? "None is close to it."
-    : `The closest are: ${close.map(({ category }) => `${category.id} (${category.name})`).join(", ")}.`;
+    : `None is close to it. The top-level Categories are: ${listed(top)}.`;
 };
 
 /**

@@ -81,6 +81,15 @@ const DATA_KEYS = {
     payments: "The payments made for the Work.",
     replaced: "What was replaced.",
   },
+  vendor: {
+    phone: "A phone number to reach them on.",
+    email: "An email address to reach them at.",
+    url: "Their website.",
+  },
+  category: {
+    expects:
+      "The `data` keys an Item in the Category should have, as a list of names. An Item is expected to have the keys of every Category it sits under, parents included.",
+  },
 };
 
 // A row of sqlite_master: a table or view, and the statement that created it.

@@ -28,16 +28,16 @@ const dataDescription = (tool: Tool) => {
   return input.properties.data.anyOf[0].description;
 };
 
-// A client told to use a list that is not there looks for it and finds nothing.
-it.effect("a `data` field points at get_schema's well-known keys only where it lists some", () =>
+// A client told to use a list that is not there looks for it and finds nothing. So a tool that
+// takes `data` for a kind of record has a list for that kind in get_schema to point at.
+it.effect("every `data` field points at well-known keys that get_schema lists for its kind", () =>
   Effect.gen(function* () {
     const { text } = yield* call(getSchema, {});
     const listed = Object.keys((JSON.parse(text) as { data_keys: object }).data_keys);
-    expect(listed).toEqual(["item", "space", "property", "work"]);
 
     for (const [tool, kind] of SAVES) {
-      const pointsAtTheList = dataDescription(tool).includes("well-known keys that get_schema");
-      expect(pointsAtTheList, tool.name).toBe(listed.includes(kind));
+      expect(listed, tool.name).toContain(kind);
+      expect(dataDescription(tool), tool.name).toContain("well-known keys that get_schema lists");
     }
   }).pipe(Effect.provide(TestDatabase)),
 );
