@@ -34,6 +34,37 @@ export const answerFrom = async <Returned>(
   return (result!.isError === true ? { refused: text } : JSON.parse(text)) as Answer<Returned>;
 };
 
+// What a tool sent back, for a test that has no closer type for it.
+export type Fields = Record<string, unknown>;
+
+// A record as a save's reply lists it.
+export interface Listed {
+  readonly type: string;
+  readonly id: string;
+  readonly name: string;
+}
+
+// A ULID: 26 characters of Crockford's base 32.
+export const ULID = /^[0-9A-HJKMNP-TV-Z]{26}$/;
+
+// Calls a tool as a signed-in client, and reads what it sent back.
+export type Call = (tool: string, input: unknown) => Effect.Effect<Answer<Fields>>;
+
+// A test body that calls tools as a signed-in client, with the made-up household loaded. No
+// tool deletes a record yet, and the database is kept between runs. So a test of a tool that
+// writes brings a `cleanUp` that takes its own rows out, and this runs it before the body and
+// after it, however the body ends.
+export const asClientWith =
+  <CleanUpError, CleanUpNeeds>(cleanUp: Effect.Effect<unknown, CleanUpError, CleanUpNeeds>) =>
+  <E, R>(body: (call: Call) => Effect.Effect<void, E, R>) =>
+    Effect.gen(function* () {
+      const client = yield* householdClient;
+      yield* cleanUp;
+      yield* body((tool, input) =>
+        Effect.promise(() => answerFrom<Fields>(client, tool, input)),
+      ).pipe(Effect.ensuring(Effect.orDie(cleanUp)));
+    });
+
 // A test body that calls one tool, as a signed-in client, with the made-up household loaded.
 export const calling =
   <Returned>(tool: string) =>

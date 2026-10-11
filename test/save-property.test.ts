@@ -2,15 +2,13 @@ import { expect } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import { onDatabase } from "./support/database.ts";
 import { test } from "./support/harness.ts";
-import { answerFrom, householdClient, type Answer } from "./support/household.ts";
+import { asClientWith, householdClient, ULID, type Fields } from "./support/household.ts";
 import { mcp } from "./support/mcp-client.ts";
 
 // What `save_property` does is tested on Node SQLite, in packages/core, where an atomic batch
 // is a transaction. In the Worker it is D1's own batch (ADR 0006), and the snapshots of a
 // Change are read by statements inside that batch. So these go through the real Worker on
 // local D1.
-
-type Fields = Record<string, unknown>;
 
 // The Properties these tests save. Nothing else in the database has these names.
 const BIRCH = "Birch Road cabin";
@@ -29,18 +27,7 @@ const cleanUp = onDatabase(
 );
 
 // A test body that calls tools as a signed-in client, on a database with none of the above.
-const asClient = <E, R>(
-  body: (
-    call: (tool: string, input: unknown) => Effect.Effect<Answer<Fields>>,
-  ) => Effect.Effect<void, E, R>,
-) =>
-  Effect.gen(function* () {
-    const client = yield* householdClient;
-    yield* cleanUp;
-    yield* body((tool, input) =>
-      Effect.promise(() => answerFrom<Fields>(client, tool, input)),
-    ).pipe(Effect.ensuring(Effect.orDie(cleanUp)));
-  });
+const asClient = asClientWith(cleanUp);
 
 test(
   "a signed-in client is told what save_property takes, and that it writes without destroying",
@@ -80,9 +67,6 @@ test(
     );
   }),
 );
-
-// A ULID: 26 characters of Crockford's base 32.
-const ULID = /^[0-9A-HJKMNP-TV-Z]{26}$/;
 
 test(
   "a Property saved through the Worker comes back from get_record, with the Change that made it",

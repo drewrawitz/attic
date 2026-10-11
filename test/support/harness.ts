@@ -26,9 +26,11 @@ const { afterAll } = harness;
 export const { test, beforeAll, deploy } = harness;
 
 // The tests bring their own settings, so they pass on a fresh clone and are not changed by
-// whatever a local .env holds. The timezone is left unset, which is UTC.
+// whatever a local .env holds. The timezone is left unset, which is UTC, and so is the
+// currency, which is USD.
 const SETTINGS: Record<string, string | undefined> = {
   ATTIC_TIMEZONE: undefined,
+  ATTIC_CURRENCY: undefined,
   GOOGLE_CLIENT_ID: GOOGLE_CLIENT.id,
   GOOGLE_CLIENT_SECRET: GOOGLE_CLIENT.secret,
   GOOGLE_TOKEN_URL: google.tokenUrl,

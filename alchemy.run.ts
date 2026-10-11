@@ -42,23 +42,37 @@ export const AUTHORIZE_LIMIT = Cloudflare.RateLimit("AUTHORIZE_LIMIT", {
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 const GOOGLE_USERINFO_URL = "https://openidconnect.googleapis.com/v1/userinfo";
 
+// A setting that cannot be used stops here, so a deploy stops before it changes anything.
+const notUsable = (message: string) =>
+  Effect.fail(new Config.ConfigError(new ConfigProvider.SourceError({ message })));
+
 // The timezone the User's day is in, which is what "today" means to a tool: an IANA name such
-// as America/New_York. Unset and empty both mean UTC. A name that is not a timezone stops
-// here, so a deploy stops before it changes anything.
+// as America/New_York. Unset and empty both mean UTC.
 const timezone = Config.String("ATTIC_TIMEZONE").pipe(
   Config.withDefault(""),
   Config.map((given) => given.trim() || "UTC"),
   Config.mapEffect((name) =>
     Option.isSome(DateTime.zoneMakeNamed(name))
       ? Effect.succeed(name)
-      : Effect.fail(
-          new Config.ConfigError(
-            new ConfigProvider.SourceError({
-              message: `ATTIC_TIMEZONE is "${name}", which is not a timezone. Give an IANA name such as America/New_York, or leave it empty for UTC.`,
-            }),
-          ),
+      : notUsable(
+          `ATTIC_TIMEZONE is "${name}", which is not a timezone. Give an IANA name such as America/New_York, or leave it empty for UTC.`,
         ),
   ),
+);
+
+// The one currency every amount is in: an ISO code such as USD. Unset and empty both mean USD.
+// Money is stored as a bare number of cents, so this is only used to write an amount in a Note.
+const currency = Config.String("ATTIC_CURRENCY").pipe(
+  Config.withDefault(""),
+  Config.map((given) => given.trim() || "USD"),
+  Config.mapEffect((given) => {
+    const code = given.toUpperCase();
+    return Intl.supportedValuesOf("currency").includes(code)
+      ? Effect.succeed(code)
+      : notUsable(
+          `ATTIC_CURRENCY is "${given}", which is not a currency. Give an ISO code such as USD or EUR, or leave it empty for USD.`,
+        );
+  }),
 );
 
 export const Worker = Cloudflare.Worker(
@@ -101,6 +115,7 @@ export const Worker = Cloudflare.Worker(
         ALLOWED_EMAILS: yield* secret("ALLOWED_EMAILS"),
         CONSENT_SECRET: consentSecret.text,
         ATTIC_TIMEZONE: yield* timezone,
+        ATTIC_CURRENCY: yield* currency,
       },
       // Local dev has no use for a domain.
       ...(domain !== "" && !dev ? { domain } : {}),
