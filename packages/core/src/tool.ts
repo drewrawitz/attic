@@ -1,4 +1,13 @@
-import { Data, Effect, Layer, Option, Predicate, Schema, SchemaTransformation } from "effect";
+import {
+  Data,
+  Effect,
+  Layer,
+  Option,
+  Predicate,
+  Schema,
+  SchemaTransformation,
+  type DateTime,
+} from "effect";
 import type { SqlClient } from "effect/sql";
 import type { SqlError } from "effect/sql/SqlError";
 import { Write, type AtomicBatch, type Ids } from "./write.ts";
@@ -33,8 +42,13 @@ export const optional = <Field extends Schema.Constraint>(field: Field) =>
   );
 
 // What a tool does once its input has been checked: a program over the database. A tool that
-// writes also needs ids for the records it creates, and the one write its call makes.
-type Program = Effect.Effect<unknown, ToolError | SqlError, SqlClient.SqlClient | Ids | Write>;
+// writes also needs ids for the records it creates, and the one write its call makes. A tool
+// that goes by today's date needs the timezone that date is read in.
+type Program = Effect.Effect<
+  unknown,
+  ToolError | SqlError,
+  SqlClient.SqlClient | Ids | Write | DateTime.CurrentTimeZone
+>;
 
 export interface ToolAnnotations {
   readonly readOnlyHint?: boolean;
@@ -77,9 +91,9 @@ const UNEXPECTED = "Attic hit an error it did not expect. The details are in the
 
 /**
  * Runs a tool and turns how it ended into what the client is sent. It is given what the tool
- * runs on: a database, that database's atomic batch, and a maker of ids. To those it adds the
- * one write of this call, which records a Change under the tool's name. A `ToolError` goes out
- * as the tool wrote it.
+ * runs on: a database, that database's atomic batch, a maker of ids, and the configured
+ * timezone. To those it adds the one write of this call, which records a Change under the
+ * tool's name. A `ToolError` goes out as the tool wrote it.
  * Anything else is logged, and the client is told only that there was a failure: a query or a
  * batch the database turned down, a tool that threw, a database that could not be opened.
  * Nothing gets past this as a thrown error, because the MCP SDK would send the client its
@@ -88,7 +102,10 @@ const UNEXPECTED = "Attic hit an error it did not expect. The details are in the
 export const callTool = (
   tool: Tool,
   input: unknown,
-  services: Layer.Layer<SqlClient.SqlClient | AtomicBatch | Ids, unknown>,
+  services: Layer.Layer<
+    SqlClient.SqlClient | AtomicBatch | Ids | DateTime.CurrentTimeZone,
+    unknown
+  >,
 ): Effect.Effect<ToolResult> =>
   Effect.suspend(() => tool.run(input)).pipe(
     Effect.map((result) => ({ text: JSON.stringify(result), isError: false })),

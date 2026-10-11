@@ -1,4 +1,4 @@
-import { Schema } from "effect";
+import { DateTime, Effect, Schema } from "effect";
 
 // The three ways a date is written. The schema's own CHECK takes these shapes and no others, but
 // it also takes a month 13 and a day 30 in February, so a date is checked here before it gets
@@ -30,3 +30,10 @@ export const partialDate = (description: string) =>
       message: `Expected a date that exists, written as ${FORMS}. A date can be a Partial date: a year, or a year and a month.`,
     }),
   );
+
+/**
+ * Today's date on the User's calendar: the date in the configured timezone, written as
+ * 2023-06-12. The UTC date is a day ahead or behind for part of every day. The
+ * `current_properties` view lives with that, and a tool does not.
+ */
+export const today = Effect.map(DateTime.nowInCurrentZone, DateTime.formatIsoDate);

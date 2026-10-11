@@ -1,5 +1,5 @@
 import { SqliteClient } from "@effect/sql-sqlite-node";
-import { Effect, Layer } from "effect";
+import { DateTime, Effect, Layer } from "effect";
 import { SqlClient } from "effect/sql";
 import type { SqlError } from "effect/sql/SqlError";
 import { randomUUID } from "node:crypto";
@@ -35,10 +35,14 @@ const KnownIds = Layer.sync(Ids, () => {
   return Ids.of({ next: Effect.sync(() => `id-${String(++made).padStart(4, "0")}`) });
 });
 
+// The timezone the tests read today's date in, unless a test brings another.
+const InUtc = Layer.orDie(DateTime.layerCurrentZoneNamed("UTC"));
+
 /**
  * A fresh in-memory SQLite database with every migration applied as written and foreign
- * keys on, and with it what a tool that writes needs: an atomic batch, and ids that start
- * over at id-0001. Provide it once per test, and each test gets a database of its own.
+ * keys on, and with it what a tool needs beside a database: an atomic batch, ids that start
+ * over at id-0001, and UTC for a timezone. Provide it once per test, and each test gets a
+ * database of its own.
  */
 export const TestDatabase = Layer.unwrap(
   Effect.sync(() => {
@@ -60,7 +64,7 @@ export const TestDatabase = Layer.unwrap(
       yield* sql`PRAGMA foreign_keys = ON`;
     });
 
-    return Layer.mergeAll(Layer.effectDiscard(migrate), InOneTransaction, KnownIds).pipe(
+    return Layer.mergeAll(Layer.effectDiscard(migrate), InOneTransaction, KnownIds, InUtc).pipe(
       Layer.provideMerge(SqliteClient.layer({ filename })),
     );
   }),

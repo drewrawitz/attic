@@ -1,5 +1,6 @@
-import { Cause, Effect, Layer, Logger, Schema } from "effect";
+import { Cause, DateTime, Effect, Layer, Logger, Schema } from "effect";
 import { SqlClient } from "effect/sql";
+import { TestClock } from "effect/testing";
 import { callTool, type Tool, type ToolResult } from "../src/tool.ts";
 import { AtomicBatch, Ids } from "../src/write.ts";
 
@@ -8,9 +9,16 @@ import { AtomicBatch, Ids } from "../src/write.ts";
  * database first and then see what the client is sent.
  */
 export const call = (tool: Tool, input: unknown) =>
-  Effect.flatMap(Effect.context<SqlClient.SqlClient | AtomicBatch | Ids>(), (services) =>
-    callTool(tool, input, Layer.succeedContext(services)),
+  Effect.flatMap(
+    Effect.context<SqlClient.SqlClient | AtomicBatch | Ids | DateTime.CurrentTimeZone>(),
+    (services) => callTool(tool, input, Layer.succeedContext(services)),
   );
+
+/**
+ * Sets what day it is: the clock reads noon UTC on this date. A test's clock starts at the
+ * first day of 1970, so a test of anything that goes by today's date sets the day first.
+ */
+export const todayIs = (date: string) => TestClock.setTime(Date.parse(`${date}T12:00:00Z`));
 
 /** What a tool sends back to a test: what it returned, or the text of a refusal. */
 export type Answer<Returned = Record<string, unknown>> = Partial<Returned> & {
@@ -42,12 +50,13 @@ export const readingLog = <A, R>(called: Effect.Effect<A, never, R>) =>
   });
 
 /**
- * What a write needs beside the database, for a test that brings a database of its own to a
- * tool that only reads. Such a tool asks for neither.
+ * What a tool is handed beside the database, for a test that brings a database of its own to
+ * a tool that only reads. Such a tool asks for none of it.
  */
-export const NoWrites = Layer.merge(
+export const NoWrites = Layer.mergeAll(
   Layer.succeed(AtomicBatch, AtomicBatch.of({ run: () => Effect.die("this tool only reads") })),
   Layer.succeed(Ids, Ids.of({ next: Effect.die("this tool only reads") })),
+  Layer.orDie(DateTime.layerCurrentZoneNamed("UTC")),
 );
 
 /**
