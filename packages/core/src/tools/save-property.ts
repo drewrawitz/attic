@@ -1,18 +1,19 @@
 import { Effect, Schema } from "effect";
 import { SqlClient } from "effect/sql";
 import { partialDate } from "../dates.ts";
-import { propertiesThere } from "../property.ts";
+import { everyProperty, propertiesThere } from "../property.ts";
 import {
   columnsToSet,
   dataPatch,
   insertRow,
   nameText,
-  saved,
+  runSave,
   SAVE_ANNOTATIONS,
   updateRow,
+  type SaveStep,
 } from "../save.ts";
 import { defineTool, optional, ToolError } from "../tool.ts";
-import { Ids, Write, type Step } from "../write.ts";
+import { Ids } from "../write.ts";
 import { readRecord } from "./get-record.ts";
 
 const NO_NAME = "Give a name to create a Property, or the id of the Property to update.";
@@ -71,23 +72,16 @@ export const saveProperty = defineTool({
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       const ids = yield* Ids;
-      const write = yield* Write;
       const columns = yield* columnsToSet(given, clear);
 
-      // The database compares the name, so case is ignored the same way it is everywhere else.
-      const properties = yield* sql<{ id: string; name: string; named: number }>`
-        SELECT id, name, (name = ${given.name ?? null}) AS named FROM properties ORDER BY name`;
-      const byName = properties.find((property) => property.named === 1);
+      const properties = yield* everyProperty(given.name);
+      const byName = properties.find((property) => property.hasName);
       const existing =
         id === undefined ? byName : properties.find((property) => property.id === id);
 
       // Runs the one step of the save, and replies with what it saved and the whole record.
-      const save = Effect.fnUntraced(function* (step: Step, name: string, created: boolean) {
-        const change = yield* write.run([step]);
-        return {
-          ...saved(change, [{ type: step.type, id: step.id, name, created }]),
-          record: yield* readRecord(step.type, step.id),
-        };
+      const save = Effect.fnUntraced(function* (step: SaveStep) {
+        return { ...(yield* runSave([step])), record: yield* readRecord("property", step.id) };
       });
 
       if (existing === undefined) {
@@ -97,8 +91,8 @@ export const saveProperty = defineTool({
           });
         }
         if (given.name === undefined) return yield* new ToolError({ message: NO_NAME });
-        const created = insertRow(sql, "property", yield* ids.next, columns, data);
-        return yield* save(created, given.name, true);
+        const property = { type: "property", id: yield* ids.next, name: given.name } as const;
+        return yield* save(insertRow(sql, property, columns, data));
       }
 
       if (byName !== undefined && byName.id !== existing.id) {
@@ -112,7 +106,11 @@ export const saveProperty = defineTool({
       const newName = id === undefined ? undefined : given.name;
       const { name: _, ...others } = columns;
       const sets = newName === undefined ? others : columns;
-      const updated = updateRow(sql, "property", existing.id, sets, data);
-      return yield* save(updated, newName ?? existing.name, false);
+      const property = {
+        type: "property",
+        id: existing.id,
+        name: newName ?? existing.name,
+      } as const;
+      return yield* save(updateRow(sql, property, sets, data));
     }),
 });

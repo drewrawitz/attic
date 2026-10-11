@@ -2,7 +2,7 @@ import { AtomicBatch, callTool, Ids, tools, type Tool, type ToolResult } from "@
 import { D1Client } from "@effect/sql-d1";
 import { McpServer, type CallToolResult } from "@modelcontextprotocol/server";
 import { createMcpHandler, getMcpAuthContext } from "agents/mcp/server";
-import { Effect, Layer, Schema } from "effect";
+import { DateTime, Effect, Layer, Schema } from "effect";
 import type { WorkerEnv } from "../../../alchemy.run.ts";
 import { isAllowed } from "./allowlist.ts";
 
@@ -63,9 +63,13 @@ const D1Batch = Layer.effect(
   ),
 );
 
-// What a tool runs on in the Worker: the D1 database, its batch, and ULIDs for new records.
+// What a tool runs on in the Worker: the D1 database, its batch, ULIDs for new records, and
+// the configured timezone, which is where a tool reads today's date. Effect keeps each timezone
+// it has made, so only the first call of an isolate pays for making it.
 const services = (env: WorkerEnv) =>
-  Layer.merge(D1Batch, Ids.layer).pipe(Layer.provideMerge(D1Client.layer({ db: env.DB })));
+  Layer.mergeAll(D1Batch, Ids.layer, DateTime.layerCurrentZoneNamed(env.ATTIC_TIMEZONE)).pipe(
+    Layer.provideMerge(D1Client.layer({ db: env.DB })),
+  );
 
 // Runs a tool for the signed-in caller, on the Worker's database, and puts what it sends back
 // in the shape MCP expects. The caller is checked here, before anything starts, because the

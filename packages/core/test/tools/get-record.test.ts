@@ -49,6 +49,19 @@ it.effect("an Item comes back with its exact model, data as an object, and money
   }).pipe(Effect.provide(TestDatabase)),
 );
 
+// A Property is the one record that can be given by its name, so a name that is a little off
+// must never come back as an id that is not there.
+it.effect("a Property's name with spaces around it is not said to be a missing id", () =>
+  Effect.gen(function* () {
+    yield* loadHousehold;
+
+    expect(yield* getting("property", " Maple Street house ")).toEqual({
+      refused:
+        'There is no Property " Maple Street house ". The Properties are: Elm Court apartment, Maple Street house.',
+    });
+  }).pipe(Effect.provide(TestDatabase)),
+);
+
 it.effect("a record that does not exist is an error that names the type and the id", () =>
   Effect.gen(function* () {
     yield* loadHousehold;

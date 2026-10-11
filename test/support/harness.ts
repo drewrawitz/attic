@@ -2,6 +2,7 @@ import * as Cloudflare from "alchemy/Cloudflare";
 import * as Test from "alchemy/Test/Vitest";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
+import * as Schedule from "effect/Schedule";
 import Stack from "../../alchemy.run.ts";
 import { startFakeGoogle } from "./fake-google.ts";
 
@@ -24,9 +25,10 @@ const harness = Test.make({
 const { afterAll } = harness;
 export const { test, beforeAll, deploy } = harness;
 
-// The tests bring their own sign-in settings, so they pass on a fresh clone and are not
-// changed by whatever a local .env holds.
+// The tests bring their own settings, so they pass on a fresh clone and are not changed by
+// whatever a local .env holds. The timezone is left unset, which is UTC.
 const SETTINGS: Record<string, string | undefined> = {
+  ATTIC_TIMEZONE: undefined,
   GOOGLE_CLIENT_ID: GOOGLE_CLIENT.id,
   GOOGLE_CLIENT_SECRET: GOOGLE_CLIENT.secret,
   GOOGLE_TOKEN_URL: google.tokenUrl,
@@ -77,3 +79,16 @@ afterAll(Effect.promise(() => google.close()));
 // A test body that talks to the Worker over HTTP, given its address.
 export const onWorker = (body: (url: string) => Promise<void>) =>
   Effect.flatMap(stack, ({ url }) => Effect.promise(() => body(url!)));
+
+// A second deploy returns a moment before the restarted Worker takes over, and until then
+// the old one still answers. So what follows a change of settings is checked until it holds.
+// The check has to be one the old Worker fails. If it passes on both, the next deploy can land
+// while this one is still restarting the Worker, and that takes down Alchemy's sidecar in
+// 2.0.0-beta.81: it dies on `write EPIPE`, and the test with "WebSocket connection failed".
+export const eventually = (check: (url: string) => Promise<void>) =>
+  Effect.flatMap(stack, ({ url }) =>
+    Effect.retry(
+      Effect.tryPromise(() => check(url!)),
+      Schedule.max([Schedule.spaced("50 millis"), Schedule.recurs(100)]),
+    ),
+  );
