@@ -186,7 +186,7 @@ const counting = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const [counts] = yield* sql<Record<string, number>>`
     SELECT (SELECT count(*) FROM work) AS work,
-           (SELECT count(*) FROM work_items) AS items,
+           (SELECT count(*) FROM work_items) AS work_items,
            (SELECT count(*) FROM work_spaces) AS work_spaces,
            (SELECT count(*) FROM spaces) AS spaces,
            (SELECT count(*) FROM vendors) AS vendors,
@@ -693,6 +693,15 @@ it.effect("Work needs a Property or at least one Item, and at no Property it is 
     ).toEqual(noSpace("Sharpened the knives"));
     expect(yield* counting).toEqual(before);
 
+    // Work that names an Item already can go to no Property without naming it again. The
+    // water heater's Work is at the Maple Street house, in the Garage.
+    const taken = yield* logging({ id: HEATER, clear: ["property"] });
+    expect(taken.record).toMatchObject({
+      property_id: null,
+      items: [{ id: "seed-item-water-heater" }],
+      spaces: [],
+    });
+
     // It can name other Items, and an empty list of Spaces says what is so already.
     const swapped = yield* logging({ id: "id-0002", item_ids: [TREADMILL], spaces: [] });
     expect(swapped.record).toMatchObject({
@@ -809,7 +818,7 @@ it.effect("a list of 50 is saved as one Change", () =>
     expect(yield* counting).toEqual({
       ...before,
       work: before.work + 50,
-      items: before.items + 50,
+      work_items: before.work_items + 50,
       work_spaces: before.work_spaces + 50,
       changes: 1,
     });
@@ -885,7 +894,7 @@ it.effect("a Space or a Vendor that several entries name is created once", () =>
   Effect.gen(function* () {
     yield* loadHousehold;
     yield* todayIs(TODAY);
-    const painted = (room: string) => ({ kind: "improvement", title: `Painted the ${room}` });
+    const painted = (where: string) => ({ kind: "improvement", title: `Painted the ${where}` });
 
     const logged = yield* logging({
       work: [
@@ -989,7 +998,7 @@ it.effect("with two Current properties, a list is refused for the entries on no 
     yield* todayIs(TODAY);
     yield* call(saveProperty, { name: "Birch Road house", start_on: "2026-10" });
     const before = yield* counting;
-    const swept = (room: string) => ({ kind: "maintenance", title: `Swept the ${room}` });
+    const swept = (where: string) => ({ kind: "maintenance", title: `Swept the ${where}` });
     const belt = { kind: "maintenance", title: "Lubricated the treadmill belt" };
 
     const list = [swept("garage"), { ...belt, item_ids: [TREADMILL] }, swept("porch")];
@@ -1015,7 +1024,7 @@ work.0, work.2: 2 Properties are current: Birch Road house, Maple Street house. 
   }).pipe(Effect.provide(TestDatabase)),
 );
 
-// The wall color a room had before goes on the Work, and the new one on the Space.
+// The wall color a Space had before goes on the Work, and the new one on the Space.
 it.effect("repainting is Work that names the Space, with the old color in data.replaced", () =>
   Effect.gen(function* () {
     yield* loadHousehold;

@@ -200,12 +200,12 @@ const sharedByEntries = Effect.gen(function* () {
 });
 
 // The steps that save one piece of Work, with its id. `was` is the Work as it is now, when the
-// entry gives the id of one. `itemsThere` has the id of each Item the call names that is there.
+// entry gives the id of one. `knownItemIds` has the id of each Item the call names that is there.
 // Nothing is written here, so an entry that is refused leaves nothing behind.
 const stepsFor = Effect.fnUntraced(function* (
   entry: Entry,
   was: Existing | undefined,
-  itemsThere: ReadonlySet<string>,
+  knownItemIds: ReadonlySet<string>,
   { sql, ...once }: Effect.Success<typeof sharedByEntries>,
 ) {
   const { id, kind, title, data, note, clear = [] } = entry;
@@ -215,7 +215,7 @@ const stepsFor = Effect.fnUntraced(function* (
     return yield* new ToolError({ message: NO_KIND_OR_TITLE });
   }
   // An Item the Work names has to be there.
-  const missing = (entry.item_ids ?? []).find((each) => !itemsThere.has(each));
+  const missing = (entry.item_ids ?? []).find((each) => !knownItemIds.has(each));
   if (missing !== undefined) return yield* noRecord("item", missing);
 
   yield* refuseGivenAndCleared(entry, clear);
@@ -324,14 +324,14 @@ export const logWork = defineTool({
       // The reads do not grow with the list: the Work it updates is read in one query, and the
       // Items it names in another.
       const existing = yield* workNow(entries.ids);
-      const itemsThere = yield* itemIdsIn(entries.all.flatMap(({ item_ids = [] }) => item_ids));
+      const knownItemIds = yield* itemIdsIn(entries.all.flatMap(({ item_ids = [] }) => item_ids));
 
       // Every entry is checked before anything is written.
       const saves = yield* planEvery(entries, (entry) =>
         stepsFor(
           entry,
           entry.id === undefined ? undefined : existing.get(entry.id),
-          itemsThere,
+          knownItemIds,
           shared,
         ),
       );

@@ -355,16 +355,16 @@ export const entriesOf = <Entry extends MayHaveId>(
 // What an error says of a list that was not saved: each entry that was refused, by where it is
 // in the list, and why. Entries refused for the same reason are named together, so fifty Items
 // with no Property to be at say so once.
-const listRefusal = (
-  refusals: ReadonlyArray<readonly [at: number, why: string]>,
+const listNotSaved = (
+  reasons: ReadonlyArray<readonly [at: number, why: string]>,
   of: number,
   field: string,
 ) => {
-  const lines = [...Map.groupBy(refusals, ([, why]) => why)].map(
+  const lines = [...Map.groupBy(reasons, ([, why]) => why)].map(
     ([why, forThat]) => `${forThat.map(([at]) => `${field}.${at}`).join(", ")}: ${why}`,
   );
-  const were = refusals.length === 1 ? "was" : "were";
-  return `Nothing was saved, because ${refusals.length} of the ${of} entries in \`${field}\` ${were} refused. Entries are counted from 0.\n${lines.join("\n")}`;
+  const were = reasons.length === 1 ? "was" : "were";
+  return `Nothing was saved, because ${reasons.length} of the ${of} entries in \`${field}\` ${were} refused. Entries are counted from 0.\n${lines.join("\n")}`;
 };
 
 /**
@@ -396,13 +396,13 @@ export const planEvery = Effect.fnUntraced(function* <Entry extends MayHaveId, P
       Effect.catchTag("ToolError", ({ message }) => Effect.succeed(Result.fail(message))),
     );
   });
-  const refusals = outcomes.flatMap((outcome, at) =>
+  const reasons = outcomes.flatMap((outcome, at) =>
     Result.isFailure(outcome) ? [[at, outcome.failure] as const] : [],
   );
-  const [first] = refusals;
+  const [first] = reasons;
   if (first !== undefined) {
     return yield* new ToolError({
-      message: asList ? listRefusal(refusals, all.length, field) : first[1],
+      message: asList ? listNotSaved(reasons, all.length, field) : first[1],
     });
   }
   return outcomes.flatMap((outcome) => (Result.isSuccess(outcome) ? [outcome.success] : []));
