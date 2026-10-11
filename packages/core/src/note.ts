@@ -1,6 +1,6 @@
 import { Effect } from "effect";
 import { SqlClient } from "effect/sql";
-import { insertRow, type SaveStep } from "./save.ts";
+import { insertRow, updateRow, type SaveStep } from "./save.ts";
 import { Ids } from "./write.ts";
 
 /** The types of record a Note can be attached to. */
@@ -34,6 +34,20 @@ export const newNote = Effect.fnUntraced(function* (
     body,
   });
 });
+
+/**
+ * The steps that take a record's Notes to the Property the record has moved to. A Note on a
+ * record takes that record's Property, so a save that moves a record moves its Notes in the
+ * same Change. `propertyId` is null for a record that is now at no Property.
+ */
+export const notesMovedTo = (
+  sql: SqlClient.SqlClient,
+  notes: ReadonlyArray<{ readonly id: string; readonly body: string }>,
+  propertyId: string | null,
+): ReadonlyArray<SaveStep> =>
+  notes.map(({ id, body }) =>
+    updateRow(sql, { type: "note", id, name: opening(body) }, { property_id: propertyId }),
+  );
 
 /**
  * The optional Note of a save: a Note attached to the record that was saved, written in the

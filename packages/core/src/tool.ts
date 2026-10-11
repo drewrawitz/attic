@@ -13,6 +13,7 @@ import {
 } from "effect";
 import type { SqlClient } from "effect/sql";
 import type { SqlError } from "effect/sql/SqlError";
+import type { Currency } from "./money.ts";
 import { Write, type AtomicBatch, type Ids } from "./write.ts";
 
 /**
@@ -49,10 +50,16 @@ export const optional = <Field extends Schema.Constraint>(field: Field) =>
 
 /**
  * What a tool runs on, which whoever calls one brings: a database, that database's atomic
- * batch, a maker of ids for the records a tool creates, and the configured timezone, which is
- * where a tool reads today's date.
+ * batch, a maker of ids for the records a tool creates, the configured timezone, which is
+ * where a tool reads today's date, and the configured currency, which is how a tool writes an
+ * amount out.
  */
-export type ToolServices = SqlClient.SqlClient | AtomicBatch | Ids | DateTime.CurrentTimeZone;
+export type ToolServices =
+  | SqlClient.SqlClient
+  | AtomicBatch
+  | Ids
+  | DateTime.CurrentTimeZone
+  | Currency;
 
 // What a tool does once its input has been checked: a program over the database. It has all
 // of the above but the atomic batch. In its place it has the one write its call makes.

@@ -28,6 +28,12 @@ const filled = (description: string, whenEmpty: string) =>
 export const nameText = (description: string) =>
   filled(description, "Expected a name with something in it.");
 
+/**
+ * A name as the database compares it: the letters A to Z in lowercase, and every other
+ * character as it is. Two names with the same key are one name to a column that ignores case.
+ */
+export const nameKey = (name: string) => name.replace(/[A-Z]/g, (letter) => letter.toLowerCase());
+
 /** The body of a Note in a tool's input: text with something in it. */
 export const noteText = (description: string) =>
   filled(description, "Expected a Note with something in it.");
@@ -44,6 +50,24 @@ export const dataPatch = (description: string) =>
   });
 
 /**
+ * Refuses a save that gives a field a value and names it in `clear` as well. `given` has a key
+ * for each field that was given, and none for one that was left out.
+ */
+export const refuseGivenAndCleared = (
+  given: Readonly<Record<string, unknown>>,
+  clear: ReadonlyArray<string> = [],
+): Effect.Effect<void, ToolError> => {
+  const both = clear.filter((field) => Object.hasOwn(given, field));
+  return both.length === 0
+    ? Effect.void
+    : Effect.fail(
+        new ToolError({
+          message: `A field is given a value or cleared, not both in one call. Both were asked for: ${both.join(", ")}.`,
+        }),
+      );
+};
+
+/**
  * The columns a save sets: each field that was given, and null for each field named in
  * `clear`. A field that was left out is in neither, so it is left alone. A field cannot be in
  * both.
@@ -51,17 +75,11 @@ export const dataPatch = (description: string) =>
 export const columnsToSet = (
   given: Readonly<Record<string, unknown>>,
   clear: ReadonlyArray<string> = [],
-): Effect.Effect<Readonly<Record<string, unknown>>, ToolError> => {
-  const both = clear.filter((field) => Object.hasOwn(given, field));
-  if (both.length > 0) {
-    return Effect.fail(
-      new ToolError({
-        message: `A field is given a value or cleared, not both in one call. Both were asked for: ${both.join(", ")}.`,
-      }),
-    );
-  }
-  return Effect.succeed({ ...given, ...Object.fromEntries(clear.map((field) => [field, null])) });
-};
+): Effect.Effect<Readonly<Record<string, unknown>>, ToolError> =>
+  Effect.as(refuseGivenAndCleared(given, clear), {
+    ...given,
+    ...Object.fromEntries(clear.map((field) => [field, null])),
+  });
 
 // The columns the statements below write themselves, which a save never sets by name.
 const WRITTEN_HERE = new Set(["id", "data", "created_at", "updated_at"]);
@@ -106,6 +124,48 @@ export interface SaveStep extends Step, Listed {
 export interface Referred extends Listed {
   readonly steps: ReadonlyArray<SaveStep>;
 }
+
+/**
+ * Asks for each thing once in a call, however many entries of a list ask for it. `keyOf` says
+ * what an ask is for, and two asks with the same key get the one answer. An ask that names
+ * nothing has no key, and all of those get one answer too. A refusal is an answer as well,
+ * and comes back to every entry that asks.
+ */
+export const askedOnce = <Asked extends ReadonlyArray<unknown>, Answer, Refusal, Needs>(
+  ask: (...asked: Asked) => Effect.Effect<Answer, Refusal, Needs>,
+  keyOf: (...asked: Asked) => string | undefined,
+) => {
+  const answers = new Map<string | undefined, Effect.Effect<Answer, Refusal, Needs>>();
+  return Effect.fnUntraced(function* (...asked: Asked) {
+    const key = keyOf(...asked);
+    let answer = answers.get(key);
+    if (answer === undefined) {
+      answer = yield* Effect.cached(ask(...asked));
+      answers.set(key, answer);
+    }
+    return yield* answer;
+  });
+};
+
+/**
+ * The same for a record that is created on first use. The steps that create it go to the first
+ * entry that names it, and each later one gets the record with no steps. So a list that names
+ * a new Space in every entry has one INSERT for it in its batch.
+ */
+export const referredOnce = <Asked extends ReadonlyArray<unknown>, Refusal, Needs>(
+  refer: (...asked: Asked) => Effect.Effect<Referred, Refusal, Needs>,
+  keyOf: (...asked: Asked) => string,
+) => {
+  const once = askedOnce(refer, keyOf);
+  const handedOver = new Set<string>();
+  return (...asked: Asked) =>
+    Effect.map(once(...asked), (referred): Referred => {
+      const key = keyOf(...asked);
+      if (handedOver.has(key)) return { ...referred, steps: [] };
+      handedOver.add(key);
+      return referred;
+    });
+};
 
 /**
  * The step that creates a record's row: its id, the columns that were given, and `data`. A
@@ -157,15 +217,47 @@ export const updateRow = (
 };
 
 /**
+ * The steps that replace one of a record's link sets with the ids given: the set is emptied,
+ * and then filled. `step` is the step that writes the record's own row, and these go after it
+ * in the batch. They are about the same record, so its Change has the set before and after. A
+ * record the step creates has no set to empty yet.
+ */
+export const replaceLinks = (
+  sql: SqlClient.SqlClient,
+  step: SaveStep,
+  name: string,
+  ids: ReadonlyArray<string>,
+): ReadonlyArray<SaveStep> => {
+  const shape: RecordShape = SHAPES[step.type];
+  const set = shape.links.find((link) => link.name === name);
+  if (set === undefined) throw new Error(`${shape.table} has no link set named ${name}.`);
+
+  const emptying = sql.unsafe(`DELETE FROM ${set.table} WHERE ${set.from} = ?`, [step.id]);
+  const filling = sql.unsafe(
+    `INSERT INTO ${set.table} (${set.from}, ${set.to}) SELECT ?, value FROM json_each(?)`,
+    [step.id, JSON.stringify(ids)],
+  );
+  return [...(step.created ? [] : [emptying]), ...(ids.length === 0 ? [] : [filling])].map(
+    (statement) => ({ ...step, statement }),
+  );
+};
+
+/**
  * Runs the steps of a save as the one write of its call. Returns what every save sends back:
- * the id of its Change, and every record it created or updated, by type, id, and name. A call
- * that saves one record adds that record to this, as get_record returns it.
+ * the id of its Change, and every record it created or updated, by type, id, and name. A
+ * record that took several steps is listed once. A call that saves one record adds that
+ * record to this, as get_record returns it.
  */
 export const runSave = Effect.fnUntraced(function* (steps: ReadonlyArray<SaveStep>) {
   const write = yield* Write;
   const change = yield* write.run(steps);
+  const seen = new Set<string>();
+  const records = steps.filter(({ type, id }) => {
+    const record = `${type} ${id}`;
+    return !seen.has(record) && seen.add(record) !== undefined;
+  });
   const those = (created: boolean) =>
-    steps
+    records
       .filter((step) => step.created === created)
       .map(({ type, id, name }) => ({ type, id, name }));
   return { change_id: change, created: those(true), updated: those(false) };

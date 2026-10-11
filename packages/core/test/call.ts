@@ -1,5 +1,6 @@
 import { Cause, DateTime, Effect, Layer, Logger, type StandardSchema } from "effect";
 import { TestClock } from "effect/testing";
+import { Currency } from "../src/money.ts";
 import { callTool, type Tool, type ToolResult, type ToolServices } from "../src/tool.ts";
 import { AtomicBatch, Ids } from "../src/write.ts";
 
@@ -50,6 +51,9 @@ export const readingLog = <A, R>(called: Effect.Effect<A, never, R>) =>
 /** The timezone the tests read today's date in, unless a test brings another. */
 export const InUtc = Layer.orDie(DateTime.layerCurrentZoneNamed("UTC"));
 
+/** The currency the tests write an amount out in, unless a test brings another. */
+export const InUsd = Currency.layer("USD");
+
 /**
  * What a tool is handed beside the database, for a test that brings a database of its own to
  * a tool that only reads. Such a tool asks for none of it.
@@ -58,6 +62,7 @@ export const NoWrites = Layer.mergeAll(
   Layer.succeed(AtomicBatch, AtomicBatch.of({ run: () => Effect.die("this tool only reads") })),
   Layer.succeed(Ids, Ids.of({ next: Effect.die("this tool only reads") })),
   InUtc,
+  InUsd,
 );
 
 // What the check found wrong, the way the MCP SDK writes it for the client: the field it is

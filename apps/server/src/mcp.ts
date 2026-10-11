@@ -1,4 +1,12 @@
-import { AtomicBatch, callTool, Ids, tools, type Tool, type ToolResult } from "@attic/core";
+import {
+  AtomicBatch,
+  callTool,
+  Currency,
+  Ids,
+  tools,
+  type Tool,
+  type ToolResult,
+} from "@attic/core";
 import { D1Client } from "@effect/sql-d1";
 import { McpServer, type CallToolResult } from "@modelcontextprotocol/server";
 import { createMcpHandler, getMcpAuthContext } from "agents/mcp/server";
@@ -41,13 +49,17 @@ const D1Batch = Layer.effect(
   ),
 );
 
-// What a tool runs on in the Worker: the D1 database, its batch, ULIDs for new records, and
-// the configured timezone, which is where a tool reads today's date. Effect keeps each timezone
-// it has made, so only the first call of an isolate pays for making it.
+// What a tool runs on in the Worker: the D1 database, its batch, ULIDs for new records, the
+// configured timezone, which is where a tool reads today's date, and the configured currency,
+// which is how a tool writes an amount out. Effect keeps each timezone it has made, so only
+// the first call of an isolate pays for making it.
 const services = (env: WorkerEnv) =>
-  Layer.mergeAll(D1Batch, Ids.layer, DateTime.layerCurrentZoneNamed(env.ATTIC_TIMEZONE)).pipe(
-    Layer.provideMerge(D1Client.layer({ db: env.DB })),
-  );
+  Layer.mergeAll(
+    D1Batch,
+    Ids.layer,
+    DateTime.layerCurrentZoneNamed(env.ATTIC_TIMEZONE),
+    Currency.layer(env.ATTIC_CURRENCY),
+  ).pipe(Layer.provideMerge(D1Client.layer({ db: env.DB })));
 
 // Runs a tool for the signed-in caller, on the Worker's database, and puts what it sends back
 // in the shape MCP expects. The caller is checked here, before anything starts, because the

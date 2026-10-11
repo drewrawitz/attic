@@ -2,7 +2,13 @@ import { expect } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import { onDatabase } from "./support/database.ts";
 import { deployWith, eventually, test } from "./support/harness.ts";
-import { answerFrom, householdClient, type Answer } from "./support/household.ts";
+import {
+  answerFrom,
+  asClientWith,
+  householdClient,
+  ULID,
+  type Fields,
+} from "./support/household.ts";
 import { mcp } from "./support/mcp-client.ts";
 
 // What `save_space`, `save_vendor`, `save_category`, and `add_note` do is tested on Node
@@ -10,8 +16,6 @@ import { mcp } from "./support/mcp-client.ts";
 // hold records of two types, and today's date is read from the Worker's own clock. So these go
 // through the real Worker on local D1, with the made-up household loaded. Its Maple Street
 // house is the one Current property.
-
-type Fields = Record<string, unknown>;
 
 // What these tests save. Nothing else in the database has these names, and every Note they
 // write starts the same way.
@@ -44,18 +48,7 @@ const cleanUp = onDatabase(
 );
 
 // A test body that calls tools as a signed-in client, on a database with none of the above.
-const asClient = <E, R>(
-  body: (
-    call: (tool: string, input: unknown) => Effect.Effect<Answer<Fields>>,
-  ) => Effect.Effect<void, E, R>,
-) =>
-  Effect.gen(function* () {
-    const client = yield* householdClient;
-    yield* cleanUp;
-    yield* body((tool, input) =>
-      Effect.promise(() => answerFrom<Fields>(client, tool, input)),
-    ).pipe(Effect.ensuring(Effect.orDie(cleanUp)));
-  });
+const asClient = asClientWith(cleanUp);
 
 test(
   "a signed-in client is told what the four tools take, and that they write without destroying",
@@ -127,9 +120,6 @@ test(
     }
   }),
 );
-
-// A ULID: 26 characters of Crockford's base 32.
-const ULID = /^[0-9A-HJKMNP-TV-Z]{26}$/;
 
 const WALLS = {
   brand: "Sherwin-Williams",
