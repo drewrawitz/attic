@@ -1,6 +1,7 @@
 import * as Effect from "effect/Effect";
 import { householdStack, type Operation } from "../../household/stack.ts";
 import { beforeAll, deploy, stack } from "./harness.ts";
+import { callOnWorker } from "./mcp-client.ts";
 import { ALLOWED_ACCOUNT, tokenFor } from "./sign-in.ts";
 
 // Runs one of the two commands the way `vp run household:load` and `vp run household:remove`
@@ -18,3 +19,22 @@ export const householdClient = beforeAll(
     return { url: url!, token: yield* Effect.promise(() => tokenFor(url!, ALLOWED_ACCOUNT)) };
   }),
 );
+
+// What a tool sends back to a test: what it returned, or the text of a refusal.
+export type Answer<Returned> = Partial<Returned> & { readonly refused?: string };
+
+// A test body that calls one tool, as a signed-in client, with the made-up household loaded.
+export const calling =
+  <Returned>(tool: string) =>
+  (body: (call: (input: unknown) => Promise<Answer<Returned>>) => Promise<void>) =>
+    Effect.flatMap(householdClient, ({ url, token }) =>
+      Effect.promise(() =>
+        body(async (input) => {
+          const { result } = await callOnWorker(url, token, tool, input);
+          const text = result!.content[0].text;
+          return (
+            result!.isError === true ? { refused: text } : JSON.parse(text)
+          ) as Answer<Returned>;
+        }),
+      ),
+    );

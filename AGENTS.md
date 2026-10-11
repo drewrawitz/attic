@@ -43,7 +43,7 @@ Pin exact versions. Each `package.json` is the source of truth for what is insta
 
 Every tool follows these.
 
-- **Property:** accepts an id or a name. When omitted, use the one Current property. With none or several, return an error that lists them. Tools decide "current" in code, with today in the configured timezone. The `current_properties` and `inventory` views use the UTC date and are only for `query`.
+- **Property:** accepts an id or a name. When omitted, use the one Current property. With none or several, return an error that lists them. Tools decide "current" in code, with today in the configured timezone. The `current_properties` and `inventory` views use the UTC date and are only for `query`. `search` is the one exception: with no Property it looks through every Property, because a Vendor has none and "who did we use last time" may be at a former Property.
 - **Spaces and Vendors:** referenced by name, matched ignoring case, created on first use.
 - **Categories:** must already exist. An unknown one is an error that lists the closest matches.
 - **Money:** dollars (the configured currency) at the tool boundary, integer cents in the database.
