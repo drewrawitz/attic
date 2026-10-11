@@ -12,6 +12,15 @@ export const call = (tool: Tool, input: unknown) =>
     callTool(tool, input, Layer.succeedContext(services)),
   );
 
+/** What a tool sends back to a test: what it returned, or the text of a refusal. */
+export type Answer<Returned = Record<string, unknown>> = Partial<Returned> & {
+  readonly refused?: string;
+};
+
+/** Reads what a call sent the client. */
+export const answer = <Returned = Record<string, unknown>>({ text, isError }: ToolResult) =>
+  (isError ? { refused: text } : JSON.parse(text)) as Answer<Returned>;
+
 /** All a client hears of a failure nobody planned for. */
 export const UNEXPECTED = {
   text: "Attic hit an error it did not expect. The details are in the Worker's log.",

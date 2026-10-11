@@ -3,14 +3,8 @@ import { Effect } from "effect";
 import { SqlClient } from "effect/sql";
 import { getRecord } from "../../src/tools/get-record.ts";
 import { saveProperty } from "../../src/tools/save-property.ts";
-import { call, callAsClient, readingLog, UNEXPECTED } from "../call.ts";
+import { answer, call, callAsClient, readingLog, UNEXPECTED, type Answer } from "../call.ts";
 import { TestDatabase } from "../TestDatabase.ts";
-
-// What a tool sends back: what it returned, or the text of a refusal.
-type Answer = Record<string, unknown> & { readonly refused?: string };
-
-const answer = ({ text, isError }: { text: string; isError: boolean }): Answer =>
-  isError ? { refused: text } : JSON.parse(text);
 
 // A save the way a client sends one: checked against the tool's input first.
 const saving = (input: unknown) => callAsClient(saveProperty, input).pipe(Effect.map(answer));

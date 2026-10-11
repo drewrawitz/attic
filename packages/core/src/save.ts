@@ -16,7 +16,7 @@ export const SAVE_ANNOTATIONS: ToolAnnotations = { readOnlyHint: false, destruct
  * A name or a title in a tool's input: text with something in it. The spaces around it are
  * dropped, so "Kitchen " is never a second Kitchen. It is given what the name is of.
  */
-export const named = (description: string) =>
+export const nameText = (description: string) =>
   Schema.String.annotate({ description }).pipe(
     Schema.decodeTo(
       Schema.String.check(Schema.isNonEmpty({ message: "Expected a name with something in it." })),
@@ -134,9 +134,9 @@ export interface Saved {
  * returns it.
  */
 export const saved = (change: string, records: ReadonlyArray<Saved>) => {
-  const named = (created: boolean) =>
+  const those = (created: boolean) =>
     records
       .filter((record) => record.created === created)
       .map(({ type, id, name }) => ({ type, id, name }));
-  return { change_id: change, created: named(true), updated: named(false) };
+  return { change_id: change, created: those(true), updated: those(false) };
 };

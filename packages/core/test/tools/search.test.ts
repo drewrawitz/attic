@@ -2,22 +2,19 @@ import { expect, it } from "@effect/vitest";
 import { Effect } from "effect";
 import { SqlClient } from "effect/sql";
 import { search } from "../../src/tools/search.ts";
-import { call } from "../call.ts";
+import { answer, call } from "../call.ts";
 import { loadHousehold } from "../household.ts";
 import { TestDatabase } from "../TestDatabase.ts";
 
 // What `search` sends back: the records it found, and a note when there were more. A refusal
 // is its text.
-interface Answer {
-  readonly results?: ReadonlyArray<Record<string, unknown>>;
-  readonly note?: string;
-  readonly refused?: string;
+interface Found {
+  readonly results: ReadonlyArray<Record<string, unknown>>;
+  readonly note: string;
 }
 
 const searching = (input: unknown) =>
-  call(search, input).pipe(
-    Effect.map(({ text, isError }): Answer => (isError ? { refused: text } : JSON.parse(text))),
-  );
+  call(search, input).pipe(Effect.map((sent) => answer<Found>(sent)));
 
 // The fridge's `data`, as a curated tool shows it.
 const FRIDGE_DATA = {

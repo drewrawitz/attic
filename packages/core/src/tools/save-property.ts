@@ -6,7 +6,7 @@ import {
   columnsToSet,
   dataPatch,
   insertRow,
-  named,
+  nameText,
   saved,
   SAVE_ANNOTATIONS,
   updateRow,
@@ -38,7 +38,7 @@ export const saveProperty = defineTool({
       }),
     ),
     name: optional(
-      named(
+      nameText(
         "What the Property is called, such as Maple Street house. No two Properties can have the same name, whatever its case. A new Property needs one.",
       ),
     ),
@@ -77,8 +77,9 @@ export const saveProperty = defineTool({
       // The database compares the name, so case is ignored the same way it is everywhere else.
       const properties = yield* sql<{ id: string; name: string; named: number }>`
         SELECT id, name, (name = ${given.name ?? null}) AS named FROM properties ORDER BY name`;
-      const named = properties.find((property) => property.named === 1);
-      const existing = id === undefined ? named : properties.find((property) => property.id === id);
+      const byName = properties.find((property) => property.named === 1);
+      const existing =
+        id === undefined ? byName : properties.find((property) => property.id === id);
 
       // Runs the one step of the save, and replies with what it saved and the whole record.
       const save = Effect.fnUntraced(function* (step: Step, name: string, created: boolean) {
@@ -100,9 +101,9 @@ export const saveProperty = defineTool({
         return yield* save(created, given.name, true);
       }
 
-      if (named !== undefined && named.id !== existing.id) {
+      if (byName !== undefined && byName.id !== existing.id) {
         return yield* new ToolError({
-          message: `Another Property is already named "${named.name}". No two Properties can have the same name, whatever its case.`,
+          message: `Another Property is already named "${byName.name}". No two Properties can have the same name, whatever its case.`,
         });
       }
 
