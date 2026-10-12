@@ -269,6 +269,38 @@ export const SHAPES = {
   },
 } as const satisfies Readonly<Record<RecordType, RecordShape>>;
 
+/** Each type with what a record of it is, a type after the types it points at. */
+export const EACH_TYPE = RECORD_TYPES.map((type): readonly [RecordType, RecordShape] => [
+  type,
+  SHAPES[type],
+]);
+
+/**
+ * One way a record of one type points at a record of another: in a column of its row, or in a
+ * link set. A record is attached to another a third way, by type and id, which `attachedBy`
+ * says.
+ */
+export interface WayOfPointing {
+  /** The type that points, and what a record of it is. */
+  readonly type: RecordType;
+  readonly shape: RecordShape;
+  /** The type it points at. */
+  readonly targetType: RecordType;
+  /** Where it holds the id of the record it points at: a column of its row, or a link set. */
+  readonly via: string | LinkSet;
+}
+
+/** Every such way, with the ways of a type after those of the types before it. */
+export const WAYS_OF_POINTING: ReadonlyArray<WayOfPointing> = EACH_TYPE.flatMap(([type, shape]) => [
+  ...Object.entries(shape.pointerColumns).map(([column, targetType]): WayOfPointing => ({
+    type,
+    shape,
+    targetType,
+    via: column,
+  })),
+  ...shape.links.map((set): WayOfPointing => ({ type, shape, targetType: set.of, via: set })),
+]);
+
 // The column a record of a type is named by, for a type that has one. A record that is named by
 // the records it points at points at ones with a column of their own, so a name is never more
 // than one step away.
@@ -313,6 +345,10 @@ export const recordName = (
     .join(` || '${namedBy.between}' || `);
 };
 
+/** The SQL of what a row there is now is named by, read under this alias. */
+export const nameOfRow = (shape: RecordShape, alias: string) =>
+  recordName(shape, (column) => `${alias}.${column}`);
+
 /**
  * The same name in code, for a save that has the names of the records it points at: those
  * names, joined the way `namedBy` says. `names` has each one under the pointer column it goes
@@ -332,6 +368,50 @@ export const listedName = (type: RecordType, text: string) => {
   return longestName === undefined || text.length <= longestName
     ? text
     : `${text.slice(0, longestName)}…`;
+};
+
+/** A record as a reply lists it and an error names it: by its type, its id, and its name. */
+export interface Listed {
+  readonly type: RecordType;
+  readonly id: string;
+  /**
+   * Its name, or what stands for one: the title of Work, the body of a Note, the Vendor and
+   * the Project of a Quote.
+   */
+  readonly name: string;
+}
+
+/** A record as a reply lists it: under the start of a name that runs long. */
+export const asListed = <Row extends Listed>(record: Row): Row => ({
+  ...record,
+  name: listedName(record.type, record.name),
+});
+
+/** A record by its type and its id together, which no two records share. */
+export const recordKey = ({ type, id }: Pick<Listed, "type" | "id">) => `${type} ${id}`;
+
+/** Each of these records once, where one comes several times: the first of it, in its place. */
+export const distinctRecords = <Row extends Pick<Listed, "type" | "id">>(
+  records: ReadonlyArray<Row>,
+): ReadonlyArray<Row> => {
+  const seen = new Set<string>();
+  return records.filter((record) => {
+    const key = recordKey(record);
+    return !seen.has(key) && seen.add(key) !== undefined;
+  });
+};
+
+/** A record as an error names it. */
+export const named = ({ type, id, name }: Listed) => `${term(type)} "${name}" (${id})`;
+
+// The most records an error names in one list. It counts the rest.
+const MOST_NAMED = 5;
+
+/** The first few of a list of records as an error names them, and a count of the rest. */
+export const someOf = (records: ReadonlyArray<Listed>) => {
+  const some = records.slice(0, MOST_NAMED).map((each) => `the ${named(each)}`);
+  const more = records.length > MOST_NAMED ? `, and ${records.length - MOST_NAMED} more` : "";
+  return `${some.join(", ")}${more}`;
 };
 
 /**

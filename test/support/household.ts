@@ -50,10 +50,10 @@ export const ULID = /^[0-9A-HJKMNP-TV-Z]{26}$/;
 // Calls a tool as a signed-in client, and reads what it sent back.
 export type Call = (tool: string, input: unknown) => Effect.Effect<Answer<Fields>>;
 
-// A test body that calls tools as a signed-in client, with the made-up household loaded. No
-// tool deletes a record yet, and the database is kept between runs. So a test of a tool that
-// writes brings a `cleanUp` that takes its own rows out, and this runs it before the body and
-// after it, however the body ends.
+// A test body that calls tools as a signed-in client, with the made-up household loaded. The
+// database is kept between runs, and so is every Change, which no tool takes out. So a test of
+// a tool that writes brings a `cleanUp` that takes its own rows out, and this runs it before
+// the body and after it, however the body ends.
 export const asClientWith =
   <CleanUpError, CleanUpNeeds>(cleanUp: Effect.Effect<unknown, CleanUpError, CleanUpNeeds>) =>
   <E, R>(body: (call: Call) => Effect.Effect<void, E, R>) =>

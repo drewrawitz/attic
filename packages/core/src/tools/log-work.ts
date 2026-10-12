@@ -53,6 +53,8 @@ Work needs a Property or at least one Item. With no \`property\`, new Work is at
 
 \`project\` is the id of the Project the Work is part of, as search or get_record gives it. It is a Project at the Work's Property, and one that is at another Property is refused. The Project's record then lists the Work, and counts its cost in \`total_cost\`. To take Work out of its Project, name \`project\` in \`clear\`.
 
+Replacing an Item is three writes. Say the dishwasher was replaced by one that cost 900 dollars, with 200 more to fit it. Delete the old Item with delete_record. Save the new Item with save_item, with its \`price\` of 900. Then log the Work here as an improvement, with the whole \`cost\` of 1,100 and the new Item in \`item_ids\`.
+
 Repainting is Work that names the Space. Put the color that was there before in \`data.replaced\`, and then save the new color on the Space with save_space, which is where a Space's paint is kept.
 
 \`data\` is a merge patch, so a save adds to what is there.

@@ -1,6 +1,6 @@
 import { Effect, Schema } from "effect";
 import { SqlClient } from "effect/sql";
-import { categoryAmong, everyCategory } from "../category.ts";
+import { categoryAmong, DEFAULT_CATEGORY, everyCategory } from "../category.ts";
 import { partialDate, today } from "../dates.ts";
 import { amount, formatCents, inCents } from "../money.ts";
 import { newNote, noteOn, notesMovedTo } from "../note.ts";
@@ -73,9 +73,6 @@ const ACTIVE: Status = "active";
 
 // The statuses of a Gone Item: the User no longer has it, and its exit left a money trail.
 const GONE: ReadonlySet<Status> = new Set(["sold", "given", "lost", "stolen", "destroyed"]);
-
-// The Category a new Item is in unless the save names one, which is the table's own default.
-const OTHER = "other";
 
 // The fields a save can empty. An Item always has a name, a scope, a Category, and a status.
 const CLEARABLE = [
@@ -287,7 +284,7 @@ const stepsFor = Effect.fnUntraced(function* (
 
   // A Category must already exist: the primary one a save gives an Item, and each extra one.
   // The one an Item has already is not looked up again.
-  const primary = category ?? was?.category_id ?? OTHER;
+  const primary = category ?? was?.category_id ?? DEFAULT_CATEGORY;
   const filedUnder = was === undefined || category !== undefined ? primary : undefined;
   for (const each of [
     ...(filedUnder === undefined ? [] : [filedUnder]),

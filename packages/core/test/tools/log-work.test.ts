@@ -1,7 +1,7 @@
 import { expect, it } from "@effect/vitest";
 import { Effect } from "effect";
 import { SqlClient } from "effect/sql";
-import type { Listed } from "../../src/save.ts";
+import type { Listed } from "../../src/records.ts";
 import { getRecord } from "../../src/tools/get-record.ts";
 import { logWork } from "../../src/tools/log-work.ts";
 import { saveProperty } from "../../src/tools/save-property.ts";

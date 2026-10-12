@@ -3,7 +3,7 @@ import { DateTime, Effect, Layer } from "effect";
 import { SqlClient } from "effect/sql";
 import { TestClock } from "effect/testing";
 import { Currency } from "../../src/money.ts";
-import type { Listed } from "../../src/save.ts";
+import type { Listed } from "../../src/records.ts";
 import { getRecord } from "../../src/tools/get-record.ts";
 import { saveItem } from "../../src/tools/save-item.ts";
 import { saveProperty } from "../../src/tools/save-property.ts";

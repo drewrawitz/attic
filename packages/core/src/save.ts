@@ -1,7 +1,7 @@
 import { Effect, Result, Schema, SchemaTransformation } from "effect";
 import type { SqlClient } from "effect/sql";
 import type { SqlError } from "effect/sql/SqlError";
-import { SHAPES, type RecordShape, type RecordType } from "./records.ts";
+import { distinctRecords, SHAPES, type Listed, type RecordShape } from "./records.ts";
 import { ToolError, type ToolAnnotations } from "./tool.ts";
 import { Write, type Step } from "./write.ts";
 
@@ -113,17 +113,6 @@ const namesOf = (shape: RecordShape, columns: Readonly<Record<string, unknown>>)
   return names;
 };
 
-/** A record as a save's reply lists it: by its type, its id, and its name. */
-export interface Listed {
-  readonly type: RecordType;
-  readonly id: string;
-  /**
-   * Its name, or what stands for one: the title of Work, the body of a Note, the Vendor and
-   * the Project of a Quote.
-   */
-  readonly name: string;
-}
-
 /**
  * One step of a save: a statement, and the record it creates or updates, as the reply names
  * it. A save hands one list of these to its write and to its reply. So a record the call wrote
@@ -212,6 +201,13 @@ export const insertRow = (
 const NOW = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')";
 
 /**
+ * What a statement that changes a record's row sets beside the rest: `updated_at` to the time
+ * now, in a table that keeps one.
+ */
+export const updatedNow = ({ columns }: RecordShape): ReadonlyArray<string> =>
+  columns.includes("updated_at") ? [`updated_at = ${NOW}`] : [];
+
+/**
  * The step that updates a record's row: the columns that were given, and `data` with the merge
  * patch applied. A column that is not among them is left alone. A table that keeps
  * `updated_at` gets the time now.
@@ -226,7 +222,7 @@ export const updateRow = (
   const sets = [
     ...namesOf(shape, columns).map((column) => `${column} = ?`),
     "data = json_patch(data, ?)",
-    ...(shape.columns.includes("updated_at") ? [`updated_at = ${NOW}`] : []),
+    ...updatedNow(shape),
   ];
   const statement = sql.unsafe(`UPDATE ${shape.table} SET ${sets.join(", ")} WHERE id = ?`, [
     ...Object.values(columns),
@@ -271,11 +267,7 @@ export const replaceLinks = (
 export const runSave = Effect.fnUntraced(function* (steps: ReadonlyArray<SaveStep>) {
   const write = yield* Write;
   const change = yield* write.run(steps);
-  const seen = new Set<string>();
-  const records = steps.filter(({ type, id }) => {
-    const record = `${type} ${id}`;
-    return !seen.has(record) && seen.add(record) !== undefined;
-  });
+  const records = distinctRecords(steps);
   const those = (created: boolean) =>
     records
       .filter((step) => step.created === created)
