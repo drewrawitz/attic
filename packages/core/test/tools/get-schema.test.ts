@@ -16,6 +16,7 @@ interface Published {
   readonly views: ReadonlyArray<Definition>;
   readonly categories: ReadonlyArray<Category>;
   readonly data_keys: Readonly<Record<string, Readonly<Record<string, string>>>>;
+  readonly from_property_keys: ReadonlyArray<string>;
   readonly partial_dates: string;
   readonly conventions: string;
 }
@@ -121,7 +122,7 @@ it.effect("get_schema publishes the well-known data keys for each kind of record
         "claim_number",
       ],
       space: ["sqft", "paint", "flooring", "counters"],
-      property: ["lease_until", "paint"],
+      property: ["lease_until", "sqft", "paint", "flooring"],
       work: ["permit", "payments", "replaced"],
       vendor: ["phone", "email", "url"],
       category: ["expects"],
@@ -144,6 +145,28 @@ it.effect("get_schema publishes the well-known data keys for each kind of record
     ).toEqual([]);
     expect(data_keys.property?.paint).toContain("A Space's own entry wins");
   }).pipe(Effect.provide(TestDatabase)),
+);
+
+// A Space shows what its Property has under these keys, and under no other (ADR 0015). A key
+// that is marked and not listed would show on every Space with nothing to say what it holds.
+it.effect(
+  "get_schema says which of a Property's keys a Space shows, each one a well-known key",
+  () =>
+    Effect.gen(function* () {
+      const { data_keys, from_property_keys } = yield* published;
+
+      expect(from_property_keys).toEqual(["paint", "flooring"]);
+      expect(Object.keys(data_keys.property ?? {})).toEqual(
+        expect.arrayContaining([...from_property_keys]),
+      );
+      // The text for a key says it too, and the text for one that stays on the Property does not.
+      const saysSo = Object.entries(data_keys.property ?? {})
+        .filter(([, text]) => text.includes("`from_property`"))
+        .map(([key]) => key);
+      expect(saysSo).toEqual(from_property_keys);
+      // A Space has a `sqft` of its own, so the Property's says whose size it is.
+      expect(data_keys.property?.sqft).toContain("the whole Property");
+    }).pipe(Effect.provide(TestDatabase)),
 );
 
 it.effect("get_schema warns that comparing dates as plain text misses Partial dates", () =>

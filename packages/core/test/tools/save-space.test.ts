@@ -63,6 +63,28 @@ it.effect("save_space creates a Space at the Current property when no Property i
   }).pipe(Effect.provide(TestDatabase)),
 );
 
+// The reply follows the rule get_record follows: of the Property's `data`, a Space shows what is
+// marked as the same in every Space and nothing else (ADR 0015).
+it.effect("the reply of save_space shows nothing of the Property's size or its lease", () =>
+  Effect.gen(function* () {
+    yield* loadHousehold;
+    yield* todayIs(TODAY);
+    yield* call(saveProperty, {
+      name: "Maple Street house",
+      data: { sqft: 1800, lease_until: "2027-06", built: 1962 },
+    });
+
+    const created = yield* saving({ name: "Pantry" });
+    const onlyTrim = { paint: { trim: expect.objectContaining({ color: "Pure White" }) } };
+    expect(created.record).toHaveProperty("from_property", onlyTrim);
+
+    // A Space with a size of its own, on the save that updates it.
+    const sized = yield* saving({ name: "Pantry", data: { sqft: 30 } });
+    expect(sized.record).toHaveProperty("data", { sqft: 30 });
+    expect(sized.record).toHaveProperty("from_property", onlyTrim);
+  }).pipe(Effect.provide(TestDatabase)),
+);
+
 // How many Spaces and Changes there are, read from the tables.
 const counting = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;

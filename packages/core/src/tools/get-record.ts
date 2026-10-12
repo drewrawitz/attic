@@ -5,6 +5,7 @@ import { propertyNamed } from "../property.ts";
 import type { RecordType } from "../records.ts";
 import { jsonList, jsonObject } from "../sql.ts";
 import { defineTool, ToolError } from "../tool.ts";
+import { FROM_PROPERTY_KEYS } from "./get-schema.ts";
 
 // The types of record there are to get. A Quote is not one: it comes back with its Project.
 const TYPES = [
@@ -217,7 +218,7 @@ const STATEMENTS: Readonly<Record<Type, (type: Type) => string>> = {
      WHERE record.id = ?1 OR record.name = ?1`,
 
   // `from_property` is read as the whole of the Property's `data`. `fromProperty` below keeps
-  // the part of it the Space has no entry of its own for.
+  // the part of it that is the same in every Space and that the Space has no entry of its own for.
   space: (type) => `
     SELECT record.id, record.name, record.property_id, property.name AS property,
            record.data, property.data AS from_property,
@@ -371,15 +372,19 @@ type JsonObject = Readonly<Record<string, unknown>>;
 const isObject = (value: unknown): value is JsonObject =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
-// What a Space shows of its Property's `data`: the house-wide facts it has no entry of its own
-// for. Where both have an entry and both entries are objects, the Space also gets the objects
+// What a Space shows of its Property's `data`: only the keys that are marked as the same in
+// every Space. Every other key stays on the Property, whose size is not the size of any Space
+// (ADR 0015). Under a marked key, a Space with no entry of its own shows all of the Property's.
+// Where both have an entry and both entries are objects, the Space shows the objects
 // inside the Property's that it has none of its own for. A list kept by slug is an object of
-// objects (ADR 0002), such as paint by surface, so a Space with wall paint of its own still gets
+// objects (ADR 0002), such as paint by surface, so a Space with wall paint of its own still shows
 // the Property's trim. Anything else inside an entry is the Space's own to say: its flooring is
 // never topped up from the Property's.
-const fromProperty = (own: JsonObject, houseWide: JsonObject): JsonObject =>
+const fromProperty = (own: JsonObject, propertyData: JsonObject): JsonObject =>
   Object.fromEntries(
-    Object.entries(houseWide).flatMap(([key, theirs]): [string, unknown][] => {
+    FROM_PROPERTY_KEYS.flatMap((key): [string, unknown][] => {
+      if (!Object.hasOwn(propertyData, key)) return [];
+      const theirs = propertyData[key];
       if (!Object.hasOwn(own, key)) return [[key, theirs]];
       const mine = own[key];
       if (!isObject(mine) || !isObject(theirs)) return [];
@@ -413,11 +418,16 @@ export const noRecord = (type: Type, id: string) =>
     message: `There is no ${term(type)} with the id "${id}". Ids come from search and from the records get_record returns.`,
   });
 
+// The keys a Space shows, as a sentence names them: `paint` and `flooring`.
+const FROM_PROPERTY_KEYS_AS_TEXT = new Intl.ListFormat("en", { type: "conjunction" }).format(
+  FROM_PROPERTY_KEYS.map((key) => `\`${key}\``),
+);
+
 const DESCRIPTION = `Returns one record with what hangs off it. Give the record's type and its id, as search or another record gives them. A Property can be given by its name instead. A Quote is not a type of its own: it comes back with its Project.
 
 Every record comes back with its own fields, with \`data\` as an object and money in dollars. Where it points at another record, that record's name or title is beside its id. It also has its ${RECENT_CHANGES} most recent Changes, each with the record as it was before and after. What else hangs off it depends on its type:
 - An Item has its extra Categories, its Schedules, the Work done on it, its Documents, and its Notes. Its Parts are in \`data.parts\`, with their part numbers. Each Schedule has \`last_work\`, the newest Work logged against it, and the Vendor on that Work is where the Part was bought last.
-- A Space has the Items in it now, the Work and the Projects that named it, its Documents, and its Notes. \`from_property\` holds the house-wide facts in its Property's \`data\` that the Space has no entry of its own for, such as the trim paint. Paint goes by surface, so a Space with wall paint of its own still gets the Property's trim.
+- A Space has the Items in it now, the Work and the Projects that named it, its Documents, and its Notes. \`from_property\` holds the facts that are the same in every Space: what its Property's \`data\` has under ${FROM_PROPERTY_KEYS_AS_TEXT}, where the Space has no entry of its own. Paint goes by surface, so a Space with wall paint of its own still shows the Property's trim. No other key of the Property's \`data\` is in it. The Property's size and its lease, \`sqft\` and \`lease_until\`, are read from the Property.
 - A Project has its Spaces, its Quotes with their Vendors and amounts, its Work, its Documents, and its Notes. \`total_cost\` is the sum of the Costs of its Work, and null while none has a Cost.
 - A Vendor has the Work it did, the Quotes it gave, the Items bought from it, its Documents, and its Notes.
 - Work has its Items, its Spaces, its Documents, and its Notes.

@@ -2,6 +2,8 @@ import { expect, it } from "@effect/vitest";
 import { Effect } from "effect";
 import { SqlClient } from "effect/sql";
 import { getRecord } from "../../src/tools/get-record.ts";
+import { getSchema } from "../../src/tools/get-schema.ts";
+import { saveProperty } from "../../src/tools/save-property.ts";
 import { answer, call } from "../call.ts";
 import { loadHousehold } from "../household.ts";
 import { TestDatabase } from "../TestDatabase.ts";
@@ -343,57 +345,146 @@ it.effect(
     }).pipe(Effect.provide(TestDatabase)),
 );
 
-// A Property's `data` holds what is true of the whole place. A Space shows the entries it has
-// none of its own for. Paint is a list kept by surface, each surface an object of its own, so it
-// is compared surface by surface, and so is any list kept that way. Flooring is one entry with
-// nothing but plain values in it, so a Space with flooring of its own gets none of the
-// Property's.
-it.effect("a Space's own entry for a house-wide fact wins, and paint goes by surface", () =>
+// What a Space shows of its Property's `data`.
+const fromProperty = (id: string) =>
+  getting("space", id).pipe(Effect.map((space) => space.from_property));
+
+// What get_schema publishes about a Property's keys: the well-known ones, and which of them a
+// Space shows.
+const publishedKeys = call(getSchema, {}).pipe(
+  Effect.map(
+    ({ text }) =>
+      JSON.parse(text) as {
+        readonly data_keys: { readonly property: Readonly<Record<string, string>> };
+        readonly from_property_keys: ReadonlyArray<string>;
+      },
+  ),
+);
+
+// A Property's `data` also holds what is true of the place as a whole and of no one Space: its
+// size, its lease, the year it was built. A Space shows only a key that is marked as the same in
+// every Space (ADR 0015). The rest are still on the Property.
+it.effect("a Space shows nothing of its Property's size, its lease, or a key nobody listed", () =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     yield* loadHousehold;
-    const houseWide = {
-      lease_until: "2027-06",
-      flooring: { type: "oak hardwood", installed: "2019" },
-      paint: {
-        walls: { color: "Alabaster" },
-        trim: { color: "Pure White", sheen: "semi-gloss" },
-        ceiling: { color: "Ceiling White" },
-      },
-      blinds: { front: { kind: "shutters" }, back: { kind: "roller" } },
-    };
-    const den = {
-      flooring: { type: "carpet" },
-      paint: { walls: { color: "Sea Salt" }, trim: { color: "Tricorn Black" } },
-      blinds: { front: { kind: "curtains" } },
-    };
-    const bath = { paint: { walls: {}, trim: {}, ceiling: {} } };
+    const staysOnProperty = { sqft: 1800, lease_until: "2027-06", built: 1962 };
+    yield* call(saveProperty, { name: "Maple Street house", data: staysOnProperty });
+    // The Garage is leased on terms of its own.
     yield* sql`
-      INSERT INTO properties (id, name, data)
-      VALUES ('property-oak', 'Oak Lane flat', ${JSON.stringify(houseWide)})`;
-    yield* sql`
-      INSERT INTO spaces (id, property_id, name, data) VALUES
-        ('space-hall', 'property-oak', 'Hall', '{}'),
-        ('space-den', 'property-oak', 'Den', ${JSON.stringify(den)}),
-        ('space-bath', 'property-oak', 'Bath', ${JSON.stringify(bath)})`;
-    const fromProperty = (id: string) =>
-      getting("space", id).pipe(Effect.map((space) => space.from_property));
+      UPDATE spaces SET data = '{"lease_until":"2026-12"}' WHERE id = 'seed-space-garage'`;
 
-    // With nothing of its own, a Space gets every house-wide fact.
-    expect(yield* fromProperty("space-hall")).toEqual(houseWide);
-    // The den's own trim wins whole: the Property's sheen is not added to it.
-    expect(yield* fromProperty("space-den")).toEqual({
-      lease_until: "2027-06",
-      paint: { ceiling: { color: "Ceiling White" } },
-      blinds: { back: { kind: "roller" } },
+    // The Exterior has nothing of its own. The Kitchen has flooring and counters. The Living
+    // room has a `sqft` of its own and the Garage a `lease_until`, and each of those is the
+    // Space's own with or without the Property's.
+    const spaceIds = [
+      "seed-space-exterior",
+      "seed-space-kitchen",
+      "seed-space-living-room",
+      "seed-space-garage",
+    ];
+    for (const id of spaceIds) {
+      expect(yield* fromProperty(id), id).toEqual({ paint: { trim: TRIM } });
+    }
+    expect((yield* getting("property", "seed-property-maple")).data).toEqual({
+      paint: { trim: TRIM },
+      ...staysOnProperty,
     });
-    expect(yield* fromProperty("space-bath")).toEqual({
-      lease_until: "2027-06",
-      flooring: { type: "oak hardwood", installed: "2019" },
-      blinds: { front: { kind: "shutters" }, back: { kind: "roller" } },
-    });
-    // A Property with no house-wide facts.
-    expect(yield* fromProperty("seed-space-elm-kitchen")).toEqual({});
+  }).pipe(Effect.provide(TestDatabase)),
+);
+
+// A Property's paint and its flooring are marked as the same in every Space, and a Space shows
+// the entries it has none of its own for. Paint is a list kept by surface, each surface an
+// object of its own, so it is compared surface by surface. Flooring is one entry with nothing
+// but plain values in it, so a Space with flooring of its own shows none of the Property's. The
+// blinds are kept by slug as paint is, and they are not marked, so no Space shows them.
+it.effect(
+  "a Space's own entry wins over what is the same in every Space, and paint goes by surface",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* loadHousehold;
+      const sameInEverySpace = {
+        flooring: { type: "oak hardwood", installed: "2019" },
+        paint: {
+          walls: { color: "Alabaster" },
+          trim: { color: "Pure White", sheen: "semi-gloss" },
+          ceiling: { color: "Ceiling White" },
+        },
+      };
+      const oakLane = {
+        ...sameInEverySpace,
+        lease_until: "2027-06",
+        blinds: { front: { kind: "shutters" }, back: { kind: "roller" } },
+      };
+      const den = {
+        flooring: { type: "carpet" },
+        paint: { walls: { color: "Sea Salt" }, trim: { color: "Tricorn Black" } },
+        blinds: { front: { kind: "curtains" } },
+      };
+      const bath = { paint: { walls: {}, trim: {}, ceiling: {} } };
+      yield* sql`
+        INSERT INTO properties (id, name, data)
+        VALUES ('property-oak', 'Oak Lane flat', ${JSON.stringify(oakLane)})`;
+      yield* sql`
+        INSERT INTO spaces (id, property_id, name, data) VALUES
+          ('space-hall', 'property-oak', 'Hall', '{}'),
+          ('space-den', 'property-oak', 'Den', ${JSON.stringify(den)}),
+          ('space-bath', 'property-oak', 'Bath', ${JSON.stringify(bath)})`;
+      // The former Property has a size and a lease, and nothing that is the same in every Space.
+      yield* sql`
+        UPDATE properties SET data = '{"sqft":700,"lease_until":"2022-05"}'
+         WHERE id = 'seed-property-elm'`;
+
+      // With nothing of its own, a Space shows all of the paint and the flooring.
+      expect(yield* fromProperty("space-hall")).toEqual(sameInEverySpace);
+      // The den's own trim wins whole: the Property's sheen is not added to it. Its own flooring
+      // wins whole too.
+      expect(yield* fromProperty("space-den")).toEqual({
+        paint: { ceiling: { color: "Ceiling White" } },
+      });
+      // An entry for every surface, so none of the Property's paint.
+      expect(yield* fromProperty("space-bath")).toEqual({
+        flooring: { type: "oak hardwood", installed: "2019" },
+      });
+      expect(yield* fromProperty("seed-space-elm-kitchen")).toEqual({});
+    }).pipe(Effect.provide(TestDatabase)),
+);
+
+// get_schema publishes which keys a Space shows, and get_record goes by the same list. So at a
+// Property with an entry under every one of its well-known keys, a Space with nothing of its own
+// shows the published keys and no others.
+it.effect("a Space shows the Property keys get_schema says it shows, and no others", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* loadHousehold;
+    const { data_keys, from_property_keys } = yield* publishedKeys;
+    const everyKey = Object.fromEntries(
+      Object.keys(data_keys.property).map((key) => [key, { kept_under: key }]),
+    );
+    yield* sql`
+      UPDATE properties SET data = ${JSON.stringify(everyKey)} WHERE id = 'seed-property-maple'`;
+
+    const shown = Object.keys((yield* fromProperty("seed-space-garage")) as object);
+    expect(shown.sort()).toEqual([...from_property_keys].sort());
+    // The Property's size is one of its well-known keys, and it is not a Space's to show.
+    expect(Object.keys(everyKey)).toContain("sqft");
+    expect(shown).not.toContain("sqft");
+  }).pipe(Effect.provide(TestDatabase)),
+);
+
+// A client learns from the description which keys a Space shows, and that a Property's size and
+// its lease are read from the Property.
+it.effect("get_record's description names the Property keys a Space shows", () =>
+  Effect.gen(function* () {
+    const { from_property_keys } = yield* publishedKeys;
+    const aboutSpace = getRecord.description
+      .split("\n")
+      .find((line) => line.startsWith("- A Space"));
+
+    for (const key of from_property_keys) expect(aboutSpace, key).toContain(`\`${key}\``);
+    expect(aboutSpace).toContain("the same in every Space");
+    expect(aboutSpace).toContain("read from the Property");
   }).pipe(Effect.provide(TestDatabase)),
 );
 
