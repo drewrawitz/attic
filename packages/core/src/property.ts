@@ -1,6 +1,7 @@
 import { Effect } from "effect";
 import { SqlClient } from "effect/sql";
 import { today } from "./dates.ts";
+import { askedOnce, nameKey } from "./save.ts";
 import { ToolError } from "./tool.ts";
 
 /** The Properties there are, by name, for an error about one that is not among them. */
@@ -89,3 +90,11 @@ export const currentProperty = Effect.gen(function* () {
  */
 export const propertyFor = (given: string | undefined) =>
   given === undefined ? currentProperty : propertyNamed(given);
+
+/**
+ * `propertyFor` for a call that takes a list: each Property its entries name is read once,
+ * however many of them name it and whatever the case of the name, and so is the Current
+ * property for the ones that name none.
+ */
+export const propertyForOnce = () =>
+  askedOnce(propertyFor, (given) => (given === undefined ? undefined : nameKey(given)));

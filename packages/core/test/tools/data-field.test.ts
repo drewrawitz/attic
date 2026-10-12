@@ -2,6 +2,7 @@ import { expect, it } from "@effect/vitest";
 import { Effect } from "effect";
 import type { Tool } from "../../src/tool.ts";
 import { getSchema } from "../../src/tools/get-schema.ts";
+import { logWork } from "../../src/tools/log-work.ts";
 import { saveCategory } from "../../src/tools/save-category.ts";
 import { saveItem } from "../../src/tools/save-item.ts";
 import { saveProperty } from "../../src/tools/save-property.ts";
@@ -17,6 +18,7 @@ const SAVES: ReadonlyArray<readonly [tool: Tool, kind: string]> = [
   [saveVendor, "vendor"],
   [saveCategory, "category"],
   [saveItem, "item"],
+  [logWork, "work"],
 ];
 
 // What a client reads about a tool's `data` field.

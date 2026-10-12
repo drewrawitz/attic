@@ -1,5 +1,6 @@
-import { Effect, Schema, SchemaTransformation } from "effect";
+import { Effect, Result, Schema, SchemaTransformation } from "effect";
 import type { SqlClient } from "effect/sql";
+import type { SqlError } from "effect/sql/SqlError";
 import { SHAPES, type RecordShape, type RecordType } from "./records.ts";
 import { ToolError, type ToolAnnotations } from "./tool.ts";
 import { Write, type Step } from "./write.ts";
@@ -80,6 +81,22 @@ export const columnsToSet = (
     ...given,
     ...Object.fromEntries(clear.map((field) => [field, null])),
   });
+
+/**
+ * What a save does with a field that can be emptied, given the fields it names in `clear`: the
+ * field's new value, null to empty it, or undefined to leave it as it is.
+ */
+export const valueOrCleared =
+  <Field extends string>(clear: ReadonlyArray<Field>) =>
+  <Value>(field: Field, value: Value | undefined) =>
+    clear.includes(field) ? null : value;
+
+/**
+ * The columns among these that a save has something to say of: a value to set, or null to
+ * empty the column. One that is undefined is left out, and so left as it is.
+ */
+export const definedColumns = (columns: Readonly<Record<string, unknown>>) =>
+  Object.fromEntries(Object.entries(columns).filter(([, value]) => value !== undefined));
 
 // The columns the statements below write themselves, which a save never sets by name.
 const WRITTEN_HERE = new Set(["id", "data", "created_at", "updated_at"]);
@@ -261,4 +278,132 @@ export const runSave = Effect.fnUntraced(function* (steps: ReadonlyArray<SaveSte
       .filter((step) => step.created === created)
       .map(({ type, id, name }) => ({ type, id, name }));
   return { change_id: change, created: those(true), updated: those(false) };
+});
+
+// A tool that saves one record can take a list of them, saved all or nothing as one Change.
+
+/** The most entries a list has. A longer list is saved in several calls. */
+export const MOST_IN_ONE_CALL = 50;
+
+/** What a tool that takes a list calls it, and what it calls an entry. */
+export interface ListWords {
+  /** The field the list is given in, such as `items`. */
+  readonly field: string;
+  /** What one entry saves, such as Item, and what several save, such as Items. */
+  readonly singular: string;
+  readonly plural: string;
+}
+
+/**
+ * The list a tool takes beside the fields of one record: at least one entry and at most fifty,
+ * each with the fields `entry` has.
+ */
+export const listOf = <EntrySchema extends Schema.Constraint>(
+  entry: EntrySchema,
+  { singular, plural }: ListWords,
+) =>
+  Schema.Array(entry)
+    .annotate({
+      description: `A list of up to ${MOST_IN_ONE_CALL} ${plural} to save in one call, all or nothing. Each entry has the fields of one ${singular}. Leave every other field out when this is given.`,
+    })
+    .check(
+      Schema.isMinLength(1, { message: `Expected at least one ${singular} in the list.` }),
+      Schema.isMaxLength(MOST_IN_ONE_CALL, {
+        message: `Expected at most ${MOST_IN_ONE_CALL} ${plural} in one call. Save a longer list in several calls.`,
+      }),
+    );
+
+/** The entries of one call: the list it gave, or the one record it gave the fields of. */
+export interface Entries<Entry> {
+  readonly words: ListWords;
+  readonly all: ReadonlyArray<Entry>;
+  /** The ids the entries give, which are the records the call updates. */
+  readonly ids: ReadonlyArray<string>;
+  /** Whether the call gave a list, which may be a list of one. */
+  readonly asList: boolean;
+}
+
+// An entry may give the id of the record it updates.
+interface MayHaveId {
+  readonly id?: string | undefined;
+}
+
+/**
+ * The entries of a call that gives one record's fields or a list. `one` has the fields that
+ * were given beside the list. A call that gives both is refused, because each entry of a list
+ * has fields of its own, and a field beside them would be taken for none of them.
+ */
+export const entriesOf = <Entry extends MayHaveId>(
+  words: ListWords,
+  one: Entry,
+  list: ReadonlyArray<Entry> | undefined,
+): Effect.Effect<Entries<Entry>, ToolError> => {
+  const beside = Object.keys(one);
+  const { field, singular } = words;
+  if (list !== undefined && beside.length > 0) {
+    return Effect.fail(
+      new ToolError({
+        message: `Give one ${singular}'s fields, or \`${field}\` for a list, and not both. Beside \`${field}\` there was: ${beside.join(", ")}. Each entry of a list has fields of its own.`,
+      }),
+    );
+  }
+  const all = list ?? [one];
+  const ids = all.flatMap(({ id }) => (id === undefined ? [] : [id]));
+  return Effect.succeed({ words, all, ids, asList: list !== undefined });
+};
+
+// What an error says of a list that was not saved: each entry that was refused, by where it is
+// in the list, and why. Entries refused for the same reason are named together, so fifty Items
+// with no Property to be at say so once.
+const listNotSaved = (
+  reasons: ReadonlyArray<readonly [at: number, why: string]>,
+  of: number,
+  field: string,
+) => {
+  const lines = [...Map.groupBy(reasons, ([, why]) => why)].map(
+    ([why, forThat]) => `${forThat.map(([at]) => `${field}.${at}`).join(", ")}: ${why}`,
+  );
+  const were = reasons.length === 1 ? "was" : "were";
+  return `Nothing was saved, because ${reasons.length} of the ${of} entries in \`${field}\` ${were} refused. Entries are counted from 0.\n${lines.join("\n")}`;
+};
+
+/**
+ * Plans every entry of a call before anything is written. `plan` builds what saves one entry
+ * and writes nothing. A refusal is kept beside the others, so that one error names every entry
+ * that has to change, by its place in the list, counted from 0 as a validation error counts.
+ * An entry that gives the id of a record an earlier entry gave is refused too: two saves of one
+ * record in one Change would leave only the second to be seen. One record given by its fields
+ * is refused in the words of the refusal alone. Returns what `plan` made of each entry, in the
+ * order of the list.
+ */
+export const planEvery = Effect.fnUntraced(function* <Entry extends MayHaveId, Planned, Needs>(
+  { words: { field, singular }, all, asList }: Entries<Entry>,
+  plan: (entry: Entry) => Effect.Effect<Planned, ToolError | SqlError, Needs>,
+) {
+  const outcomes = yield* Effect.forEach(all, (entry, at) => {
+    const { id } = entry;
+    const earlier = id === undefined ? at : all.findIndex((other) => other.id === id);
+    const planned =
+      earlier < at
+        ? Effect.fail(
+            new ToolError({
+              message: `The ${singular} "${id}" is in this list already, at ${field}.${earlier}. Give each ${singular} once.`,
+            }),
+          )
+        : plan(entry);
+    return planned.pipe(
+      Effect.map(Result.succeed),
+      Effect.catchTag("ToolError", ({ message }) => Effect.succeed(Result.fail(message))),
+    );
+  });
+  const reasons = outcomes.flatMap((outcome, at) =>
+    Result.isFailure(outcome) ? [[at, outcome.failure] as const] : [],
+  );
+  const [first] = reasons;
+  if (first !== undefined) {
+    return yield* new ToolError({
+      message: asList ? listNotSaved(reasons, all.length, field) : first[1],
+    });
+  }
+  return outcomes.flatMap((outcome) => (Result.isSuccess(outcome) ? [outcome.success] : []));
 });

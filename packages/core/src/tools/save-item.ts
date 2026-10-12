@@ -1,32 +1,35 @@
-import { Effect, Result, Schema } from "effect";
+import { Effect, Schema } from "effect";
 import { SqlClient } from "effect/sql";
 import { categoryAmong, everyCategory } from "../category.ts";
 import { partialDate, today } from "../dates.ts";
 import { amount, formatCents, inCents } from "../money.ts";
 import { newNote, noteOn, notesMovedTo } from "../note.ts";
-import { propertyFor } from "../property.ts";
+import { propertyForOnce } from "../property.ts";
 import {
-  askedOnce,
   dataPatch,
+  definedColumns,
+  entriesOf,
   insertRow,
-  nameKey,
+  listOf,
+  MOST_IN_ONE_CALL,
   nameText,
   noteText,
-  referredOnce,
+  planEvery,
   refuseGivenAndCleared,
   replaceLinks,
   runSave,
   SAVE_ANNOTATIONS,
   updateRow,
+  valueOrCleared,
 } from "../save.ts";
-import { spaceOrNew } from "../space.ts";
+import { spaceOrNewOnce } from "../space.ts";
 import { defineTool, optional, ToolError } from "../tool.ts";
-import { vendorOrNew } from "../vendor.ts";
+import { vendorOrNewOnce } from "../vendor.ts";
 import { Ids } from "../write.ts";
 import { noRecord, readRecord } from "./get-record.ts";
 
-// The most Items one call saves. A longer list is saved in several calls.
-const MOST_ITEMS = 50;
+// What a call's list is called, and what its entries are.
+const LIST_WORDS = { field: "items", singular: "Item", plural: "Items" };
 
 const NO_NAME = "Give a name to create an Item, or the id of the Item to update.";
 
@@ -36,7 +39,7 @@ const NO_PROPERTY =
 const NO_DATE =
   "A change of status is dated, so `status_on` cannot be cleared in the save that changes the status. Give `status_on` the date, which may be a Partial date such as 2024, or leave it out for today.";
 
-const DESCRIPTION = `Creates or updates an Item: one thing in or on a Property, such as the fridge, a couch, or a bike. Give one Item's fields, or \`items\` for a list of up to ${MOST_ITEMS}.
+const DESCRIPTION = `Creates or updates an Item: one thing in or on a Property, such as the fridge, a couch, or a bike. Give one Item's fields, or \`items\` for a list of up to ${MOST_IN_ONE_CALL}.
 
 One Item is one line on an insurance claim. A matching set, such as six dining chairs, is one Item with \`data.quantity\`, priced as a whole. \`scope\` says whether it is a Fixture, which stays with the Property when the User leaves, or a Belonging, which is the User's own and moves with them.
 
@@ -224,20 +227,11 @@ const sharedByEntries = Effect.gen(function* () {
     sql: yield* SqlClient.SqlClient,
     categories: yield* Effect.cached(everyCategory),
     day: yield* today,
-    // A name is the same in any case. With none given, it is the Current property.
-    property: askedOnce(propertyFor, (given) => (given === undefined ? undefined : nameKey(given))),
-    space: referredOnce(
-      (propertyId: string, name: string) => spaceOrNew(propertyId, name),
-      (propertyId, name) => `${propertyId} ${nameKey(name)}`,
-    ),
-    vendor: referredOnce((name: string) => vendorOrNew(name), nameKey),
+    property: propertyForOnce(),
+    space: spaceOrNewOnce(),
+    vendor: vendorOrNewOnce(),
   };
 });
-
-// The columns among these that a save has something to say of: a value to set, or null to
-// empty the column. One that is undefined is left out, and so left as it is.
-const defined = (columns: Readonly<Record<string, unknown>>) =>
-  Object.fromEntries(Object.entries(columns).filter(([, value]) => value !== undefined));
 
 // The steps that save one Item, with its id. `was` is the Item as it is now, when the entry
 // gives the id of one. Nothing is written here, so an entry that is refused leaves nothing
@@ -253,10 +247,7 @@ const stepsFor = Effect.fnUntraced(function* (
   if (called === undefined) return yield* new ToolError({ message: NO_NAME });
 
   yield* refuseGivenAndCleared(entry, clear);
-  // What the save does with a field that can be emptied: its new value, null to empty it, or
-  // undefined to leave it as it is.
-  const wanted = <Value>(field: (typeof CLEARABLE)[number], value: Value | undefined) =>
-    clear.includes(field) ? null : value;
+  const wanted = valueOrCleared(clear);
 
   // Where the Item is after the save. A new Item is at the Current property unless the save
   // says where, and an Item that is there already stays where it is.
@@ -326,7 +317,7 @@ const stepsFor = Effect.fnUntraced(function* (
     id: was?.id ?? (yield* (yield* Ids).next),
     name: called,
   } as const;
-  const columns = defined({
+  const columns = definedColumns({
     name,
     scope,
     property_id: was === undefined || moved ? propertyId : undefined,
@@ -375,79 +366,20 @@ const stepsFor = Effect.fnUntraced(function* (
   };
 });
 
-// What an error says of a list that was not saved: each entry that was refused, by where it is
-// in `items`, and why. Entries refused for the same reason are named together, so fifty Items
-// with no Property to be at say so once.
-const listRefused = (refused: ReadonlyArray<readonly [at: number, why: string]>, of: number) => {
-  const lines = [...Map.groupBy(refused, ([, why]) => why)].map(
-    ([why, forThat]) => `${forThat.map(([at]) => `items.${at}`).join(", ")}: ${why}`,
-  );
-  const were = refused.length === 1 ? "was" : "were";
-  return `Nothing was saved, because ${refused.length} of the ${of} entries in \`items\` ${were} refused. Entries are counted from 0.\n${lines.join("\n")}`;
-};
-
 export const saveItem = defineTool({
   name: "save_item",
   description: DESCRIPTION,
-  input: Schema.Struct({
-    ...FIELDS,
-    items: optional(
-      Schema.Array(Entry)
-        .annotate({
-          description: `A list of up to ${MOST_ITEMS} Items to save in one call, all or nothing. Each entry has the fields of one Item. Leave every other field out when this is given.`,
-        })
-        .check(
-          Schema.isMinLength(1, { message: "Expected at least one Item in the list." }),
-          Schema.isMaxLength(MOST_ITEMS, {
-            message: `Expected at most ${MOST_ITEMS} Items in one call. Save a longer list in several calls.`,
-          }),
-        ),
-    ),
-  }),
+  input: Schema.Struct({ ...FIELDS, items: optional(listOf(Entry, LIST_WORDS)) }),
   annotations: SAVE_ANNOTATIONS,
   run: ({ items, ...one }) =>
     Effect.gen(function* () {
-      const beside = Object.keys(one);
-      if (items !== undefined && beside.length > 0) {
-        return yield* new ToolError({
-          message: `Give one Item's fields, or \`items\` for a list, and not both. Beside \`items\` there was: ${beside.join(", ")}. Each entry of a list has fields of its own.`,
-        });
-      }
-      const entries = items ?? [one];
+      const entries = yield* entriesOf(LIST_WORDS, one, items);
       const shared = yield* sharedByEntries;
-      const existing = yield* itemsNow(entries.flatMap(({ id }) => (id === undefined ? [] : [id])));
+      const existing = yield* itemsNow(entries.ids);
 
-      // Every entry is checked before anything is written, and a refusal is kept beside the
-      // others, so that one error names every entry that has to change.
-      const outcomes = yield* Effect.forEach(entries, (entry, at) => {
-        const { id } = entry;
-        const earlier = id === undefined ? at : entries.findIndex((other) => other.id === id);
-        const planned =
-          earlier < at
-            ? Effect.fail(
-                new ToolError({
-                  message: `The Item "${id}" is in this list already, at items.${earlier}. Give each Item once.`,
-                }),
-              )
-            : stepsFor(entry, id === undefined ? undefined : existing.get(id), shared);
-        return planned.pipe(
-          Effect.map(Result.succeed),
-          Effect.catchTag("ToolError", ({ message }) => Effect.succeed(Result.fail(message))),
-        );
-      });
-      const refused = outcomes.flatMap((outcome, at) =>
-        Result.isFailure(outcome) ? [[at, outcome.failure] as const] : [],
-      );
-      const [first] = refused;
-      if (first !== undefined) {
-        // One Item given by its fields is refused in the words of the refusal alone.
-        return yield* new ToolError({
-          message: items === undefined ? first[1] : listRefused(refused, entries.length),
-        });
-      }
-
-      const saves = outcomes.flatMap((outcome) =>
-        Result.isSuccess(outcome) ? [outcome.success] : [],
+      // Every entry is checked before anything is written.
+      const saves = yield* planEvery(entries, (entry) =>
+        stepsFor(entry, entry.id === undefined ? undefined : existing.get(entry.id), shared),
       );
       const reply = yield* runSave(saves.flatMap(({ steps }) => steps));
       // A call that saves one Item also returns it as get_record does.

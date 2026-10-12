@@ -2,6 +2,7 @@ import type { Tool } from "./tool.ts";
 import { addNote } from "./tools/add-note.ts";
 import { getRecord } from "./tools/get-record.ts";
 import { getSchema } from "./tools/get-schema.ts";
+import { logWork } from "./tools/log-work.ts";
 import { query } from "./tools/query.ts";
 import { saveCategory } from "./tools/save-category.ts";
 import { saveItem } from "./tools/save-item.ts";
@@ -25,5 +26,6 @@ export const tools: ReadonlyArray<Tool> = [
   saveVendor,
   saveCategory,
   saveItem,
+  logWork,
   addNote,
 ];
