@@ -163,19 +163,42 @@ const notes = (where: string) =>
       ORDER BY created_at DESC, id DESC`,
   );
 
+// The rows of `change_records` that `where` picks, each with its Change, newest first. A row is
+// a record as it was before the Change and after it. `quote_id` is the record's id when it is
+// a Quote, for the one list that has the Changes of Quotes in it.
+const changeRows = (where: string) => `
+  SELECT change.id, change.tool, change.created_at, change.undoes,
+         CASE touched.entity_type WHEN 'quote' THEN touched.entity_id END AS quote_id,
+         touched.before, touched.after
+    FROM change_records AS touched
+    JOIN changes AS change ON change.id = touched.change_id
+   WHERE ${where}
+   ORDER BY change.created_at DESC, change.id DESC, touched.entity_id`;
+
 // The Changes that touched the record, newest first, each with the record as it was before and
 // after.
 const changes = (type: Type) =>
   list(
     "changes",
     ["id", "tool", "created_at", "undoes", "before", "after"],
-    `SELECT change.id, change.tool, change.created_at, change.undoes, touched.before, touched.after
-       FROM change_records AS touched
-       JOIN changes AS change ON change.id = touched.change_id
-      WHERE ${onRecord(type)}
-      ORDER BY change.created_at DESC, change.id DESC`,
+    changeRows(onRecord(type)),
     RECENT_CHANGES,
   );
+
+// A Quote comes back with its Project, and so do the Changes that touched it: get_record takes
+// no Quote, and a Change has to be found to be undone. So a Project's Changes are its own and
+// those of its Quotes. One of a Quote's has the Quote's id as `quote_id`, and the Quote before
+// and after. A Quote is the Project's by what a Change's own snapshots say. That way the Change
+// that deleted a Quote is here, and one that took a Quote to another Project is on both.
+const PROJECT_CHANGES = list(
+  "changes",
+  ["id", "tool", "created_at", "undoes", "quote_id", "before", "after"],
+  changeRows(`(${onRecord("project")})
+              OR (touched.entity_type = 'quote'
+                  AND record.id IN (json_extract(touched.before, '$.project_id'),
+                                    json_extract(touched.after, '$.project_id')))`),
+  RECENT_CHANGES,
+);
 
 // What a Note or a Document is attached to: the type and id of each record, and its name or
 // title. `links` is a SELECT of the type and the id.
@@ -289,7 +312,8 @@ const STATEMENTS: Readonly<Record<Type, (type: Type) => string>> = {
      WHERE record.id = ?1`,
 
   // A Project's total is the sum of the Costs of its Work, and null while none has a Cost: 0
-  // would say the Work cost nothing. Its Quotes are not part of it.
+  // would say the Work cost nothing. Its Quotes are not part of it. Their Changes are listed
+  // with its own.
   project: (type) => `
     SELECT record.id, record.title, record.status, record.start_on, record.end_on,
            record.property_id, property.name AS property, record.data,
@@ -299,7 +323,7 @@ const STATEMENTS: Readonly<Record<Type, (type: Type) => string>> = {
            ${work("work.project_id = record.id")},
            ${documents(type)},
            ${notes(onRecord(type))},
-           ${changes(type)},
+           ${PROJECT_CHANGES},
            record.created_at, record.updated_at
       FROM projects AS record
       JOIN properties AS property ON property.id = record.property_id
@@ -436,7 +460,7 @@ const cut = (record: JsonObject): JsonObject => {
 export const term = (type: Type | RecordType) => `${type.charAt(0).toUpperCase()}${type.slice(1)}`;
 
 /** The error for a record that is not there, which names its type and the id that was given. */
-export const noRecord = (type: Type, id: string) =>
+export const noRecord = (type: Type | RecordType, id: string) =>
   new ToolError({
     message: `There is no ${term(type)} with the id "${id}". Ids come from search and from the records get_record returns.`,
   });
@@ -451,7 +475,7 @@ const DESCRIPTION = `Returns one record with what hangs off it. Give the record'
 Every record comes back with its own fields, with \`data\` as an object and money in dollars. Where it points at another record, that record's name or title is beside its id. It also has its ${RECENT_CHANGES} most recent Changes, each with the record as it was before and after. What else hangs off it depends on its type:
 - An Item has its extra Categories, its Schedules, the Work done on it, its Documents, and its Notes. Its Parts are in \`data.parts\`, with their part numbers. Each Schedule has \`last_work\`, the newest Work logged against it, and the Vendor on that Work is where the Part was bought last.
 - A Space has the Items in it now, the Work and the Projects that named it, its Documents, and its Notes. \`from_property\` holds the facts that are the same in every Space: what its Property's \`data\` has under ${FROM_PROPERTY_KEYS_AS_TEXT}, where the Space has no entry of its own. Paint goes by surface, so a Space with wall paint of its own still shows the Property's trim. No other key of the Property's \`data\` is in it. The Property's size and its lease, \`sqft\` and \`lease_until\`, are read from the Property.
-- A Project has its Spaces, its Quotes with their Vendors and amounts, its Work, its Documents, and its Notes. \`total_cost\` is the sum of the Costs of its Work, and null while none has a Cost.
+- A Project has its Spaces, its Quotes with their Vendors and amounts, its Work, its Documents, and its Notes. \`total_cost\` is the sum of the Costs of its Work, and null while none has a Cost. Its Changes are its own and those of its Quotes: a Change that touched a Quote has the Quote's id as \`quote_id\`, and the Quote before and after.
 - A Vendor has the Work it did, the Quotes it gave, the Items bought from it, its Documents, and its Notes.
 - Work has its Items, its Spaces, its Documents, and its Notes.
 - A Property has its Spaces, its Projects, its own Schedules, the Items at it now, the Work done at it, its Documents, and the Notes that stand alone at it.

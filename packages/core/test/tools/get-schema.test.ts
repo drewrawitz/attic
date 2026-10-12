@@ -126,6 +126,8 @@ it.effect("get_schema publishes the well-known data keys for each kind of record
       work: ["permit", "payments", "replaced"],
       vendor: ["phone", "email", "url"],
       category: ["expects"],
+      project: ["goal"],
+      quote: ["includes"],
     });
 
     const missingFrom = (text: string | undefined, words: ReadonlyArray<string>) =>

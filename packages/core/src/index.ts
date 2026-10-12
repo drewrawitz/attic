@@ -6,7 +6,9 @@ import { logWork } from "./tools/log-work.ts";
 import { query } from "./tools/query.ts";
 import { saveCategory } from "./tools/save-category.ts";
 import { saveItem } from "./tools/save-item.ts";
+import { saveProject } from "./tools/save-project.ts";
 import { saveProperty } from "./tools/save-property.ts";
+import { saveQuote } from "./tools/save-quote.ts";
 import { saveSpace } from "./tools/save-space.ts";
 import { saveVendor } from "./tools/save-vendor.ts";
 import { search } from "./tools/search.ts";
@@ -28,6 +30,8 @@ export const tools: ReadonlyArray<Tool> = [
   saveCategory,
   saveItem,
   logWork,
+  saveProject,
+  saveQuote,
   addNote,
   undo,
 ];

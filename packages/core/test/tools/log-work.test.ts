@@ -1074,8 +1074,8 @@ it.effect("repainting is Work that names the Space, with the old color in data.r
   }).pipe(Effect.provide(TestDatabase)),
 );
 
-// `project` and `schedule_id` are columns of Work that this tool does not take yet. Each of
-// these would once have been dropped, and the save gone through as if it had been taken.
+// `schedule_id` is a column of Work that this tool does not take yet. Each of these would once
+// have been dropped, and the save gone through as if it had been taken.
 it.effect("a field log_work does not have is turned away by name, in a list as well", () =>
   Effect.gen(function* () {
     yield* loadHousehold;
@@ -1084,9 +1084,9 @@ it.effect("a field log_work does not have is turned away by name, in a list as w
     const roof = { kind: "repair", title: "Patched the roof" };
 
     const fields =
-      "There is no field with this name. The fields are: id, kind, title, description, date, cost, diy, vendor, property, item_ids, spaces, data, note, clear";
+      "There is no field with this name. The fields are: id, kind, title, description, date, cost, diy, vendor, property, project, item_ids, spaces, data, note, clear";
     const goesInData = "A fact with no field of its own goes inside data.";
-    for (const field of ["project", "schedule_id", "permit", "price", "items"]) {
+    for (const field of ["schedule_id", "permit", "price", "items"]) {
       expect(yield* logging({ ...roof, [field]: "A-1" }), field).toEqual({
         refused: `${field}: ${fields}, work. ${goesInData}`,
       });
@@ -1216,10 +1216,19 @@ it.effect("Work in a Project, or logged against a Property's Schedule, stays at 
     const before = yield* counting;
     const TRENCH = "seed-work-lighting-trench";
 
-    expect(yield* logging({ id: TRENCH, property: "Elm Court apartment" })).toEqual({
+    const staysPut = {
       refused:
-        '"Trenched and laid cable for the path lights" stays at its Property, because it is in the Project "Outdoor lighting", and a Project is at one Property. Leave `property` as it is.',
-    });
+        '"Trenched and laid cable for the path lights" stays at its Property, because it is in the Project "Outdoor lighting", and a Project is at one Property. Leave `property` as it is, or name `project` in `clear` to take the Work out of the Project.',
+    };
+    expect(yield* logging({ id: TRENCH, property: "Elm Court apartment" })).toEqual(staysPut);
+    // Naming the Project it is in already is staying in it, and the error says the same.
+    expect(
+      yield* logging({
+        id: TRENCH,
+        property: "Elm Court apartment",
+        project: "seed-project-outdoor-lighting",
+      }),
+    ).toEqual(staysPut);
     // Going to no Property is a move too.
     expect(
       yield* logging({ id: "seed-work-furnace", item_ids: [FRIDGE], clear: ["property"] }),
@@ -1244,5 +1253,144 @@ it.effect("Work in a Project, or logged against a Property's Schedule, stays at 
       property: "Elm Court apartment",
       schedule: "Replace fridge water filter",
     });
+  }).pipe(Effect.provide(TestDatabase)),
+);
+
+const LIGHTING = "seed-project-outdoor-lighting";
+
+// The made-up household's Project has two pieces of Work, which cost 450 and 380.
+it.effect("Work logged with a Project is in the Project, which shows it and the total", () =>
+  Effect.gen(function* () {
+    yield* loadHousehold;
+    yield* todayIs(TODAY);
+
+    const logged = yield* logging({
+      kind: "improvement",
+      title: "Fitted the path lights",
+      date: "2026-07-11",
+      cost: 1250,
+      project: LIGHTING,
+    });
+    expect(logged.record).toMatchObject({
+      project_id: LIGHTING,
+      project: "Outdoor lighting",
+      property: "Maple Street house",
+      // The Change has the Project the Work is in.
+      changes: [{ id: "id-0002", before: null, after: { project_id: LIGHTING } }],
+    });
+
+    expect(yield* getting("project", LIGHTING)).toMatchObject({
+      total_cost: 2080,
+      work: [
+        { id: "id-0001", title: "Fitted the path lights", date: "2026-07-11", cost: 1250 },
+        { id: "seed-work-lighting-transformer", cost: 380 },
+        { id: "seed-work-lighting-trench", cost: 450 },
+      ],
+    });
+    expect(yield* inWorkLog("id-0001")).toMatchObject({ project: "Outdoor lighting" });
+
+    // Work that is logged already goes into a Project the same way.
+    const gutter = yield* logging({ id: "seed-work-gutter", project: LIGHTING });
+    expect(gutter.record).toMatchObject({ project: "Outdoor lighting" });
+    expect(gutter.updated).toEqual([
+      { type: "work", id: "seed-work-gutter", name: "Reattached a loose gutter" },
+    ]);
+    expect(yield* getting("project", LIGHTING)).toMatchObject({ total_cost: 2122 });
+  }).pipe(Effect.provide(TestDatabase)),
+);
+
+it.effect("a Project that is not there, or is at another Property, is refused", () =>
+  Effect.gen(function* () {
+    yield* loadHousehold;
+    yield* todayIs(TODAY);
+    const before = yield* counting;
+    const porch = { kind: "repair", title: "Fixed the porch light" };
+
+    expect(yield* logging({ ...porch, project: "no-such-project" })).toEqual({
+      refused:
+        'There is no Project with the id "no-such-project". Ids come from search and from the records get_record returns.',
+    });
+
+    // The Project is at the Maple Street house. Work at the former Property is not in it,
+    // whether the Work is new or logged already, and neither is Work at no Property.
+    const elsewhere = (title: string) => ({
+      refused: `The Project "Outdoor lighting" is at Maple Street house, and "${title}" is not. Work in a Project is at the Project's Property: give \`property\` as Maple Street house, or leave \`project\` out.`,
+    });
+    expect(
+      yield* logging({ ...porch, property: "Elm Court apartment", project: LIGHTING }),
+    ).toEqual(elsewhere("Fixed the porch light"));
+    expect(yield* logging({ id: "seed-work-elm-drain", project: LIGHTING })).toEqual(
+      elsewhere("Cleared the kitchen drain"),
+    );
+    expect(
+      yield* logging({
+        ...porch,
+        item_ids: [TREADMILL],
+        project: LIGHTING,
+        clear: ["property"],
+      }),
+    ).toEqual(elsewhere("Fixed the porch light"));
+
+    // With no Property given, new Work is at the Current property, whatever Project it names.
+    // So Work for a Project at a former Property has to say where it was done.
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`
+      INSERT INTO projects (id, property_id, title)
+      VALUES ('project-elm', 'seed-property-elm', 'Kitchen repaint')`;
+    expect(yield* logging({ ...porch, project: "project-elm" })).toEqual({
+      refused:
+        'The Project "Kitchen repaint" is at Elm Court apartment, and "Fixed the porch light" is not. Work in a Project is at the Project\'s Property: give `property` as Elm Court apartment, or leave `project` out.',
+    });
+
+    // In a list the error names the entry, and nothing is saved.
+    expect(yield* logging({ work: [porch, { ...porch, project: "no-such-project" }] })).toEqual({
+      refused:
+        'Nothing was saved, because 1 of the 2 entries in `work` was refused. Entries are counted from 0.\nwork.1: There is no Project with the id "no-such-project". Ids come from search and from the records get_record returns.',
+    });
+    expect(yield* counting).toEqual(before);
+
+    // Moved to the Project's Property in the same save, the Work goes in.
+    const moved = yield* logging({
+      id: "seed-work-elm-drain",
+      property: "Maple Street house",
+      project: LIGHTING,
+    });
+    expect(moved.record).toMatchObject({
+      property: "Maple Street house",
+      project: "Outdoor lighting",
+    });
+  }).pipe(Effect.provide(TestDatabase)),
+);
+
+it.effect("naming project in clear takes Work out of its Project, and it can then move", () =>
+  Effect.gen(function* () {
+    yield* loadHousehold;
+    yield* todayIs(TODAY);
+    const TRENCH = "seed-work-lighting-trench";
+
+    const out = yield* logging({ id: TRENCH, clear: ["project"] });
+    expect(out.record).toMatchObject({
+      project_id: null,
+      project: null,
+      changes: [{ before: { project_id: LIGHTING }, after: { project_id: null } }],
+    });
+    // The Project has one piece of Work left, and its total is that one's Cost.
+    expect(yield* getting("project", LIGHTING)).toMatchObject({
+      total_cost: 380,
+      work: [{ id: "seed-work-lighting-transformer" }],
+    });
+    expect(yield* logging({ id: TRENCH, project: LIGHTING, clear: ["project"] })).toEqual({
+      refused:
+        "A field is given a value or cleared, not both in one call. Both were asked for: project.",
+    });
+
+    // Work that leaves its Project in the same save is free to move.
+    const TRANSFORMER = "seed-work-lighting-transformer";
+    const moved = yield* logging({
+      id: TRANSFORMER,
+      property: "Elm Court apartment",
+      clear: ["project"],
+    });
+    expect(moved.record).toMatchObject({ property: "Elm Court apartment", project: null });
   }).pipe(Effect.provide(TestDatabase)),
 );

@@ -101,7 +101,7 @@ it.effect("a column a type follows what it is attached to in points at one type 
 // record it points at, and no Change would say so. No tool writes them yet. A tool that does
 // adds its type to `SHAPES`, which takes its table off this list. `document_links` points by
 // type and id, as a Note does, with no foreign key to find it by: it joins with its Documents.
-const NOT_WRITTEN_YET = ["documents", "project_spaces", "projects", "quotes", "schedules"];
+const NOT_WRITTEN_YET = ["documents", "schedules"];
 
 it.effect("a table undo does not ask about is one no tool writes yet", () =>
   Effect.gen(function* () {

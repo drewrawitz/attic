@@ -77,13 +77,17 @@ test(
       diy: optional({ type: "boolean" }),
       vendor: text,
       property: text,
+      project: text,
       item_ids: optional({ type: "array", items: { type: "string" } }),
       spaces: optional({ type: "array", items: described({ type: "string" }) }),
       data: optional({ type: "object" }),
       note: text,
       clear: optional({
         type: "array",
-        items: { type: "string", enum: ["property", "description", "date", "cost", "vendor"] },
+        items: {
+          type: "string",
+          enum: ["property", "project", "description", "date", "cost", "vendor"],
+        },
       }),
     };
     expect(tool).toEqual(
@@ -118,7 +122,9 @@ test(
       "On DIY Work the Vendor is where the materials came from.",
       "Each list replaces the whole set",
       "Work at no Property takes no Spaces",
-      "Work that is in a Project, or was logged against a Schedule on a Property, stays at its Property.",
+      "Work that is in a Project, or was logged against a Schedule on a Property, stays at its Property, unless the same save takes it out of the Project.",
+      "It is a Project at the Work's Property, and one that is at another Property is refused.",
+      "To take Work out of its Project, name `project` in `clear`.",
       "It is stored as 1 or 0, which is how a record shows it.",
       "Repainting is Work that names the Space.",
       "`data.replaced`",

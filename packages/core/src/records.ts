@@ -2,8 +2,8 @@ import { jsonObject } from "./sql.ts";
 
 /**
  * The types of record a tool writes. Each is named the way get_record names its types, and a
- * Category, which get_record does not take, the same way. A type comes after the types it
- * points at, so rows can go in in this order and come out in the other.
+ * Category and a Quote, which get_record does not take, the same way. A type comes after the
+ * types it points at, so rows can go in in this order and come out in the other.
  */
 export const RECORD_TYPES = [
   "property",
@@ -11,6 +11,8 @@ export const RECORD_TYPES = [
   "vendor",
   "category",
   "item",
+  "project",
+  "quote",
   "work",
   "note",
 ] as const;
@@ -30,6 +32,16 @@ export interface LinkSet {
   readonly of: RecordType;
 }
 
+/**
+ * How a record is named when no column of its row names it: by the records it points at in
+ * these pointer columns, in this order, with this text between their names. A Quote is named
+ * by its Vendor and its Project, as in "Brightside Electric for Outdoor lighting".
+ */
+export interface NamedByOthers {
+  readonly columns: ReadonlyArray<string>;
+  readonly between: string;
+}
+
 /** What a record of one type is. */
 export interface RecordShape {
   readonly table: string;
@@ -39,10 +51,14 @@ export interface RecordShape {
    */
   readonly columns: ReadonlyArray<string>;
   readonly links: ReadonlyArray<LinkSet>;
-  /** The column a reply names the record by: its name, the title of Work, the body of a Note. */
-  readonly namedBy: string;
   /**
-   * The most of that column a reply shows, where it can run long. A Note has no name, and a
+   * What a reply and an error name the record by. For most types it is a column of the row:
+   * its name, the title of Work, the body of a Note. A Quote has no such column, and is named
+   * by the records it points at. `recordName` reads either.
+   */
+  readonly namedBy: string | NamedByOthers;
+  /**
+   * The most of that name a reply shows, where it can run long. A Note has no name, and a
    * reply names it by its body, and by only the start of a long one.
    */
   readonly longestName?: number;
@@ -71,8 +87,8 @@ export interface RecordShape {
   };
   /**
    * The columns no two records of the type can have the same values in: the name of a
-   * Property or a Vendor, and the Property and the name of a Space. The database ignores case
-   * in a name.
+   * Property or a Vendor, the Property and the name of a Space, and the Project and the Vendor
+   * of a Quote. The database ignores case in a name.
    */
   readonly unique?: ReadonlyArray<string>;
 }
@@ -162,6 +178,45 @@ export const SHAPES = {
       vendor_id: "vendor",
     },
   },
+  project: {
+    table: "projects",
+    columns: [
+      "id",
+      "property_id",
+      "title",
+      "status",
+      "start_on",
+      "end_on",
+      "data",
+      "created_at",
+      "updated_at",
+    ],
+    // The Spaces it covers.
+    links: [
+      { name: "spaces", table: "project_spaces", from: "project_id", to: "space_id", of: "space" },
+    ],
+    namedBy: "title",
+    pointerColumns: { property_id: "property" },
+  },
+  quote: {
+    table: "quotes",
+    columns: [
+      "id",
+      "project_id",
+      "vendor_id",
+      "amount_cents",
+      "quoted_on",
+      "data",
+      "created_at",
+      "updated_at",
+    ],
+    links: [],
+    // What one Vendor said a Project would cost, so the two of them are what it is called.
+    namedBy: { columns: ["vendor_id", "project_id"], between: " for " },
+    pointerColumns: { project_id: "project", vendor_id: "vendor" },
+    // A Project has one Quote from each Vendor.
+    unique: ["project_id", "vendor_id"],
+  },
   work: {
     table: "work",
     columns: [
@@ -187,8 +242,8 @@ export const SHAPES = {
       { name: "spaces", table: "work_spaces", from: "work_id", to: "space_id", of: "space" },
     ],
     namedBy: "title",
-    // Its Project and its Schedule are types no tool writes yet.
-    pointerColumns: { property_id: "property", vendor_id: "vendor" },
+    // Its Schedule is a type no tool writes yet.
+    pointerColumns: { property_id: "property", project_id: "project", vendor_id: "vendor" },
   },
   note: {
     table: "notes",
@@ -197,20 +252,72 @@ export const SHAPES = {
     namedBy: "body",
     longestName: 80,
     pointerColumns: { property_id: "property" },
-    // A Note can be on a Project too, which is a type no tool writes yet.
     attachedBy: {
       typeColumn: "entity_type",
       idColumn: "entity_id",
-      of: ["space", "vendor", "item", "work"],
+      of: ["space", "vendor", "item", "project", "work"],
       // A Vendor is at no Property, and neither is a Note on one.
       follows: "property_id",
     },
   },
 } as const satisfies Readonly<Record<RecordType, RecordShape>>;
 
+// The column a record of a type is named by, for a type that has one. A record that is named by
+// the records it points at points at ones with a column of their own, so a name is never more
+// than one step away.
+const nameColumn = (type: RecordType) => {
+  const { table, namedBy }: RecordShape = SHAPES[type];
+  if (typeof namedBy !== "string") {
+    throw new Error(`${table} has no column to be named by, so nothing is named by a row of it.`);
+  }
+  return namedBy;
+};
+
 /**
- * What a reply names a record by, given the text of the column its type is named by: the
- * text, or the start of one that is longer than a name of that type gets.
+ * The SQL of what the record of a type with an id is called now: the name in its row, or null
+ * when it is not there. `id` is the SQL of the id.
+ */
+export const calledNow = (type: RecordType, id: string) =>
+  `(SELECT pointed_at.${nameColumn(type)} FROM ${SHAPES[type].table} AS pointed_at
+     WHERE pointed_at.id = ${id})`;
+
+/**
+ * The SQL of what a record is named by. `read` gives the SQL of one column of the record, so
+ * a name is read the same way from a row and from a snapshot of one. A record that is named by
+ * the records it points at is named by what `called` says each of them is called, which is
+ * what it is called now unless the caller knows of another time to ask about. One that has no
+ * name to give, because it is not there, stands in the name as the id the record had for it.
+ */
+export const recordName = (
+  { table, namedBy, pointerColumns }: RecordShape,
+  read: (column: string) => string,
+  called: (type: RecordType, id: string) => string = calledNow,
+): string => {
+  if (typeof namedBy === "string") return read(namedBy);
+  return namedBy.columns
+    .map((column) => {
+      const type = pointerColumns[column];
+      if (type === undefined) {
+        throw new Error(`${table} has no pointer column named ${column} to be named by.`);
+      }
+      const pointer = read(column);
+      return `coalesce(${called(type, pointer)}, ${pointer})`;
+    })
+    .join(` || '${namedBy.between}' || `);
+};
+
+/**
+ * The same name in code, for a save that knows what the records it points at are called.
+ * `called` has each of those names under the pointer column it goes with.
+ */
+export const nameByOthers = <Column extends string>(
+  { columns, between }: { readonly columns: ReadonlyArray<Column>; readonly between: string },
+  called: Readonly<Record<Column, string>>,
+) => columns.map((column) => called[column]).join(between);
+
+/**
+ * What a reply names a record by, given the text its type is named by: the text, or the start
+ * of one that is longer than a name of that type gets.
  */
 export const listedName = (type: RecordType, text: string) => {
   const { longestName }: RecordShape = SHAPES[type];

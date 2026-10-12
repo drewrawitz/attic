@@ -7,7 +7,9 @@ import { getRecord } from "../../src/tools/get-record.ts";
 import { logWork } from "../../src/tools/log-work.ts";
 import { saveCategory } from "../../src/tools/save-category.ts";
 import { saveItem } from "../../src/tools/save-item.ts";
+import { saveProject } from "../../src/tools/save-project.ts";
 import { saveProperty } from "../../src/tools/save-property.ts";
+import { saveQuote } from "../../src/tools/save-quote.ts";
 import { saveSpace } from "../../src/tools/save-space.ts";
 import { saveVendor } from "../../src/tools/save-vendor.ts";
 import { undo } from "../../src/tools/undo.ts";
@@ -1333,5 +1335,285 @@ The Note "The left drawer sticks." (${note!.id}) would come back on the Item "De
       notes: [{ id: note!.id }],
     });
     expect(yield* getting("note", note!.id)).toMatchObject({ property: "Birch Lane house" });
+  }).pipe(Effect.provide(TestDatabase)),
+);
+
+// A Project, and what a save of one makes with it. `undo` has no code for a Project or a Quote:
+// it goes by what `records.ts` says each is and points at.
+it.effect("undoing the save that made a Project takes out the Space and the Note it made", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* calling(saveProperty)({ name: "Maple Street house" });
+    const saved = yield* calling(saveProject)({
+      title: "Back fence",
+      spaces: ["Side yard"],
+      note: "The HOA wants cedar.",
+    });
+    expect(saved.change_id).toBe("id-0006");
+    const was = yield* getting("project", "id-0004");
+
+    expect(yield* undoing("id-0006")).toEqual({
+      change_id: "id-0007",
+      taken_out: [
+        { type: "note", id: "id-0005", name: "The HOA wants cedar." },
+        { type: "project", id: "id-0004", name: "Back fence" },
+        { type: "space", id: "id-0003", name: "Side yard" },
+      ],
+      restored: [],
+      put_back: [],
+    });
+    const counted = sql`
+      SELECT (SELECT count(*) FROM projects) AS projects,
+             (SELECT count(*) FROM project_spaces) AS project_spaces,
+             (SELECT count(*) FROM spaces) AS spaces,
+             (SELECT count(*) FROM notes) AS notes`;
+    expect(yield* counted).toEqual([{ projects: 0, project_spaces: 0, spaces: 0, notes: 0 }]);
+
+    // Undoing the undo puts all three back, and the Project in its Space.
+    expect(yield* undoing("id-0007")).toMatchObject({
+      put_back: [{ type: "note" }, { type: "project" }, { type: "space" }],
+    });
+    const is = yield* getting("project", "id-0004");
+    expect(apartFromChanges(is)).toEqual(apartFromChanges(was));
+    expect(is).toMatchObject({
+      spaces: [{ id: "id-0003", name: "Side yard" }],
+      notes: [{ id: "id-0005", body: "The HOA wants cedar." }],
+    });
+  }).pipe(Effect.provide(TestDatabase)),
+);
+
+it.effect("undoing an update of a Project puts its Spaces and its dates back", () =>
+  Effect.gen(function* () {
+    yield* todayIs("2026-10-11");
+    yield* calling(saveProperty)({ name: "Maple Street house" });
+    yield* calling(saveProject)({
+      title: "Back fence",
+      start_on: "2026-04",
+      spaces: ["Side yard"],
+    });
+    const was = yield* getting("project", "id-0004");
+
+    // The save closes the Project, and has it cover another Space, which the save makes.
+    const closed = yield* calling(saveProject)({
+      id: "id-0004",
+      status: "done",
+      spaces: ["Back yard"],
+      clear: ["start_on"],
+    });
+    expect(closed.record).toMatchObject({
+      status: "done",
+      start_on: null,
+      end_on: "2026-10-11",
+      spaces: [{ name: "Back yard" }],
+    });
+
+    expect(yield* undoing(closed.change_id as string)).toMatchObject({
+      taken_out: [{ type: "space", name: "Back yard" }],
+      restored: [{ type: "project", id: "id-0004", name: "Back fence" }],
+    });
+    const is = yield* getting("project", "id-0004");
+    expect(apartFromChanges(is)).toEqual(apartFromChanges(was));
+    expect(is).toMatchObject({
+      status: "open",
+      start_on: "2026-04",
+      end_on: null,
+      spaces: [{ name: "Side yard" }],
+    });
+  }).pipe(Effect.provide(TestDatabase)),
+);
+
+// A Property, a Project at it, and a Quote for the Project from a Vendor the save makes. The
+// Project is id-0003, the Vendor id-0005, and the Quote id-0006, saved by the Change id-0007.
+const savingTheFenceQuote = Effect.gen(function* () {
+  yield* calling(saveProperty)({ name: "Maple Street house" });
+  yield* calling(saveProject)({ title: "Back fence" });
+  return yield* calling(saveQuote)({
+    project: "id-0003",
+    vendor: "Cedar Works",
+    amount: 4200,
+    quoted_on: "2026-04-18",
+  });
+});
+
+it.effect("undoing an update of a Quote puts its amount back", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const first = yield* savingTheFenceQuote;
+    expect(first.change_id).toBe("id-0007");
+    const [, quote] = first.created as { name: string }[];
+    // A revised Quote takes the place of the old one.
+    const revised = yield* calling(saveQuote)({
+      project: "id-0003",
+      vendor: "cedar works",
+      amount: 3900,
+      clear: ["quoted_on"],
+    });
+    expect(revised.change_id).toBe("id-0008");
+
+    // An undo names a Quote as its save did: by its Vendor and its Project.
+    expect(quote).toEqual({ type: "quote", id: "id-0006", name: "Cedar Works for Back fence" });
+    expect(yield* undoing("id-0008")).toEqual({
+      change_id: "id-0009",
+      taken_out: [],
+      restored: [quote],
+      put_back: [],
+    });
+    // The Quote is as it was, and its Project lists the undo with the Changes it undid.
+    expect(yield* getting("project", "id-0003")).toMatchObject({
+      quotes: [{ id: "id-0006", vendor: "Cedar Works", amount: 4200, quoted_on: "2026-04-18" }],
+      changes: [
+        {
+          id: "id-0009",
+          tool: "undo",
+          undoes: "id-0008",
+          quote_id: "id-0006",
+          before: { amount: 3900, quoted_on: null },
+          after: { amount: 4200, quoted_on: "2026-04-18" },
+        },
+        { id: "id-0008", tool: "save_quote", quote_id: "id-0006" },
+        { id: "id-0007", tool: "save_quote", quote_id: "id-0006", before: null },
+        { id: "id-0004", tool: "save_project", quote_id: null },
+      ],
+    });
+
+    // The save that made the Quote made its Vendor too, and both go out with it.
+    expect(yield* undoing("id-0007")).toEqual({
+      change_id: "id-0010",
+      taken_out: [quote, { type: "vendor", id: "id-0005", name: "Cedar Works" }],
+      restored: [],
+      put_back: [],
+    });
+    expect(
+      yield* sql`SELECT (SELECT count(*) FROM quotes) AS quotes,
+                        (SELECT count(*) FROM vendors) AS vendors`,
+    ).toEqual([{ quotes: 0, vendors: 0 }]);
+  }).pipe(Effect.provide(TestDatabase)),
+);
+
+// Deleting a Project's row would be refused for its Quotes and its Work, and would leave its
+// Notes on nothing. Each was put on it by a Change of its own, which never touched the Project.
+it.effect(
+  "undoing the Change that made a Project is refused while a Quote, Work, or a Note is on it",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* savingTheFenceQuote;
+      const logged = yield* calling(logWork)({
+        kind: "improvement",
+        title: "Set the posts",
+        project: "id-0003",
+      });
+      const noted = yield* calling(addNote)({
+        body: "The HOA wants cedar.",
+        attach_to: { type: "project", id: "id-0003" },
+      });
+      expect([logged.change_id, noted.change_id]).toEqual(["id-0009", "id-0011"]);
+
+      const inUse = (by: string) => ({
+        refused: `Nothing was undone, because undoing the Change "id-0004" would take out what other records use now. Point those records elsewhere first, or undo the Changes that made them use it:
+The Project "Back fence" (id-0003) is used by ${by}.`,
+      });
+      const QUOTE = 'the Quote "Cedar Works for Back fence" (id-0006)';
+      const WORK = 'the Work "Set the posts" (id-0008)';
+      const NOTE = 'the Note "The HOA wants cedar." (id-0010)';
+      expect(yield* undoing("id-0004")).toEqual(inUse(`${QUOTE}, ${WORK}, ${NOTE}`));
+      expect(yield* sql`SELECT title FROM projects`).toEqual([{ title: "Back fence" }]);
+
+      // Each comes off the Project in turn, and then the Project can go.
+      yield* undoing("id-0011");
+      expect(yield* undoing("id-0004")).toEqual(inUse(`${QUOTE}, ${WORK}`));
+      // Work that is taken out of its Project no longer uses it. That save touched the Work,
+      // and not the Project.
+      yield* calling(logWork)({ id: "id-0008", clear: ["project"] });
+      expect(yield* undoing("id-0004")).toEqual(inUse(QUOTE));
+      yield* undoing("id-0007");
+      expect(yield* undoing("id-0004")).toMatchObject({
+        taken_out: [{ type: "project", id: "id-0003", name: "Back fence" }],
+      });
+      expect(yield* sql`SELECT count(*) AS projects FROM projects`).toEqual([{ projects: 0 }]);
+    }).pipe(Effect.provide(TestDatabase)),
+);
+
+// A Project has one Quote from each Vendor. The first Quote was moved to another Vendor, and a
+// second Quote then took the Vendor it had. The second save never touched the first Quote.
+it.effect("an undo that would give a Quote back a Vendor another Quote has now is refused", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* savingTheFenceQuote;
+    const moved = yield* calling(saveQuote)({ id: "id-0006", vendor: "Post and Rail" });
+    expect(moved.change_id).toBe("id-0009");
+    const second = yield* calling(saveQuote)({ project: "id-0003", vendor: "Cedar Works" });
+    expect(second.created).toEqual([
+      { type: "quote", id: "id-0010", name: "Cedar Works for Back fence" },
+    ]);
+
+    expect(yield* undoing("id-0009")).toEqual({
+      refused: `Nothing was undone, because a record would get back a name that another record has now. Rename the other record first, or undo the Change that made it:
+The Quote "Cedar Works for Back fence" (id-0006) would be called that again, and the Quote "Cedar Works for Back fence" (id-0010) has the name now.`,
+    });
+    expect(yield* sql`SELECT id, vendor_id FROM quotes ORDER BY id`).toEqual([
+      { id: "id-0006", vendor_id: "id-0008" },
+      { id: "id-0010", vendor_id: "id-0005" },
+    ]);
+
+    // With the second Quote out, the first can have its Vendor back.
+    yield* undoing(second.change_id as string);
+    expect(yield* undoing("id-0009")).toMatchObject({
+      taken_out: [{ type: "vendor", id: "id-0008", name: "Post and Rail" }],
+      restored: [{ type: "quote", id: "id-0006", name: "Cedar Works for Back fence" }],
+    });
+  }).pipe(Effect.provide(TestDatabase)),
+);
+
+// A Quote is named by its Vendor and its Project as they are called now. One of the two that
+// is not there has no name to give, and stands in the Quote's name as the id it had.
+it.effect("a Quote whose Vendor is not there is named by the Vendor's id", () =>
+  Effect.gen(function* () {
+    yield* calling(saveProperty)({ name: "Maple Street house" });
+    yield* calling(saveProject)({ title: "Back fence" });
+    // The Vendor is saved by a Change of its own, so that Change can be undone on its own.
+    const vendor = yield* calling(saveVendor)({ name: "Cedar Works" });
+    expect(vendor.change_id).toBe("id-0006");
+    yield* calling(saveQuote)({ project: "id-0003", vendor: "Cedar Works", amount: 4200 });
+    const moved = yield* calling(saveQuote)({ id: "id-0007", vendor: "Post and Rail" });
+    // Nothing points at the first Vendor now, so it can go.
+    const gone = yield* undoing("id-0006");
+    expect(gone).toMatchObject({ taken_out: [{ type: "vendor", id: "id-0005" }] });
+
+    expect(yield* undoing(moved.change_id as string)).toEqual({
+      refused: `${NOT_THERE}
+The Vendor with the id "id-0005" is not there now, and the Quote "id-0005 for Back fence" (id-0007) would point at it. The Change "${gone.change_id as string}" took it out.`,
+    });
+  }).pipe(Effect.provide(TestDatabase)),
+);
+
+// An undo reads what it calls each record before it writes. A Vendor it is about to put back
+// is not there to ask then, and the Change has what it was called.
+it.effect("a Quote that comes back with its Vendor is named by the Vendor, and not by an id", () =>
+  Effect.gen(function* () {
+    const saved = yield* savingTheFenceQuote;
+    const [vendor, quote] = saved.created as { name: string }[];
+    expect(quote).toMatchObject({ name: "Cedar Works for Back fence" });
+    expect(yield* undoing("id-0007")).toMatchObject({ taken_out: [quote, vendor] });
+
+    // Undoing that undo puts both back.
+    expect(yield* undoing("id-0008")).toEqual({
+      change_id: "id-0009",
+      taken_out: [],
+      restored: [],
+      put_back: [quote, vendor],
+    });
+
+    // The same for a Quote that an undo restores to a Vendor it puts back in the same batch.
+    const moved = yield* calling(saveQuote)({ id: "id-0006", vendor: "Post and Rail" });
+    const back = yield* undoing(moved.change_id as string);
+    expect(back).toMatchObject({
+      taken_out: [{ type: "vendor", name: "Post and Rail" }],
+      restored: [{ type: "quote", name: "Cedar Works for Back fence" }],
+    });
+    expect(yield* undoing(back.change_id as string)).toMatchObject({
+      restored: [{ type: "quote", id: "id-0006", name: "Post and Rail for Back fence" }],
+      put_back: [{ type: "vendor", name: "Post and Rail" }],
+    });
   }).pipe(Effect.provide(TestDatabase)),
 );

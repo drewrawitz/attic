@@ -5,7 +5,9 @@ import { getSchema } from "../../src/tools/get-schema.ts";
 import { logWork } from "../../src/tools/log-work.ts";
 import { saveCategory } from "../../src/tools/save-category.ts";
 import { saveItem } from "../../src/tools/save-item.ts";
+import { saveProject } from "../../src/tools/save-project.ts";
 import { saveProperty } from "../../src/tools/save-property.ts";
+import { saveQuote } from "../../src/tools/save-quote.ts";
 import { saveSpace } from "../../src/tools/save-space.ts";
 import { saveVendor } from "../../src/tools/save-vendor.ts";
 import { call } from "../call.ts";
@@ -19,6 +21,8 @@ const SAVES: ReadonlyArray<readonly [tool: Tool, kind: string]> = [
   [saveCategory, "category"],
   [saveItem, "item"],
   [logWork, "work"],
+  [saveProject, "project"],
+  [saveQuote, "quote"],
 ];
 
 // What a client reads about a tool's `data` field.
