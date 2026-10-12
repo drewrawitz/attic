@@ -95,10 +95,12 @@ const DATA_KEYS = {
   },
 };
 
-// The keys of a Property's `data` that are marked as holding a fact that is the same in every
-// Space. A Space shows what its Property has under these, and under no other key (ADR 0015).
-// `get_record` reads this list and `get_schema` publishes it, so there is one list. A key is
-// marked only once it is one of the Property's well-known keys above.
+/**
+ * The keys of a Property's `data` that are marked as holding a fact that is the same in every
+ * Space. A Space shows what its Property has under these, and under no other key (ADR 0015).
+ * `get_record` reads this list and `get_schema` publishes it, so there is one list. A key is
+ * marked only once it is one of the Property's well-known keys above.
+ */
 export const FROM_PROPERTY_KEYS = ["paint", "flooring"] as const satisfies ReadonlyArray<
   keyof typeof DATA_KEYS.property
 >;

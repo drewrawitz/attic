@@ -163,7 +163,7 @@ it.effect(
       const saysSo = Object.entries(data_keys.property ?? {})
         .filter(([, text]) => text.includes("`from_property`"))
         .map(([key]) => key);
-      expect(saysSo).toEqual(from_property_keys);
+      expect(saysSo.sort()).toEqual([...from_property_keys].sort());
       // A Space has a `sqft` of its own, so the Property's says whose size it is.
       expect(data_keys.property?.sqft).toContain("the whole Property");
     }).pipe(Effect.provide(TestDatabase)),

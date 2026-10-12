@@ -8,7 +8,7 @@ const JSON_COLUMNS = new Set([
   "spaces",
   "documents",
   "categories",
-  // get_record: the lists that hang off a record, and what a Space shows of its Property's `data`.
+  // get_record: the lists that hang off a record.
   "extra_categories",
   "schedules",
   "work",
@@ -17,12 +17,14 @@ const JSON_COLUMNS = new Set([
   "notes",
   "attached_to",
   "changes",
-  "from_property",
 ]);
 
-// A JSON column always holds an object or a list. Text that parses to anything else, or does
-// not parse, was not one and stays as it is.
-const parsed = (text: string): unknown => {
+/**
+ * The text of one JSON column, parsed and otherwise as it is stored: money is still in cents,
+ * under its key ending in `_cents`. A JSON column always holds an object or a list. Text that
+ * parses to anything else, or does not parse, was not one and stays as it is.
+ */
+export const storedJson = (text: string): unknown => {
   try {
     const value: unknown = JSON.parse(text);
     return typeof value === "object" && value !== null ? value : text;
@@ -58,7 +60,7 @@ const inDollars = (value: unknown): unknown => {
  * How a curated tool shows the text of one JSON column it read apart from its row: parsed, with
  * money in dollars, the way `formatRow` shows the column inside a row.
  */
-export const formatJson = (text: string): unknown => inDollars(parsed(text));
+export const formatJson = (text: string): unknown => inDollars(storedJson(text));
 
 /**
  * How a curated tool shows a row it read. JSON columns come out parsed. A `_cents` column, or
@@ -70,7 +72,7 @@ export const formatRow = (row: object): Record<string, unknown> =>
     Object.fromEntries(
       Object.entries(row).map(([column, value]) => [
         column,
-        JSON_COLUMNS.has(column) && typeof value === "string" ? parsed(value) : value,
+        JSON_COLUMNS.has(column) && typeof value === "string" ? storedJson(value) : value,
       ]),
     ),
   );

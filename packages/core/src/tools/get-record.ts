@@ -1,6 +1,6 @@
 import { Effect, Schema } from "effect";
 import { SqlClient } from "effect/sql";
-import { formatRow } from "../output.ts";
+import { formatRow, storedJson } from "../output.ts";
 import { propertyNamed } from "../property.ts";
 import type { RecordType } from "../records.ts";
 import { jsonList, jsonObject } from "../sql.ts";
@@ -217,8 +217,9 @@ const STATEMENTS: Readonly<Record<Type, (type: Type) => string>> = {
       FROM properties AS record
      WHERE record.id = ?1 OR record.name = ?1`,
 
-  // `from_property` is read as the whole of the Property's `data`. `fromProperty` below keeps
-  // the part of it that is the same in every Space and that the Space has no entry of its own for.
+  // `from_property` is read as the whole of the Property's `data`. `showingFromProperty` below
+  // keeps the part of it that is the same in every Space and that the Space has no entry of its
+  // own for.
   space: (type) => `
     SELECT record.id, record.name, record.property_id, property.name AS property,
            record.data, property.data AS from_property,
@@ -395,6 +396,28 @@ const fromProperty = (own: JsonObject, propertyData: JsonObject): JsonObject =>
     }),
   );
 
+// A Space's row as its statement reads it: its own `data` and the whole of its Property's, each
+// the JSON text of an object.
+interface SpaceRow {
+  readonly data: string;
+  readonly from_property: string;
+}
+
+// A `data` column as it is stored. The schema checks that each one holds an object.
+const storedObject = (text: string): JsonObject => {
+  const value = storedJson(text);
+  return isObject(value) ? value : {};
+};
+
+// A Space's row, with what the Space shows of its Property's `data` in place of the whole of it.
+// That is worked out from both as they are stored. `formatRow` shows a key ending in `_cents`
+// under the name without it, so worked out after, a Property's `flooring_cents` would pass for
+// its `flooring`, and a Space's `paint_cents` for paint of its own.
+const showingFromProperty = (row: SpaceRow) => ({
+  ...row,
+  from_property: fromProperty(storedObject(row.data), storedObject(row.from_property)),
+});
+
 // Cuts each list that has more entries than a list may, and says which ones were cut. The other
 // read tools call such a remark `note`. A record has Notes of its own, so here it is `lists_cut`.
 const cut = (record: JsonObject): JsonObject => {
@@ -443,19 +466,15 @@ A list with dates comes newest first. Newest is by the date as text, so Work dat
  */
 export const readRecord = Effect.fnUntraced(function* (type: Type, id: string) {
   const sql = yield* SqlClient.SqlClient;
-  const [row] = yield* sql.unsafe<object>(RECORDS[type], [id]);
-  if (row === undefined) {
+  const [found] = yield* sql.unsafe<object>(RECORDS[type], [id]);
+  if (found === undefined) {
     // A Property that is not there is an error that lists the ones that are.
     if (type === "property") yield* propertyNamed(id);
     return yield* noRecord(type, id);
   }
 
-  const record = cut(formatRow({ type, ...row }));
-  // A Space's statement reads the whole of its Property's `data` as `from_property`.
-  if (type !== "space" || !isObject(record.data) || !isObject(record.from_property)) {
-    return record;
-  }
-  return { ...record, from_property: fromProperty(record.data, record.from_property) };
+  const row = type === "space" ? showingFromProperty(found as SpaceRow) : found;
+  return cut(formatRow({ type, ...row }));
 });
 
 export const getRecord = defineTool({

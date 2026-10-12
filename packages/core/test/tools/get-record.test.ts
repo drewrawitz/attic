@@ -317,7 +317,7 @@ const TRIM = {
 // "What paint is in the living room?" It has wall paint of its own and no trim entry. The trim
 // color is the same in every Space, so it is a fact about the Property.
 it.effect(
-  "the living room comes back with its own wall paint and the Property's trim color, marked as the Property's",
+  "the living room comes back with its own wall paint and the Property's trim color, shown as the Property's",
   () =>
     Effect.gen(function* () {
       yield* loadHousehold;
@@ -451,6 +451,41 @@ it.effect(
     }).pipe(Effect.provide(TestDatabase)),
 );
 
+// Money inside `data` is stored in cents under a key ending in `_cents`, and a record shows it in
+// dollars under the name without `_cents`. What a Property paid for its flooring is not its
+// flooring, so what a Space shows goes by the keys as they are stored.
+it.effect("a Space goes by the keys as they are stored, not as money is shown", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* loadHousehold;
+    // The former Property has what its paint and its flooring came to, and no entry for either.
+    yield* call(saveProperty, {
+      name: "Elm Court apartment",
+      data: { paint_cents: 120000, flooring_cents: 450000 },
+    });
+    expect((yield* getting("property", "seed-property-elm")).data).toEqual({
+      paint: 1200,
+      flooring: 4500,
+    });
+    expect(yield* fromProperty("seed-space-elm-kitchen")).toEqual({});
+
+    // The Garage has what its paint came to and no paint of its own, so the trim is still the
+    // Property's.
+    yield* sql`UPDATE spaces SET data = '{"paint_cents":30000}' WHERE id = 'seed-space-garage'`;
+    expect(yield* fromProperty("seed-space-garage")).toEqual({ paint: { trim: TRIM } });
+
+    // Money inside an entry that a Space shows is in dollars, as it is anywhere in a record.
+    yield* call(saveProperty, {
+      name: "Maple Street house",
+      data: { flooring: { type: "oak hardwood", cost_cents: 450000 } },
+    });
+    expect(yield* fromProperty("seed-space-garage")).toEqual({
+      paint: { trim: TRIM },
+      flooring: { type: "oak hardwood", cost: 4500 },
+    });
+  }).pipe(Effect.provide(TestDatabase)),
+);
+
 // get_schema publishes which keys a Space shows, and get_record goes by the same list. So at a
 // Property with an entry under every one of its well-known keys, a Space with nothing of its own
 // shows the published keys and no others.
@@ -491,7 +526,7 @@ it.effect("get_record's description names the Property keys a Space shows", () =
 // A Property's paint is kept by surface, and nothing stops it from holding something else too.
 // The year it was last repainted is not a surface, and the trim beside it still is.
 it.effect(
-  "a Space still gets the Property's trim when the Property's paint holds more than surfaces",
+  "a Space still shows the Property's trim when the Property's paint holds more than surfaces",
   () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
@@ -504,7 +539,7 @@ it.effect(
       expect((yield* getting("space", "seed-space-living-room")).from_property).toEqual({
         paint: { trim: TRIM },
       });
-      // The garage has no paint of its own, so it gets all of the Property's.
+      // The garage has no paint of its own, so it shows all of the Property's.
       expect((yield* getting("space", "seed-space-garage")).from_property).toEqual({
         paint: { trim: TRIM, repainted: "2024" },
       });
