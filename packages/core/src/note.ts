@@ -1,5 +1,6 @@
 import { Effect } from "effect";
 import { SqlClient } from "effect/sql";
+import { listedName } from "./records.ts";
 import { insertRow, updateRow, type SaveStep } from "./save.ts";
 import { Ids } from "./write.ts";
 
@@ -12,10 +13,6 @@ export interface Noted {
   readonly id: string;
 }
 
-// A Note has no name. A reply names it by its body, and by only the start of a long one.
-const NAMED_BY = 80;
-const opening = (body: string) => (body.length > NAMED_BY ? `${body.slice(0, NAMED_BY)}…` : body);
-
 /**
  * The step that writes a Note, under an id of its own. `on` is the record it is attached to,
  * and a Note with none stands alone. `propertyId` is the Property the Note is at, if any.
@@ -26,7 +23,11 @@ export const newNote = Effect.fnUntraced(function* (
   on?: Noted,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const note = { type: "note", id: yield* (yield* Ids).next, name: opening(body) } as const;
+  const note = {
+    type: "note",
+    id: yield* (yield* Ids).next,
+    name: listedName("note", body),
+  } as const;
   return insertRow(sql, note, {
     property_id: propertyId,
     entity_type: on?.type ?? null,
@@ -46,7 +47,11 @@ export const notesMovedTo = (
   propertyId: string | null,
 ): ReadonlyArray<SaveStep> =>
   notes.map(({ id, body }) =>
-    updateRow(sql, { type: "note", id, name: opening(body) }, { property_id: propertyId }),
+    updateRow(
+      sql,
+      { type: "note", id, name: listedName("note", body) },
+      { property_id: propertyId },
+    ),
   );
 
 /**

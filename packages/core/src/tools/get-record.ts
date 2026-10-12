@@ -2,7 +2,8 @@ import { Effect, Schema } from "effect";
 import { SqlClient } from "effect/sql";
 import { formatRow } from "../output.ts";
 import { propertyNamed } from "../property.ts";
-import { jsonObject } from "../sql.ts";
+import type { RecordType } from "../records.ts";
+import { jsonList, jsonObject } from "../sql.ts";
 import { defineTool, ToolError } from "../tool.ts";
 
 // The types of record there are to get. A Quote is not one: it comes back with its Project.
@@ -42,7 +43,7 @@ const entry = (fields: ReadonlyArray<string>) =>
 // `rows`, in the order `rows` puts them. The entries are built outside `rows`, because a JSON
 // value that passes through a subquery comes out as plain text.
 const list = (name: string, fields: ReadonlyArray<string>, rows: string, most = MOST_ENTRIES + 1) =>
-  `(SELECT json_group_array(${entry(fields)}) FROM (${rows} LIMIT ${most})) AS ${name}`;
+  `${jsonList(entry(fields), `${rows} LIMIT ${most}`)} AS ${name}`;
 
 // Picks the rows attached to the record in a table that points at a record by its type and id:
 // Notes, the links of Documents, and the records of Changes.
@@ -404,7 +405,7 @@ const cut = (record: JsonObject): JsonObject => {
 };
 
 /** A type as the glossary writes it: Item, Space. */
-export const term = (type: Type) => `${type.charAt(0).toUpperCase()}${type.slice(1)}`;
+export const term = (type: Type | RecordType) => `${type.charAt(0).toUpperCase()}${type.slice(1)}`;
 
 /** The error for a record that is not there, which names its type and the id that was given. */
 export const noRecord = (type: Type, id: string) =>

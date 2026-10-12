@@ -10,6 +10,7 @@ import { saveProperty } from "./tools/save-property.ts";
 import { saveSpace } from "./tools/save-space.ts";
 import { saveVendor } from "./tools/save-vendor.ts";
 import { search } from "./tools/search.ts";
+import { undo } from "./tools/undo.ts";
 
 export { Currency } from "./money.ts";
 export { callTool, type Tool, type ToolResult } from "./tool.ts";
@@ -28,4 +29,5 @@ export const tools: ReadonlyArray<Tool> = [
   saveItem,
   logWork,
   addNote,
+  undo,
 ];
