@@ -14,7 +14,10 @@ export interface Noted {
 
 // A Note has no name. A reply names it by its body, and by only the start of a long one.
 const NAMED_BY = 80;
-const opening = (body: string) => (body.length > NAMED_BY ? `${body.slice(0, NAMED_BY)}…` : body);
+
+/** What a reply names a Note by: its body, or the start of a long one. */
+export const opening = (body: string) =>
+  body.length > NAMED_BY ? `${body.slice(0, NAMED_BY)}…` : body;
 
 /**
  * The step that writes a Note, under an id of its own. `on` is the record it is attached to,

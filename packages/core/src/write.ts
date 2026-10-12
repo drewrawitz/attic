@@ -39,7 +39,8 @@ export class Ids extends Context.Service<Ids, { readonly next: Effect.Effect<str
 /**
  * One statement of a write, with the record it is about: the one it creates, changes, or
  * deletes. A statement cannot be handed over without one, so no record a write touches is
- * left out of its Change.
+ * left out of its Change. A statement that is about several records is handed over with each
+ * of them, and runs once.
  */
 export interface Step {
   readonly type: RecordType;
@@ -76,8 +77,11 @@ const RECORDING = Object.fromEntries(
 export class Write extends Context.Service<
   Write,
   {
-    /** Runs the statements and records the Change. Returns the id of the Change. */
-    readonly run: (steps: ReadonlyArray<Step>) => Effect.Effect<string, SqlError>;
+    /**
+     * Runs the statements and records the Change. Returns the id of the Change. `undoes` is
+     * the id of the Change these steps reverse, when the write is an undo.
+     */
+    readonly run: (steps: ReadonlyArray<Step>, undoes?: string) => Effect.Effect<string, SqlError>;
   }
 >()("@attic/core/Write") {
   /** The write of one call of the tool with this name. */
@@ -91,7 +95,7 @@ export class Write extends Context.Service<
         let written = false;
 
         return Write.of({
-          run: Effect.fnUntraced(function* (steps) {
+          run: Effect.fnUntraced(function* (steps, undoes) {
             // One call is one Change. Two writes would be two batches, and the first would
             // stand if the second failed.
             if (written) {
@@ -116,9 +120,9 @@ export class Write extends Context.Service<
               });
 
             yield* batch.run([
-              sql`INSERT INTO changes (id, tool) VALUES (${change}, ${tool})`,
+              sql`INSERT INTO changes (id, tool, undoes) VALUES (${change}, ${tool}, ${undoes ?? null})`,
               ...recorded("before"),
-              ...steps.map(({ statement }) => statement),
+              ...new Set(steps.map(({ statement }) => statement)),
               ...recorded("after"),
             ]);
             return change;

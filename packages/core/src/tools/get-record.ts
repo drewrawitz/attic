@@ -2,6 +2,7 @@ import { Effect, Schema } from "effect";
 import { SqlClient } from "effect/sql";
 import { formatRow } from "../output.ts";
 import { propertyNamed } from "../property.ts";
+import type { RecordType } from "../records.ts";
 import { jsonObject } from "../sql.ts";
 import { defineTool, ToolError } from "../tool.ts";
 
@@ -404,7 +405,7 @@ const cut = (record: JsonObject): JsonObject => {
 };
 
 /** A type as the glossary writes it: Item, Space. */
-export const term = (type: Type) => `${type.charAt(0).toUpperCase()}${type.slice(1)}`;
+export const term = (type: Type | RecordType) => `${type.charAt(0).toUpperCase()}${type.slice(1)}`;
 
 /** The error for a record that is not there, which names its type and the id that was given. */
 export const noRecord = (type: Type, id: string) =>
