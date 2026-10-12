@@ -61,6 +61,13 @@ export interface RecordShape {
     readonly typeColumn: string;
     readonly idColumn: string;
     readonly of: ReadonlyArray<RecordType>;
+    /**
+     * The pointer column in which it follows the record it is attached to, where that record
+     * has the column too: a Note is at the Property of the record it is on. Nothing in the
+     * database holds the two together. A save that moves the record moves what is attached
+     * to it, in the same Change.
+     */
+    readonly follows?: string;
   };
   /**
    * The columns no two records of the type can have the same values in: the name of a
@@ -195,6 +202,8 @@ export const SHAPES = {
       typeColumn: "entity_type",
       idColumn: "entity_id",
       of: ["space", "vendor", "item", "work"],
+      // A Vendor is at no Property, and neither is a Note on one.
+      follows: "property_id",
     },
   },
 } as const satisfies Readonly<Record<RecordType, RecordShape>>;

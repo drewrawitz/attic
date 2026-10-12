@@ -74,6 +74,28 @@ it.effect("a type that is attached by type and id says which types, as its table
   }).pipe(Effect.provide(TestDatabase)),
 );
 
+// `undo` asks whether a record it would move has a Note that would stay behind, and goes by the
+// column a Note follows its record in. The schema has no word for that rule, which a save
+// keeps. What it can say is that the column points at one type in both tables.
+it.effect("a column a type follows what it is attached to in points at one type in both", () =>
+  Effect.gen(function* () {
+    for (const [type, { table, attachedBy }] of Object.entries<RecordShape>(SHAPES)) {
+      if (attachedBy?.follows === undefined) continue;
+      const pointsAt = (yield* pointing(table))[attachedBy.follows];
+      expect(pointsAt, type).toBeDefined();
+      // A type that has no such column has nothing to follow: a Vendor is at no Property.
+      const followed: string[] = [];
+      for (const on of attachedBy.of) {
+        const there = (yield* pointing(SHAPES[on].table))[attachedBy.follows];
+        if (there === undefined) continue;
+        expect(there, `${type} on ${on}`).toBe(pointsAt);
+        followed.push(on);
+      }
+      expect(followed, type).not.toEqual([]);
+    }
+  }).pipe(Effect.provide(TestDatabase)),
+);
+
 // The tables that point at a record of some type and are not a type's own table or a link
 // set's. `undo` does not ask about these, so a row in one would be deleted or emptied with the
 // record it points at, and no Change would say so. No tool writes them yet. A tool that does

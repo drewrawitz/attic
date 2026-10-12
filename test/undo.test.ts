@@ -44,6 +44,7 @@ const cleanUp = onDatabase(
   `DELETE FROM items WHERE name ${OURS}`,
   `DELETE FROM spaces WHERE name ${OURS}`,
   `DELETE FROM vendors WHERE name ${OURS}`,
+  `DELETE FROM categories WHERE name ${OURS}`,
 );
 
 // A test body that calls tools as a signed-in client, on a database with none of the above.
@@ -114,6 +115,8 @@ test(
       "The error names what uses it.",
       "The error says which record is missing and which Change took it out.",
       "Rename the other record first, or undo the Change that made it.",
+      "The error names every Category in the loop.",
+      "The error names the Note and the Change that added it.",
       "An undo is a Change too, so it can be undone, and then the records are as the first Change left them.",
       "No tool deletes a Property.",
     ]) {
@@ -348,6 +351,50 @@ test(
         bought_from: LATCH,
         vendor_id: vendor.id,
       });
+    }),
+  ),
+);
+
+// A save refuses a parent that would make a loop, and an undo has to as well. It looks for one
+// in a single statement, which walks the tree as it would be once the undo is done: a
+// recursive query over the Change's own JSON and the rows there are. Node SQLite takes that,
+// and nothing said D1 would.
+test(
+  "an undo that would bring a Category back under one that is under it is refused on D1",
+  asClient((call) =>
+    Effect.gen(function* () {
+      const [straps, buckles] = ["trunk-straps", "trunk-buckles"];
+      const parents = Effect.map(
+        call("query", {
+          sql: `SELECT id, parent_id FROM categories WHERE name ${OURS} ORDER BY id`,
+        }),
+        ({ rows }) => rows,
+      );
+      yield* call("save_category", { id: straps, name: "Trunk straps" });
+      yield* call("save_category", { id: buckles, name: "Trunk buckles", parent: straps });
+      const cleared = yield* call("save_category", { id: buckles, clear: ["parent"] });
+      // This save never touched the buckles, so no later Change is in the way.
+      const swapped = yield* call("save_category", { id: straps, parent: buckles });
+
+      const refused = yield* call("undo", { change_id: cleared.change_id });
+      expect(refused.refused).toContain(
+        `The Category "Trunk buckles" (${buckles}) would be back under the Category "Trunk straps" (${straps}), which is under the Category "Trunk buckles" (${buckles}).`,
+      );
+      expect(yield* parents).toEqual([
+        { id: buckles, parent_id: null },
+        { id: straps, parent_id: buckles },
+      ]);
+
+      // With the straps out from under the buckles, the walk ends at the top of the tree, and
+      // the buckles go back under the straps.
+      yield* call("undo", { change_id: swapped.change_id });
+      expect(yield* call("undo", { change_id: cleared.change_id })).toMatchObject({
+        restored: [{ type: "category", id: buckles, name: "Trunk buckles" }],
+      });
+      expect(yield* parents).toEqual([
+        { id: buckles, parent_id: straps },
+        { id: straps, parent_id: null },
+      ]);
     }),
   ),
 );
