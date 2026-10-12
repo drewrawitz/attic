@@ -1252,3 +1252,43 @@ The Work "Patched the fence" (${fence}) would go back to where it was, and the N
     ]);
   }).pipe(Effect.provide(TestDatabase)),
 );
+
+// The same rule from the other side. The Note is a record of the Change, and its Item is not:
+// the Note was taken out by an undo, and the Desk moved while it was out. Undoing that undo
+// would put the Note back at the Property it was at, which the Desk has left.
+it.effect("an undo that would put a Note back where its Item no longer is is refused", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* calling(saveProperty)({ name: "Maple Street house" });
+    yield* calling(saveProperty)({ name: "Birch Lane house" });
+    const saved = yield* calling(saveItem)({ name: "Desk", property: "Maple Street house" });
+    const desk = (saved.record as { id: string }).id;
+    const added = yield* calling(addNote)({
+      body: "The left drawer sticks.",
+      attach_to: { type: "item", id: desk },
+    });
+    const [note] = added.created as { id: string }[];
+    const takenOut = yield* undoing(added.change_id as string);
+    // The Note is out, so the save that moves the Desk has no Note to move with it.
+    const moved = yield* calling(saveItem)({ id: desk, property: "Birch Lane house" });
+    expect(moved.updated).toEqual([{ type: "item", id: desk, name: "Desk" }]);
+
+    expect(yield* undoing(takenOut.change_id as string)).toEqual({
+      refused: `Nothing was undone, because a record would come back where the one it is on no longer is. Move that one back first, or undo the Change that moved it:
+The Note "The left drawer sticks." (${note!.id}) would come back on the Item "Desk" (${desk}), which has moved since. The Change "${String(moved.change_id)}" moved the Item.`,
+    });
+    expect(yield* sql`SELECT count(*) AS notes FROM notes`).toEqual([{ notes: 0 }]);
+    expect(yield* sql`SELECT count(*) AS changes FROM changes`).toEqual([{ changes: 6 }]);
+
+    // With the Desk back, the Note comes back at the Property the Desk is at.
+    yield* undoing(moved.change_id as string);
+    expect(yield* undoing(takenOut.change_id as string)).toMatchObject({
+      put_back: [{ type: "note", id: note!.id }],
+    });
+    expect(yield* getting("note", note!.id)).toMatchObject({ property: "Maple Street house" });
+    expect(yield* getting("item", desk)).toMatchObject({
+      property: "Maple Street house",
+      notes: [{ id: note!.id }],
+    });
+  }).pipe(Effect.provide(TestDatabase)),
+);

@@ -26,6 +26,7 @@ An undo is refused, and nothing is written, when it would lose something, or lea
 - A record it would bring back had a name that another record has now, where no two can share one: a Property, a Vendor, or a Space at its Property. The error names both. Rename the other record first, or undo the Change that made it.
 - A Category it would bring back would be under one that is under it, however far down, which is a loop: its parent was cleared, that parent was put under it, and the clearing is being undone. The error names every Category in the loop. Take one of the others out from under its parent first, with save_category, or undo the Change that put it there.
 - A record it would move back to another Property has had a Note added to it since. A save that moves a record moves its Notes, and an undo would leave this one where it is. The error names the Note and the Change that added it. Undo that Change first, and then this one.
+- A Note it would bring back is on a record that has moved to another Property since, so the Note would come back at the Property the record left. The error names both, and the Change that moved the record. Move the record back first, or undo that Change.
 
 An undo is a Change too, so it can be undone, and then the records are as the first Change left them. Changes are kept forever, and undoing one does not remove it.
 
@@ -504,6 +505,49 @@ const LEFT_BEHIND: ReadonlyArray<Read & { readonly type: RecordType }> = EACH_TY
   },
 );
 
+// A record the undo brings back that is attached to one which has moved since, with that one.
+// `moved_by` is the id of the Change that moved it, when one did.
+interface MovedSince extends Listed {
+  readonly target_type: RecordType;
+  readonly target: string;
+  readonly target_name: string;
+  readonly moved_by: string | null;
+}
+
+// The same rule from the other side. A Note that the undo brings back comes back at the
+// Property it was at. The record it is on is as it is now when it is not a record of the
+// Change, and it may have moved while the Note was out. These are those Notes, each with the
+// record it is on, and the latest Change that gave that record another value in the column.
+const MOVED_SINCE: ReadonlyArray<Read & { readonly type: RecordType }> = EACH_TYPE.flatMap(
+  ([type, { namedBy, attachedBy }]) => {
+    const follows = attachedBy?.follows;
+    if (attachedBy === undefined || follows === undefined) return [];
+    const { typeColumn, idColumn, of } = attachedBy;
+    return EACH_TYPE.filter(
+      ([targetType, { columns }]) => of.includes(targetType) && columns.includes(follows),
+    ).map(([targetType, target]) => ({
+      type,
+      fields: ["type", "id", "name", "target_type", "target", "target_name", "moved_by"],
+      text: compact(`
+        SELECT '${type}' AS type, touched.entity_id AS id, ${before(namedBy)} AS name,
+               '${targetType}' AS target_type, now.id AS target,
+               now.${target.namedBy} AS target_name,
+               (SELECT max(mover.change_id) FROM change_records AS mover
+                 WHERE mover.entity_type = '${targetType}' AND mover.entity_id = now.id
+                   AND mover.before IS NOT NULL AND mover.after IS NOT NULL
+                   AND json_extract(mover.before, '$.${follows}')
+                       IS NOT json_extract(mover.after, '$.${follows}')) AS moved_by
+          FROM change_records AS touched
+          JOIN ${target.table} AS now ON now.id = ${before(idColumn)}
+         WHERE ${matching(type, BROUGHT_BACK)}
+           AND ${before(typeColumn)} = '${targetType}'
+           AND ${before(follows)} IS NOT now.${follows}
+           AND now.id NOT IN ${ids(targetType, ANY_OUTCOME)}
+         ORDER BY touched.entity_id`),
+    }));
+  },
+);
+
 // A record as a reply lists it: named the way the reply of a save names one, which is by the
 // start of a name that runs long.
 const listed = <Row extends Listed>(record: Row): Row => ({
@@ -536,16 +580,18 @@ compact(
     ...NAMES_HELD,
     ...LOOPS,
     ...LEFT_BEHIND,
+    ...MOVED_SINCE,
   ]),
 );
 
 /**
  * What blocks an undo that no later Change accounts for, read in one statement before anything
- * is written. There are five kinds of read: the records that point at one the undo takes out,
+ * is written. There are six kinds of read: the records that point at one the undo takes out,
  * the records it brings back that pointed at one that is not there, the records it brings
  * back under a name another has now, the records it brings back under one that would then be
- * under them, and the records attached to one it would move. Only the reads that can matter
- * to this Change are made.
+ * under them, the records attached to one it would move, and the records it brings back
+ * that are attached to one which has moved. Only the reads that can matter to this Change
+ * are made.
  */
 const whatBlocks = Effect.fnUntraced(function* (toUndo: string, touched: ReadonlyArray<Touched>) {
   const any = (type: RecordType, outcomes: ReadonlyArray<Outcome>) =>
@@ -571,8 +617,14 @@ const whatBlocks = Effect.fnUntraced(function* (toUndo: string, touched: Readonl
       kind: "leftBehind" as const,
       ...read,
     })),
+    ...MOVED_SINCE.filter(({ type }) => any(type, BROUGHT_BACK)).map((read) => ({
+      kind: "movedSince" as const,
+      ...read,
+    })),
   ];
-  if (reads.length === 0) return { inUse: [], missing: [], held: [], looped: [], leftBehind: [] };
+  if (reads.length === 0) {
+    return { inUse: [], missing: [], held: [], looped: [], leftBehind: [], movedSince: [] };
+  }
 
   const sql = yield* SqlClient.SqlClient;
   const [row = {}] = yield* sql.unsafe<Readonly<Record<string, string>>>(together(reads), [toUndo]);
@@ -587,6 +639,7 @@ const whatBlocks = Effect.fnUntraced(function* (toUndo: string, touched: Readonl
     held: found<NameHeld>("held"),
     looped: found<Looped>("looped"),
     leftBehind: found<LeftBehind>("leftBehind"),
+    movedSince: found<MovedSince>("movedSince"),
   };
 });
 
@@ -705,6 +758,20 @@ const refuseLeftBehind = (
     `undoing the Change "${toUndo}" would move a record, and what was added to it since would stay behind. Undo the Change that added that first, and then this one:`,
   );
 
+// Refuses an undo that would bring a record back where the one it is attached to no longer
+// is. Nothing in the database would turn it away.
+const refuseMovedSince = (movedSince: ReadonlyArray<MovedSince>) =>
+  refuseFor(
+    movedSince.map((attached) => {
+      const { target_type, target, target_name, moved_by } = attached;
+      const on = named({ type: target_type, id: target, name: target_name });
+      const movedBy =
+        moved_by === null ? "" : ` The Change "${moved_by}" moved the ${term(target_type)}.`;
+      return `The ${named(attached)} would come back on the ${on}, which has moved since.${movedBy}`;
+    }),
+    "a record would come back where the one it is on no longer is. Move that one back first, or undo the Change that moved it:",
+  );
+
 /**
  * The records a Change touched as the first read found them, each named as a reply lists it.
  * A record of a type that is not in `SHAPES` stops the undo: no statement here is about it, so
@@ -752,6 +819,7 @@ export const undo = defineTool({
       yield* refuseNameHeld(toUndo, blocks.held);
       yield* refuseLoops(touched, blocks.looped);
       yield* refuseLeftBehind(toUndo, touched, blocks.leftBehind);
+      yield* refuseMovedSince(blocks.movedSince);
 
       // A statement is about several records, and is handed over with each of them. One that
       // is about none of this Change's records is left out.

@@ -117,6 +117,7 @@ test(
       "Rename the other record first, or undo the Change that made it.",
       "The error names every Category in the loop.",
       "The error names the Note and the Change that added it.",
+      "Move the record back first, or undo that Change.",
       "An undo is a Change too, so it can be undone, and then the records are as the first Change left them.",
       "No tool deletes a Property.",
     ]) {
