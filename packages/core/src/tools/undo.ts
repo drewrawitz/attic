@@ -2,8 +2,11 @@ import { Effect, Schema } from "effect";
 import { SqlClient } from "effect/sql";
 import {
   listedName,
+  nameInTable,
+  recordName,
   RECORD_TYPES,
   SHAPES,
+  term,
   type LinkSet,
   type RecordShape,
   type RecordType,
@@ -12,7 +15,6 @@ import type { Listed } from "../save.ts";
 import { compact, jsonList, jsonObject } from "../sql.ts";
 import { defineTool, ToolError, type ToolAnnotations } from "../tool.ts";
 import { Write, type Step } from "../write.ts";
-import { term } from "./get-record.ts";
 
 const DESCRIPTION = `Undoes a Change, so that every record the Change touched is as it was before. A Change is one write made through a tool. Every tool that writes returns the id of its Change as \`change_id\`, and get_record lists a record's latest Changes, newest first, each with its id and the record as it was before and after. The rest are in the \`changes\` and \`change_records\` tables, which query reads.
 
@@ -23,7 +25,7 @@ An undo is refused, and nothing is written, when it would lose something, or lea
 - The Change was undone already. The error says which Change undid it.
 - A record it would take out is in use, because another record points at it now: an Item bought from a Vendor the Change made, or a Note added to an Item it created. The error names what uses it. Point those records elsewhere first, or undo the Changes that made them use it.
 - A record it would bring back pointed at one that is not there now, such as an Item whose Vendor was taken out by another undo. The error says which record is missing and which Change took it out. Undo that Change first.
-- A record it would bring back had a name that another record has now, where no two can share one: a Property, a Vendor, or a Space at its Property. The error names both. Rename the other record first, or undo the Change that made it.
+- A record it would bring back had a name that another record has now, where no two can share one: a Property, a Vendor, a Space at its Property, or a Quote, of which a Project has one from each Vendor. The error names both. Rename the other record first, or undo the Change that made it.
 - A Category it would bring back would be under one that is under it, however far down, which is a loop: its parent was cleared, that parent was put under it, and the clearing is being undone. The error names every Category in the loop. Take one of the others out from under its parent first, with save_category, or undo the Change that put it there.
 - A record it would move back to another Property has had a Note added to it since. A save that moves a record moves its Notes, and an undo would leave this one where it is. The error names the Note and the Change that added it. Undo that Change first, and then this one.
 - A Note it would bring back is on a record that is elsewhere now, so the Note would come back at a Property its record is not at. The error names both, and the Change that moved the record, when one did. Undo that Change first, or move the record back.
@@ -75,6 +77,29 @@ const ids = (type: RecordType, outcomes: ReadonlyArray<Outcome>) =>
 // A column of a record as it was before the Change. `data` comes out as the text of its
 // object, which is what the column holds.
 const before = (column: string) => `json_extract(touched.before, '$.${column}')`;
+
+// A column of a record as it is once the undo is done, read from the row of `change_records`
+// a statement has under this alias: as it was before the Change, and for a record the undo
+// takes out, as the Change left it.
+const snapshotOnceUndone = (alias: string) => (column: string) =>
+  `json_extract(coalesce(${alias}.before, ${alias}.after), '$.${column}')`;
+
+// The name of a record that another is named by. One that the Change touched has the name the
+// Change's own snapshot gives it: the undo brings it back under that name, and until it does
+// the record is not there to ask. Any other has the name in its table. A statement that reads
+// this is given the Change as `?1`.
+const nameInChangeOrTable = (type: RecordType, id: string) => `coalesce(
+  (SELECT ${recordName(SHAPES[type], snapshotOnceUndone("also"))}
+     FROM change_records AS also
+    WHERE also.change_id = ?1 AND also.entity_type = '${type}' AND also.entity_id = ${id}),
+  ${nameInTable(type, id)})`;
+
+// What a record the undo brings back is named by, read from what it was before the Change.
+const nameFromBefore = (shape: RecordShape) => recordName(shape, before, nameInChangeOrTable);
+
+// What a row there is now is named by, read under this alias.
+const nameOfRow = (shape: RecordShape, alias: string) =>
+  recordName(shape, (column) => `${alias}.${column}`);
 
 // The rows of a SELECT as one JSON column: a list with an object for each row, which has these
 // fields, each read from the column of that name.
@@ -169,14 +194,14 @@ const pick = (
   outcomes: ReadonlyArray<Outcome>,
 ) => touched.filter((record) => record.type === type && outcomes.includes(record.outcome));
 
-// Where in a snapshot the column is that a record of each type is named by, as a JSON path.
-const NAME_PATH = `CASE touched.entity_type ${EACH_TYPE.map(([type, { namedBy }]) => `WHEN '${type}' THEN '$.${namedBy}'`).join(" ")} END`;
+// What a record of each type is named by once the undo is done.
+const NAME_ONCE_UNDONE = `CASE touched.entity_type ${EACH_TYPE.map(([type, shape]) => `WHEN '${type}' THEN ${recordName(shape, snapshotOnceUndone("touched"), nameInChangeOrTable)}`).join(" ")} END`;
 
-// The records the Change touched, by type and then by id. A record is named as it is once the
-// undo is done, and one that is taken out as it was.
+// The records the Change touched, by type and then by id, each named as it is once the undo is
+// done.
 const TOUCHED = `
   SELECT touched.entity_type AS type, touched.entity_id AS id,
-         json_extract(coalesce(touched.before, touched.after), ${NAME_PATH}) AS name,
+         ${NAME_ONCE_UNDONE} AS name,
          CASE WHEN ${OUTCOME_IF.taken_out} THEN 'taken_out'
               WHEN ${OUTCOME_IF.put_back} THEN 'put_back'
               ELSE 'restored' END AS outcome
@@ -313,12 +338,12 @@ interface WayInSql {
 }
 
 const WAYS_OF_POINTING: ReadonlyArray<WayOfPointing> = EACH_TYPE.flatMap(([type, shape]) => {
-  const { table, namedBy, links, pointerColumns, attachedBy } = shape;
+  const { table, links, pointerColumns, attachedBy } = shape;
   const way = (targetType: RecordType, inSql: WayInSql): WayOfPointing => {
     const { rowsFrom, rowTarget, snapshotsFrom, snapshotTarget } = inSql;
     const { rowIf = "", snapshotIf = "" } = inSql;
     const inUse = `
-      SELECT '${type}' AS type, record.id, record.${namedBy} AS name,
+      SELECT '${type}' AS type, record.id, ${nameOfRow(shape, "record")} AS name,
              '${targetType}' AS target_type, ${rowTarget} AS target, NULL AS removed_by
         FROM ${rowsFrom}
        WHERE ${rowIf} ${rowTarget} IN ${ids(targetType, ["taken_out"])}
@@ -327,7 +352,7 @@ const WAYS_OF_POINTING: ReadonlyArray<WayOfPointing> = EACH_TYPE.flatMap(([type,
     // An empty pointer is no pointer, and `NOT IN` alone would let one through. Ids sort by
     // when they were made, so the greatest is the latest Change that took the record out.
     const missing = `
-      SELECT '${type}' AS type, touched.entity_id AS id, ${before(namedBy)} AS name,
+      SELECT '${type}' AS type, touched.entity_id AS id, ${nameFromBefore(shape)} AS name,
              '${targetType}' AS target_type, ${snapshotTarget} AS target,
              (SELECT max(removed.change_id) FROM change_records AS removed
                WHERE removed.entity_type = '${targetType}'
@@ -392,16 +417,17 @@ interface NameHeld extends Listed {
 // in the columns no two records can share. The database compares them, so case is ignored the
 // way it is everywhere else.
 const NAMES_HELD: ReadonlyArray<Read & { readonly type: RecordType }> = EACH_TYPE.flatMap(
-  ([type, { table, namedBy, unique }]) =>
-    unique === undefined
+  ([type, shape]) => {
+    const { table, unique } = shape;
+    return unique === undefined
       ? []
       : [
           {
             type,
             fields: ["type", "id", "name", "holder_id", "holder_name", "same_change"],
             text: compact(`
-              SELECT '${type}' AS type, touched.entity_id AS id, ${before(namedBy)} AS name,
-                     holder.id AS holder_id, holder.${namedBy} AS holder_name,
+              SELECT '${type}' AS type, touched.entity_id AS id, ${nameFromBefore(shape)} AS name,
+                     holder.id AS holder_id, ${nameOfRow(shape, "holder")} AS holder_name,
                      holder.id IN ${ids(type, ANY_OUTCOME)} AS same_change
                 FROM change_records AS touched
                 JOIN ${table} AS holder
@@ -410,7 +436,8 @@ const NAMES_HELD: ReadonlyArray<Read & { readonly type: RecordType }> = EACH_TYP
                WHERE ${matching(type, BROUGHT_BACK)}
                ORDER BY touched.entity_id`),
           },
-        ],
+        ];
+  },
 );
 
 // One record on the way up from a record the undo brings back, in a walk that comes round to
@@ -429,8 +456,8 @@ interface Looped extends Listed {
 // loop, and the read has every record on the way round, in order. A walk is no longer than
 // there are records, so one that runs into a loop its first record is not in stops too.
 const LOOPS: ReadonlyArray<Read & { readonly type: RecordType }> = EACH_TYPE.flatMap(
-  ([type, { table, namedBy, pointerColumns }]) =>
-    Object.entries(pointerColumns)
+  ([type, shape]) =>
+    Object.entries(shape.pointerColumns)
       .filter(([, targetType]) => targetType === type)
       .map(([column]) => ({
         type,
@@ -438,12 +465,12 @@ const LOOPS: ReadonlyArray<Read & { readonly type: RecordType }> = EACH_TYPE.fla
         text: compact(`
           WITH RECURSIVE
             tree (id, name, above) AS (
-              SELECT touched.entity_id, ${before(namedBy)}, ${before(column)}
+              SELECT touched.entity_id, ${nameFromBefore(shape)}, ${before(column)}
                 FROM change_records AS touched
                WHERE ${matching(type, BROUGHT_BACK)}
               UNION ALL
-              SELECT record.id, record.${namedBy}, record.${column}
-                FROM ${table} AS record
+              SELECT record.id, ${nameOfRow(shape, "record")}, record.${column}
+                FROM ${shape.table} AS record
                WHERE record.id NOT IN ${ids(type, ANY_OUTCOME)}
             ),
             walk (began, reached, far) AS (
@@ -505,17 +532,18 @@ interface WayOfFollowing {
 
 // Ids sort by when they were made, so the greatest is the latest Change that added a record,
 // or that gave one another value in the column.
-const WAYS_OF_FOLLOWING: ReadonlyArray<WayOfFollowing> = EACH_TYPE.flatMap(
-  ([type, { table, namedBy, attachedBy }]) => {
-    const follows = attachedBy?.follows;
-    if (attachedBy === undefined || follows === undefined) return [];
-    const { typeColumn, idColumn, of } = attachedBy;
-    // A type with no such column has nothing to follow.
-    return EACH_TYPE.filter(
-      ([targetType, { columns }]) => of.includes(targetType) && columns.includes(follows),
-    ).map(([targetType, { table: targetTable, namedBy: targetNamedBy }]) => {
-      const leftBehind = `
-        SELECT '${type}' AS type, record.id, record.${namedBy} AS name,
+const WAYS_OF_FOLLOWING: ReadonlyArray<WayOfFollowing> = EACH_TYPE.flatMap(([type, shape]) => {
+  const { table, attachedBy } = shape;
+  const follows = attachedBy?.follows;
+  if (attachedBy === undefined || follows === undefined) return [];
+  const { typeColumn, idColumn, of } = attachedBy;
+  // A type with no such column has nothing to follow.
+  return EACH_TYPE.filter(
+    ([targetType, { columns }]) => of.includes(targetType) && columns.includes(follows),
+  ).map(([targetType, targetShape]) => {
+    const targetTable = targetShape.table;
+    const leftBehind = `
+        SELECT '${type}' AS type, record.id, ${nameOfRow(shape, "record")} AS name,
                '${targetType}' AS target_type, touched.entity_id AS target,
                (SELECT max(added.change_id) FROM change_records AS added
                  WHERE added.entity_type = '${type}' AND added.entity_id = record.id
@@ -528,10 +556,10 @@ const WAYS_OF_FOLLOWING: ReadonlyArray<WayOfFollowing> = EACH_TYPE.flatMap(
            AND ${before(follows)} IS NOT now.${follows}
            AND record.id NOT IN ${ids(type, ANY_OUTCOME)}
          ORDER BY touched.entity_id, record.id`;
-      const stranded = `
-        SELECT '${type}' AS type, touched.entity_id AS id, ${before(namedBy)} AS name,
+    const stranded = `
+        SELECT '${type}' AS type, touched.entity_id AS id, ${nameFromBefore(shape)} AS name,
                '${targetType}' AS target_type, now.id AS target,
-               now.${targetNamedBy} AS target_name,
+               ${nameOfRow(targetShape, "now")} AS target_name,
                (SELECT max(mover.change_id) FROM change_records AS mover
                  WHERE mover.entity_type = '${targetType}' AND mover.entity_id = now.id
                    AND mover.before IS NOT NULL AND mover.after IS NOT NULL
@@ -544,21 +572,20 @@ const WAYS_OF_FOLLOWING: ReadonlyArray<WayOfFollowing> = EACH_TYPE.flatMap(
            AND ${before(follows)} IS NOT now.${follows}
            AND now.id NOT IN ${ids(targetType, ANY_OUTCOME)}
          ORDER BY touched.entity_id`;
-      return {
-        type,
-        targetType,
-        leftBehind: {
-          text: compact(leftBehind),
-          fields: ["type", "id", "name", "target_type", "target", "added_by"],
-        },
-        stranded: {
-          text: compact(stranded),
-          fields: ["type", "id", "name", "target_type", "target", "target_name", "target_moved_by"],
-        },
-      };
-    });
-  },
-);
+    return {
+      type,
+      targetType,
+      leftBehind: {
+        text: compact(leftBehind),
+        fields: ["type", "id", "name", "target_type", "target", "added_by"],
+      },
+      stranded: {
+        text: compact(stranded),
+        fields: ["type", "id", "name", "target_type", "target", "target_name", "target_moved_by"],
+      },
+    };
+  });
+});
 
 // A record as a reply lists it: named the way the reply of a save names one, which is by the
 // start of a name that runs long.

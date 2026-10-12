@@ -3,6 +3,7 @@ import { SqlClient } from "effect/sql";
 import { partialDate } from "../dates.ts";
 import { amount, inCents } from "../money.ts";
 import { noteOn, notesMovedTo } from "../note.ts";
+import { projectAmong, projectsById, type Project } from "../project.ts";
 import { propertyForOnce } from "../property.ts";
 import {
   dataPatch,
@@ -22,10 +23,10 @@ import {
   valueOrCleared,
 } from "../save.ts";
 import { spaceOrNewOnce } from "../space.ts";
-import { defineTool, optional, ToolError } from "../tool.ts";
+import { defineTool, noRecord, optional, ToolError } from "../tool.ts";
 import { vendorOrNewOnce } from "../vendor.ts";
 import { Ids } from "../write.ts";
-import { noRecord, readRecord } from "./get-record.ts";
+import { readRecord } from "./get-record.ts";
 
 // What a call's list is called, and what its entries are.
 const LIST_WORDS = { field: "work", singular: "piece of Work", plural: "pieces of Work" };
@@ -48,7 +49,9 @@ With an id, the Work with that id is updated. Without one, new Work is logged, w
 
 Work needs a Property or at least one Item. With no \`property\`, new Work is at the one Current property. When there is not exactly one, Work that names Items and no Spaces is saved at no Property, and any other Work is refused with the Properties to choose from. Work on an Item that was done away from every Property, such as a bike serviced at a shop, has \`property\` named in \`clear\`.
 
-\`item_ids\` are the ids of the Items the Work was done to, and \`spaces\` are the names of the Spaces it was done in. Each list replaces the whole set, and an empty list empties it. An Item that is not there is an error. A Space is one at the Work's Property, matched whatever its case, and one that is not there yet is created, and listed in the reply. So Work at no Property takes no Spaces. Work that moves to another Property loses its Spaces, unless the same save gives it some there, and its Notes move with it. Work that is in a Project, or was logged against a Schedule on a Property, stays at its Property.
+\`item_ids\` are the ids of the Items the Work was done to, and \`spaces\` are the names of the Spaces it was done in. Each list replaces the whole set, and an empty list empties it. An Item that is not there is an error. A Space is one at the Work's Property, matched whatever its case, and one that is not there yet is created, and listed in the reply. So Work at no Property takes no Spaces. Work that moves to another Property loses its Spaces, unless the same save gives it some there, and its Notes move with it. Work that was logged against a Schedule on a Property stays at its Property. So does Work that is in a Project, unless the same save takes it out of the Project, or puts it in a Project at the Property it moves to.
+
+\`project\` is the id of the Project the Work is part of, as search or get_record gives it. It is a Project at the Work's Property, and one that is at another Property is refused. The Project's record then lists the Work, and counts its cost in \`total_cost\`. To take Work out of its Project, name \`project\` in \`clear\`.
 
 Repainting is Work that names the Space. Put the color that was there before in \`data.replaced\`, and then save the new color on the Space with save_space, which is where a Space's paint is kept.
 
@@ -62,7 +65,7 @@ const KINDS = ["repair", "maintenance", "improvement", "inspection", "other"] as
 
 // The fields a save can empty. Work always has a kind and a title, and is DIY or is not. Its
 // Items and its Spaces are sets, and a set is emptied with an empty list.
-const CLEARABLE = ["property", "description", "date", "cost", "vendor"] as const;
+const CLEARABLE = ["property", "project", "description", "date", "cost", "vendor"] as const;
 
 // The fields of one piece of Work. A call gives them for one piece of Work, or a list of
 // entries that each have them.
@@ -116,6 +119,12 @@ const FIELDS = {
       "The Property the Work was done at, by its id or its name. Left out, new Work is at the one Current property, and Work that is logged already stays where it is.",
     ),
   ),
+  project: optional(
+    Schema.String.annotate({
+      description:
+        "The id of the Project the Work is part of, as search or get_record gives it. It is a Project at the Work's Property.",
+    }),
+  ),
   item_ids: optional(
     Schema.Array(Schema.String).annotate({
       description:
@@ -133,7 +142,7 @@ const FIELDS = {
   clear: optional(
     Schema.Array(Schema.Literals(CLEARABLE)).annotate({
       description:
-        "Fields to empty. A field cannot be given a value and cleared in the same call. Clearing property puts Work on Items at no Property, and so in no Space. Work always has a kind and a title, and is DIY or is not, so those cannot be cleared. item_ids and spaces are emptied with an empty list.",
+        "Fields to empty. A field cannot be given a value and cleared in the same call. Clearing property puts Work on Items at no Property, and so in no Space. Clearing project takes the Work out of its Project. Work always has a kind and a title, and is DIY or is not, so those cannot be cleared. item_ids and spaces are emptied with an empty list.",
     }),
   ),
 };
@@ -148,8 +157,9 @@ interface Existing {
   readonly property_id: string | null;
   /** How many Items it names. */
   readonly item_count: number;
-  /** The title of the Project it is in, if it is in one. */
-  readonly project: string | null;
+  /** The Project it is in, if it is in one, and that Project's title. */
+  readonly project_id: string | null;
+  readonly project_title: string | null;
   /** The title of the Schedule it was logged against, when that is a Schedule on a Property. */
   readonly property_schedule: string | null;
   /** The Notes on it, oldest first. */
@@ -165,7 +175,8 @@ const workNow = Effect.fnUntraced(function* (ids: ReadonlyArray<string>) {
   const rows = yield* sql<Omit<Existing, "notes"> & { readonly notes: string }>`
     SELECT work.id, work.title, work.property_id,
            (SELECT count(*) FROM work_items WHERE work_id = work.id) AS item_count,
-           (SELECT title FROM projects WHERE id = work.project_id) AS project,
+           work.project_id,
+           (SELECT title FROM projects WHERE id = work.project_id) AS project_title,
            (SELECT title FROM schedules
              WHERE id = work.schedule_id AND property_id IS NOT NULL) AS property_schedule,
            (SELECT json_group_array(json_object('id', id, 'body', body))
@@ -177,6 +188,13 @@ const workNow = Effect.fnUntraced(function* (ids: ReadonlyArray<string>) {
     rows.map((row): [string, Existing] => [row.id, { ...row, notes: JSON.parse(row.notes) }]),
   );
 });
+
+// What a call's reads found of the records its entries name by id: the id of each Item that
+// is there, and each Project that is.
+interface Known {
+  readonly itemIds: ReadonlySet<string>;
+  readonly projects: ReadonlyMap<string, Project>;
+}
 
 // The ids in this list that are an Item's. A call that names no Item reads nothing.
 const itemIdsIn = Effect.fnUntraced(function* (ids: ReadonlyArray<string>) {
@@ -200,12 +218,12 @@ const sharedByEntries = Effect.gen(function* () {
 });
 
 // The steps that save one piece of Work, with its id. `was` is the Work as it is now, when the
-// entry gives the id of one. `knownItemIds` has the id of each Item the call names that is there.
-// Nothing is written here, so an entry that is refused leaves nothing behind.
+// entry gives the id of one. `known` has the Items and the Projects the call names that are
+// there. Nothing is written here, so an entry that is refused leaves nothing behind.
 const stepsFor = Effect.fnUntraced(function* (
   entry: Entry,
   was: Existing | undefined,
-  knownItemIds: ReadonlySet<string>,
+  known: Known,
   { sql, ...once }: Effect.Success<typeof sharedByEntries>,
 ) {
   const { id, kind, title, data, note, clear = [] } = entry;
@@ -215,8 +233,11 @@ const stepsFor = Effect.fnUntraced(function* (
     return yield* new ToolError({ message: NO_KIND_OR_TITLE });
   }
   // An Item the Work names has to be there.
-  const missing = (entry.item_ids ?? []).find((each) => !knownItemIds.has(each));
+  const missing = (entry.item_ids ?? []).find((each) => !known.itemIds.has(each));
   if (missing !== undefined) return yield* noRecord("item", missing);
+  // And so does the Project it names.
+  const givenProject =
+    entry.project === undefined ? undefined : yield* projectAmong(entry.project, known.projects);
 
   yield* refuseGivenAndCleared(entry, clear);
   const wanted = valueOrCleared(clear);
@@ -240,15 +261,26 @@ const stepsFor = Effect.fnUntraced(function* (
           ),
         );
   const moved = was !== undefined && propertyId !== was.property_id;
-  // A Project is at one Property, and so is a Schedule that is not an Item's. Work that is in
-  // the one, or was logged against the other, is at that Property and does not move.
-  if (moved && (was.project !== null || was.property_schedule !== null)) {
-    const heldBy =
-      was.project !== null
-        ? `it is in the Project "${was.project}", and a Project is at one Property`
-        : `it was logged against "${was.property_schedule}", a Schedule on that Property`;
+  // A Project is at one Property, and so is a Schedule that is not an Item's. Work that stays
+  // in the one, or was logged against the other, is at that Property and does not move. It
+  // stays in its Project unless the save takes it out, or names another one.
+  const staysInProject =
+    was !== undefined &&
+    was.project_id !== null &&
+    !clear.includes("project") &&
+    (givenProject === undefined || givenProject.id === was.project_id);
+  if (moved && (staysInProject || was.property_schedule !== null)) {
+    const heldThere = staysInProject
+      ? `it is in the Project "${was.project_title}", and a Project is at one Property. Leave \`property\` as it is, or name \`project\` in \`clear\` to take the Work out of the Project`
+      : `it was logged against "${was.property_schedule}", a Schedule on that Property. Leave \`property\` as it is`;
     return yield* new ToolError({
-      message: `"${called}" stays at its Property, because ${heldBy}. Leave \`property\` as it is.`,
+      message: `"${called}" stays at its Property, because ${heldThere}.`,
+    });
+  }
+  // Work in a Project is at the Project's Property.
+  if (givenProject !== undefined && givenProject.property_id !== propertyId) {
+    return yield* new ToolError({
+      message: `The Project "${givenProject.title}" is at ${givenProject.property}, and "${called}" is not. Work in a Project is at the Project's Property: give \`property\` as ${givenProject.property}, or leave \`project\` out.`,
     });
   }
   // Work needs a Property or at least one Item.
@@ -280,6 +312,7 @@ const stepsFor = Effect.fnUntraced(function* (
   } as const;
   const columns = definedColumns({
     property_id: was === undefined || moved ? propertyId : undefined,
+    project_id: wanted("project", givenProject?.id),
     kind,
     title,
     description: wanted("description", entry.description),
@@ -321,19 +354,19 @@ export const logWork = defineTool({
     Effect.gen(function* () {
       const entries = yield* entriesOf(LIST_WORDS, one, work);
       const shared = yield* sharedByEntries;
-      // The reads do not grow with the list: the Work it updates is read in one query, and the
-      // Items it names in another.
+      // The reads do not grow with the list: the Work it updates is read in one query, the
+      // Items it names in another, and the Projects in a third.
       const existing = yield* workNow(entries.ids);
-      const knownItemIds = yield* itemIdsIn(entries.all.flatMap(({ item_ids = [] }) => item_ids));
+      const known: Known = {
+        itemIds: yield* itemIdsIn(entries.all.flatMap(({ item_ids = [] }) => item_ids)),
+        projects: yield* projectsById(
+          entries.all.flatMap(({ project }) => (project === undefined ? [] : [project])),
+        ),
+      };
 
       // Every entry is checked before anything is written.
       const saves = yield* planEvery(entries, (entry) =>
-        stepsFor(
-          entry,
-          entry.id === undefined ? undefined : existing.get(entry.id),
-          knownItemIds,
-          shared,
-        ),
+        stepsFor(entry, entry.id === undefined ? undefined : existing.get(entry.id), known, shared),
       );
       const reply = yield* runSave(saves.flatMap(({ steps }) => steps));
       // A call that logs one piece of Work also returns it as get_record does.

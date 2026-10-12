@@ -117,7 +117,10 @@ const namesOf = (shape: RecordShape, columns: Readonly<Record<string, unknown>>)
 export interface Listed {
   readonly type: RecordType;
   readonly id: string;
-  /** Its name, or what stands for one: the title of Work, the body of a Note. */
+  /**
+   * Its name, or what stands for one: the title of Work, the body of a Note, the Vendor and
+   * the Project of a Quote.
+   */
   readonly name: string;
 }
 

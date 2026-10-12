@@ -93,6 +93,12 @@ const DATA_KEYS = {
     expects:
       "The `data` keys an Item in the Category should have, as a list of names. An Item is expected to have the keys of every Category it sits under, parents included.",
   },
+  project: {
+    goal: "What the Project is for, in a sentence.",
+  },
+  quote: {
+    includes: "What the amount covers.",
+  },
 };
 
 /**

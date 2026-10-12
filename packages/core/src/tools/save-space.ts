@@ -1,6 +1,6 @@
 import { Effect, Schema } from "effect";
 import { SqlClient } from "effect/sql";
-import { propertyFor, propertyNamed } from "../property.ts";
+import { propertyFor, refuseAnotherProperty } from "../property.ts";
 import { dataPatch, nameText, runSave, SAVE_ANNOTATIONS, updateRow } from "../save.ts";
 import { spaceOrNew } from "../space.ts";
 import { defineTool, optional, ToolError } from "../tool.ts";
@@ -84,14 +84,7 @@ export const saveSpace = defineTool({
             message: `There is no Space with the id "${id}". To save one by its name, leave the id out.`,
           });
         }
-        if (given !== undefined) {
-          const property = yield* propertyNamed(given);
-          if (property.id !== space.property_id) {
-            return yield* new ToolError({
-              message: `The Space "${space.name}" is at ${space.property}, not at ${property.name}. A Space does not move to another Property.`,
-            });
-          }
-        }
+        yield* refuseAnotherProperty(given, { type: "space", ...space });
         if (space.taken !== null) {
           return yield* new ToolError({
             message: `Another Space at ${space.property} is already named "${space.taken}". A Property has one Space for each name, whatever its case.`,

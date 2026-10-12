@@ -23,10 +23,10 @@ import {
   valueOrCleared,
 } from "../save.ts";
 import { spaceOrNewOnce } from "../space.ts";
-import { defineTool, optional, ToolError } from "../tool.ts";
+import { defineTool, noRecord, optional, ToolError } from "../tool.ts";
 import { vendorOrNewOnce } from "../vendor.ts";
 import { Ids } from "../write.ts";
-import { noRecord, readRecord } from "./get-record.ts";
+import { readRecord } from "./get-record.ts";
 
 // What a call's list is called, and what its entries are.
 const LIST_WORDS = { field: "items", singular: "Item", plural: "Items" };
