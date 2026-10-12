@@ -26,7 +26,7 @@ An undo is refused, and nothing is written, when it would lose something, or lea
 - A record it would bring back had a name that another record has now, where no two can share one: a Property, a Vendor, or a Space at its Property. The error names both. Rename the other record first, or undo the Change that made it.
 - A Category it would bring back would be under one that is under it, however far down, which is a loop: its parent was cleared, that parent was put under it, and the clearing is being undone. The error names every Category in the loop. Take one of the others out from under its parent first, with save_category, or undo the Change that put it there.
 - A record it would move back to another Property has had a Note added to it since. A save that moves a record moves its Notes, and an undo would leave this one where it is. The error names the Note and the Change that added it. Undo that Change first, and then this one.
-- A Note it would bring back is on a record that has moved to another Property since, so the Note would come back at the Property the record left. The error names both, and the Change that moved the record. Undo that Change first, or move the record back.
+- A Note it would bring back is on a record that is elsewhere now, so the Note would come back at a Property its record is not at. The error names both, and the Change that moved the record, when one did. Undo that Change first, or move the record back.
 
 An undo is a Change too, so it can be undone, and then the records are as the first Change left them. Changes are kept forever, and undoing one does not remove it.
 
