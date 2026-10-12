@@ -1,7 +1,13 @@
 import { expect, it } from "@effect/vitest";
 import { Effect } from "effect";
 import { SqlClient } from "effect/sql";
-import { RECORD_TYPES, SHAPES, snapshot, type RecordShape } from "../src/records.ts";
+import {
+  RECORD_TYPES,
+  SHAPES,
+  snapshot,
+  typesPointedAt,
+  type RecordShape,
+} from "../src/records.ts";
 import { checkList, TestDatabase } from "./TestDatabase.ts";
 
 // A Change's snapshot is the whole record, and a record is put back from it. A column that a
@@ -38,13 +44,13 @@ const pointing = Effect.fnUntraced(function* (table: string) {
   );
 });
 
-// `undo` asks what points at a record before it takes one out, and goes by what each type says
-// it points at. A foreign key nobody lists here would let a record go while a row still points
-// at it, or let the database empty that row with no Change to say so.
-it.effect("each type says what it points at, as the foreign keys of its tables have it", () =>
+// `undo` asks what points at a record before it takes one out, and goes by the pointer columns
+// and the link sets each type lists. A foreign key nobody lists here would let a record go
+// while a row still points at it, or let the database empty that row with no Change to say so.
+it.effect("each type lists its pointer columns and link sets, as its foreign keys have them", () =>
   Effect.gen(function* () {
     for (const [type, shape] of Object.entries<RecordShape>(SHAPES)) {
-      expect(yield* pointing(shape.table), type).toEqual(shape.pointsAt);
+      expect(yield* pointing(shape.table), type).toEqual(shape.pointerColumns);
       for (const set of shape.links) {
         expect(yield* pointing(set.table), set.name).toEqual({
           [set.from]: type,
@@ -115,17 +121,16 @@ it.effect("each type says which columns no two records can share, as its table h
   }).pipe(Effect.provide(TestDatabase)),
 );
 
-// `undo` puts rows back in the order of the types, and takes them out in the other.
-it("each type comes after the types it points at", () => {
+// `undo` puts rows back in the order of the types, and takes them out in the other. A Category
+// points at the Category it is under, which is the one type that points at itself.
+it("each type comes after the types it points at, whichever way it points", () => {
   const types: ReadonlyArray<string> = RECORD_TYPES;
   expect(Object.keys(SHAPES)).toEqual(types);
   for (const [type, shape] of Object.entries<RecordShape>(SHAPES)) {
     const at = types.indexOf(type);
-    const pointedAt = [...Object.values(shape.pointsAt), ...shape.links.map((set) => set.of)];
-    // A Category points at the Category it is under, which is the one type that points at itself.
-    for (const other of pointedAt) expect(types.indexOf(other), type).toBeLessThanOrEqual(at);
-    // A record that can be attached to one of any type comes after them all.
-    if (shape.attachedBy !== undefined) expect(at, type).toBe(types.length - 1);
+    for (const other of typesPointedAt(shape)) {
+      expect(types.indexOf(other), `${type} points at ${other}`).toBeLessThanOrEqual(at);
+    }
   }
 });
 

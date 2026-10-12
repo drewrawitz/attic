@@ -307,9 +307,9 @@ test(
 );
 
 // The two reads for what an undo brings back: a record that would point at one that is not
-// there, and a record whose name another has taken. Each is a join on the Change's own JSON.
+// there, and a record whose name another has now. Each is a join on the Change's own JSON.
 test(
-  "an undo that would point at a record that is not there, or reuse a taken name, is refused on D1",
+  "an undo that would point at a record that is not there, or reuse a name, is refused on D1",
   asClient((call) =>
     Effect.gen(function* () {
       const made = yield* call("save_vendor", { name: LATCH });

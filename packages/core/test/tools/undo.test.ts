@@ -5,6 +5,7 @@ import { SHAPES, snapshot, type RecordType } from "../../src/records.ts";
 import { addNote } from "../../src/tools/add-note.ts";
 import { getRecord } from "../../src/tools/get-record.ts";
 import { logWork } from "../../src/tools/log-work.ts";
+import { saveCategory } from "../../src/tools/save-category.ts";
 import { saveItem } from "../../src/tools/save-item.ts";
 import { saveProperty } from "../../src/tools/save-property.ts";
 import { saveSpace } from "../../src/tools/save-space.ts";
@@ -288,11 +289,14 @@ it.effect(
       expect(yield* counting).toEqual(before);
       expect(yield* sql`SELECT count(*) AS changes FROM changes`).toEqual([{ changes: 4 }]);
 
-      // With the newest of them undone, the other is still in the way.
+      // With the newest of them undone, one record of the four has been changed since. The
+      // Change is refused whole all the same, and nothing is written.
       expect(yield* undoing("id-0009")).toMatchObject({ change_id: "id-0010" });
       expect((yield* undoing("id-0007")).refused).toMatch(
         new RegExp(String.raw`newest first:\n"id-0008", made by save_space at ${AT}$`),
       );
+      expect(yield* counting).toEqual(before);
+      expect(yield* sql`SELECT count(*) AS changes FROM changes`).toEqual([{ changes: 5 }]);
 
       // A Change and the undo of it leave nothing behind, so neither is in the way.
       expect(yield* undoing("id-0008")).toMatchObject({ change_id: "id-0011" });
@@ -788,12 +792,12 @@ The Item with the id "${sinkId}" is not there now, and the Work "Fixed the leak"
   }).pipe(Effect.provide(TestDatabase)),
 );
 
-const TAKEN =
-  "Nothing was undone, because a record would get back a name that another record has taken since. Rename the other record first, or undo the Change that made it:";
+const NAME_HELD =
+  "Nothing was undone, because a record would get back a name that another record has now. Rename the other record first, or undo the Change that made it:";
 
 // There is one Vendor for each name, whatever its case. The first one is renamed, and a second
 // one is saved under the name it had.
-it.effect("an undo that would give a record a name another has taken since is refused", () =>
+it.effect("an undo that would give a record a name another has now is refused", () =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     yield* calling(saveVendor)({ name: "Acme Supply" });
@@ -801,7 +805,7 @@ it.effect("an undo that would give a record a name another has taken since is re
     yield* calling(saveVendor)({ name: "ACME supply" });
 
     expect(yield* undoing("id-0003")).toEqual({
-      refused: `${TAKEN}
+      refused: `${NAME_HELD}
 The Vendor "Acme Supply" (id-0001) would be called that again, and the Vendor "ACME supply" (id-0004) has the name now.`,
     });
     expect(yield* sql`SELECT name FROM vendors ORDER BY id`).toEqual([
@@ -821,29 +825,37 @@ The Vendor "Acme Supply" (id-0001) would be called that again, and the Vendor "A
 // The likeliest way there: a save is undone, done again by hand, and then the undo is undone.
 // A Space has its name to itself at its Property only, so the same name elsewhere is not in
 // the way.
-it.effect("an undo that would put a Space back under a name taken at its Property is refused", () =>
-  Effect.gen(function* () {
-    yield* calling(saveProperty)({ name: "Maple Street house" });
-    yield* calling(saveProperty)({ name: "Birch Lane house" });
-    const first = yield* calling(saveSpace)({ property: "Maple Street house", name: "Workshop" });
-    const undone = yield* undoing(first.change_id as string);
+it.effect(
+  "an undo that would put a Space back under a name in use at its Property is refused",
+  () =>
+    Effect.gen(function* () {
+      yield* calling(saveProperty)({ name: "Maple Street house" });
+      yield* calling(saveProperty)({ name: "Birch Lane house" });
+      const first = yield* calling(saveSpace)({ property: "Maple Street house", name: "Workshop" });
+      const undone = yield* undoing(first.change_id as string);
 
-    // The same name at the other Property does not stop the Space coming back.
-    const elsewhere = yield* calling(saveSpace)({ property: "Birch Lane house", name: "Workshop" });
-    const back = yield* undoing(undone.change_id as string);
-    expect(back).toMatchObject({ put_back: [{ type: "space", name: "Workshop" }] });
+      // The same name at the other Property does not stop the Space coming back.
+      const elsewhere = yield* calling(saveSpace)({
+        property: "Birch Lane house",
+        name: "Workshop",
+      });
+      const back = yield* undoing(undone.change_id as string);
+      expect(back).toMatchObject({ put_back: [{ type: "space", name: "Workshop" }] });
 
-    // At its own Property it does.
-    const again = yield* undoing(back.change_id as string);
-    const second = yield* calling(saveSpace)({ property: "Maple Street house", name: "workshop" });
-    const [workshop] = first.created as { id: string }[];
-    const [taker] = second.created as { id: string }[];
-    expect(yield* undoing(again.change_id as string)).toEqual({
-      refused: `${TAKEN}
+      // At its own Property it does.
+      const again = yield* undoing(back.change_id as string);
+      const second = yield* calling(saveSpace)({
+        property: "Maple Street house",
+        name: "workshop",
+      });
+      const [workshop] = first.created as { id: string }[];
+      const [taker] = second.created as { id: string }[];
+      expect(yield* undoing(again.change_id as string)).toEqual({
+        refused: `${NAME_HELD}
 The Space "Workshop" (${workshop!.id}) would be called that again, and the Space "workshop" (${taker!.id}) has the name now.`,
-    });
-    expect(elsewhere.refused).toBeUndefined();
-  }).pipe(Effect.provide(TestDatabase)),
+      });
+      expect(elsewhere.refused).toBeUndefined();
+    }).pipe(Effect.provide(TestDatabase)),
 );
 
 // The rows of a Change go out one type at a time: the Note and the Item, then the Vendor, then
@@ -902,4 +914,90 @@ it.effect("the undo of an older Change stands in the way like any other later Ch
       tenure: "rent",
     });
   }).pipe(Effect.provide(TestDatabase)),
+);
+
+// A Category's id is a slug the caller chooses, so the same id can be saved again once the
+// Category is out. That save is a later Change of the same record.
+it.effect("a Category is restored, kept while an Item is in it, and taken out", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const camping = sql<{ name: string; parent_id: string | null; data: string }>`
+      SELECT name, parent_id, data FROM categories WHERE id = 'camping'`;
+    yield* calling(saveProperty)({ name: "Maple Street house" });
+    const created = yield* calling(saveCategory)({
+      id: "camping",
+      name: "Camping",
+      parent: "outdoor",
+      data: { expects: ["brand"] },
+    });
+    const updated = yield* calling(saveCategory)({
+      id: "camping",
+      name: "Camping gear",
+      parent: "sports",
+      data: { expects: ["brand", "model"] },
+    });
+
+    expect(yield* undoing(updated.change_id as string)).toMatchObject({
+      taken_out: [],
+      restored: [{ type: "category", id: "camping", name: "Camping" }],
+    });
+    expect(yield* camping).toEqual([
+      { name: "Camping", parent_id: "outdoor", data: '{"expects":["brand"]}' },
+    ]);
+
+    // An Item is filed under it by a save that never touched the Category.
+    const tent = yield* calling(saveItem)({ name: "Four-person tent", category: "camping" });
+    const tentId = (tent.record as { id: string }).id;
+    expect((yield* undoing(created.change_id as string)).refused).toContain(
+      `The Category "Camping" (camping) is used by the Item "Four-person tent" (${tentId}).`,
+    );
+
+    yield* calling(saveItem)({ id: tentId, category: "outdoor" });
+    const takenOut = yield* undoing(created.change_id as string);
+    expect(takenOut).toMatchObject({
+      taken_out: [{ type: "category", id: "camping", name: "Camping" }],
+    });
+    expect(yield* camping).toEqual([]);
+
+    // The id is saved again. The first Category cannot come back over the second.
+    const again = yield* calling(saveCategory)({ id: "camping", name: "Camping trips" });
+    expect((yield* undoing(takenOut.change_id as string)).refused).toMatch(
+      new RegExp(
+        String.raw`newest first:\n"${String(again.change_id)}", made by save_category at ${AT}$`,
+      ),
+    );
+    expect(yield* camping).toMatchObject([{ name: "Camping trips", parent_id: null }]);
+  }).pipe(Effect.provide(TestDatabase)),
+);
+
+// No tool makes a Change like this one, so it is written by hand: one Vendor is deleted, and
+// another is made under the name it had. An undo brings a row back before it takes one out,
+// so the first Vendor would come back while the second still has the name.
+it.effect(
+  "a Change that gave one record a name it took from another says it cannot be undone",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* calling(saveVendor)({ name: "Acme Supply" });
+      const change = yield* (yield* Ids).next;
+      yield* sql`INSERT INTO changes (id, tool) VALUES (${change}, 'replace_vendor')`;
+      const recording = (column: "before" | "after", id: string) =>
+        sql.unsafe(
+          `INSERT INTO change_records (change_id, entity_type, entity_id, ${column})
+         SELECT ?, 'vendor', record.id, ${snapshot(SHAPES.vendor)} FROM vendors AS record
+          WHERE record.id = ?`,
+          [change, id],
+        );
+      yield* recording("before", "id-0001");
+      yield* sql`DELETE FROM vendors WHERE id = 'id-0001'`;
+      yield* sql`INSERT INTO vendors (id, name) VALUES ('vendor-two', 'Acme Supply')`;
+      yield* recording("after", "vendor-two");
+
+      expect(yield* undoing(change)).toEqual({
+        refused: `Nothing was undone, because the Change "id-0003" gave one record a name it took from another, and an undo cannot give the name back while the other record still has it. This Change cannot be undone. Put the records right with the other tools instead:
+The Vendor "Acme Supply" (id-0001) would be called that again, and the Vendor "Acme Supply" (vendor-two), which the same Change wrote, has the name.`,
+      });
+      expect(yield* sql`SELECT id FROM vendors`).toEqual([{ id: "vendor-two" }]);
+      expect(yield* sql`SELECT count(*) AS changes FROM changes`).toEqual([{ changes: 2 }]);
+    }).pipe(Effect.provide(TestDatabase)),
 );

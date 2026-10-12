@@ -42,10 +42,16 @@ export interface RecordShape {
   /** The column a reply names the record by: its name, the title of Work, the body of a Note. */
   readonly namedBy: string;
   /**
-   * The columns that hold the id of another record, each with the type of record it points at.
-   * A column that points at a type no tool writes yet is left out until that type is here.
+   * The most of that column a reply shows, where it can run long. A Note has no name, and a
+   * reply names it by its body, and by only the start of a long one.
    */
-  readonly pointsAt: Readonly<Record<string, RecordType>>;
+  readonly longestName?: number;
+  /**
+   * The columns of its row that hold the id of another record, each with the type of record
+   * that is. A column for a type no tool writes yet is left out until that type is here. A
+   * record points at others by its link sets too, and by what it is attached to.
+   */
+  readonly pointerColumns: Readonly<Record<string, RecordType>>;
   /**
    * How the record is attached to one of several types: the column with that record's type,
    * the column with its id, and the types it can be. A Note is attached this way. No foreign
@@ -85,7 +91,7 @@ export const SHAPES = {
     ],
     links: [],
     namedBy: "name",
-    pointsAt: {},
+    pointerColumns: {},
     unique: ["name"],
   },
   space: {
@@ -93,7 +99,7 @@ export const SHAPES = {
     columns: ["id", "property_id", "name", "data"],
     links: [],
     namedBy: "name",
-    pointsAt: { property_id: "property" },
+    pointerColumns: { property_id: "property" },
     unique: ["property_id", "name"],
   },
   vendor: {
@@ -101,7 +107,7 @@ export const SHAPES = {
     columns: ["id", "name", "role", "data", "created_at", "updated_at"],
     links: [],
     namedBy: "name",
-    pointsAt: {},
+    pointerColumns: {},
     unique: ["name"],
   },
   category: {
@@ -109,7 +115,7 @@ export const SHAPES = {
     columns: ["id", "name", "parent_id", "data"],
     links: [],
     namedBy: "name",
-    pointsAt: { parent_id: "category" },
+    pointerColumns: { parent_id: "category" },
   },
   item: {
     table: "items",
@@ -142,7 +148,7 @@ export const SHAPES = {
       },
     ],
     namedBy: "name",
-    pointsAt: {
+    pointerColumns: {
       property_id: "property",
       space_id: "space",
       category_id: "category",
@@ -175,14 +181,15 @@ export const SHAPES = {
     ],
     namedBy: "title",
     // Its Project and its Schedule are types no tool writes yet.
-    pointsAt: { property_id: "property", vendor_id: "vendor" },
+    pointerColumns: { property_id: "property", vendor_id: "vendor" },
   },
   note: {
     table: "notes",
     columns: ["id", "property_id", "entity_type", "entity_id", "body", "data", "created_at"],
     links: [],
     namedBy: "body",
-    pointsAt: { property_id: "property" },
+    longestName: 80,
+    pointerColumns: { property_id: "property" },
     // A Note can be on a Project too, which is a type no tool writes yet.
     attachedBy: {
       typeColumn: "entity_type",
@@ -191,6 +198,29 @@ export const SHAPES = {
     },
   },
 } as const satisfies Readonly<Record<RecordType, RecordShape>>;
+
+/**
+ * What a reply names a record by, given the text of the column its type is named by: the
+ * text, or the start of one that is longer than a name of that type gets.
+ */
+export const listedName = (type: RecordType, text: string) => {
+  const { longestName }: RecordShape = SHAPES[type];
+  return longestName === undefined || text.length <= longestName
+    ? text
+    : `${text.slice(0, longestName)}…`;
+};
+
+/**
+ * Every type a record of this shape can point at, whichever way it does: by a column of its
+ * row, by a link set, or by what it is attached to.
+ */
+export const typesPointedAt = ({ pointerColumns, links, attachedBy }: RecordShape) => [
+  ...new Set([
+    ...Object.values(pointerColumns),
+    ...links.map((set) => set.of),
+    ...(attachedBy?.of ?? []),
+  ]),
+];
 
 // The ids of one link set, as a JSON list in a fixed order. The list is read as JSON again on
 // its way out, because a JSON value that passes through a subquery comes out as plain text.
