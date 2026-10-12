@@ -19,6 +19,13 @@ export const RECORD_TYPES = [
 
 export type RecordType = (typeof RECORD_TYPES)[number];
 
+/**
+ * A type as the glossary writes it: Item, Space. A Document and a Schedule are types no tool
+ * writes yet, and an error can name one all the same.
+ */
+export const term = (type: RecordType | "document" | "schedule") =>
+  `${type.charAt(0).toUpperCase()}${type.slice(1)}`;
+
 /** A set of other records that a record is linked to, kept in a table of its own. */
 export interface LinkSet {
   /** What the set is called in a snapshot, such as `extra_categories`. */
@@ -274,24 +281,24 @@ const nameColumn = (type: RecordType) => {
 };
 
 /**
- * The SQL of what the record of a type with an id is called now: the name in its row, or null
- * when it is not there. `id` is the SQL of the id.
+ * The SQL of the name the record of a type with an id has in its table now, or null when it is
+ * not there. `id` is the SQL of the id.
  */
-export const calledNow = (type: RecordType, id: string) =>
+export const nameInTable = (type: RecordType, id: string) =>
   `(SELECT pointed_at.${nameColumn(type)} FROM ${SHAPES[type].table} AS pointed_at
      WHERE pointed_at.id = ${id})`;
 
 /**
  * The SQL of what a record is named by. `read` gives the SQL of one column of the record, so
  * a name is read the same way from a row and from a snapshot of one. A record that is named by
- * the records it points at is named by what `called` says each of them is called, which is
- * what it is called now unless the caller knows of another time to ask about. One that has no
+ * the records it points at is named by what `nameOfOther` gives for each of them: the name it
+ * has in its table now, unless the caller knows of another place to ask first. One that has no
  * name to give, because it is not there, stands in the name as the id the record had for it.
  */
 export const recordName = (
   { table, namedBy, pointerColumns }: RecordShape,
   read: (column: string) => string,
-  called: (type: RecordType, id: string) => string = calledNow,
+  nameOfOther: (type: RecordType, id: string) => string = nameInTable,
 ): string => {
   if (typeof namedBy === "string") return read(namedBy);
   return namedBy.columns
@@ -301,19 +308,20 @@ export const recordName = (
         throw new Error(`${table} has no pointer column named ${column} to be named by.`);
       }
       const pointer = read(column);
-      return `coalesce(${called(type, pointer)}, ${pointer})`;
+      return `coalesce(${nameOfOther(type, pointer)}, ${pointer})`;
     })
     .join(` || '${namedBy.between}' || `);
 };
 
 /**
- * The same name in code, for a save that knows what the records it points at are called.
- * `called` has each of those names under the pointer column it goes with.
+ * The same name in code, for a save that has the names of the records it points at: those
+ * names, joined the way `namedBy` says. `names` has each one under the pointer column it goes
+ * with.
  */
-export const nameByOthers = <Column extends string>(
+export const joinedName = <Column extends string>(
   { columns, between }: { readonly columns: ReadonlyArray<Column>; readonly between: string },
-  called: Readonly<Record<Column, string>>,
-) => columns.map((column) => called[column]).join(between);
+  names: Readonly<Record<Column, string>>,
+) => columns.map((column) => names[column]).join(between);
 
 /**
  * What a reply names a record by, given the text its type is named by: the text, or the start

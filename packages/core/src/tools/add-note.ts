@@ -3,8 +3,9 @@ import { SqlClient } from "effect/sql";
 import { newNote, NOTED, type Noted } from "../note.ts";
 import { propertyFor, propertyNamed } from "../property.ts";
 import { nameText, noteText, runSave, SAVE_ANNOTATIONS } from "../save.ts";
-import { defineTool, optional, ToolError } from "../tool.ts";
-import { noRecord, readRecord, term } from "./get-record.ts";
+import { term } from "../records.ts";
+import { defineTool, noRecord, optional, ToolError } from "../tool.ts";
+import { readRecord } from "./get-record.ts";
 
 const DESCRIPTION = `Adds a Note: a dated piece of free text for a fact that fits nowhere else, such as "Breaker 14 is the garage" or "The HOA approved the fence color". First check that the fact has no better place. A model number or a paint color goes in a record's \`data\`, and something that was done is logged as Work.
 

@@ -1,6 +1,7 @@
 import { Effect } from "effect";
 import { SqlClient } from "effect/sql";
 import { today } from "./dates.ts";
+import { term } from "./records.ts";
 import { askedOnce, nameKey } from "./save.ts";
 import { ToolError } from "./tool.ts";
 
@@ -55,14 +56,12 @@ export const propertyNamed = Effect.fnUntraced(function* (given: string) {
 /**
  * Refuses a save that names another Property for a record that does not move to one: a Space,
  * or a Project. `given` is the Property the save named, if it named one, and naming the one the
- * record is at is no move. `record` says what the record is, as an error names it, and where
- * it is.
+ * record is at is no move. `record` says what the record is and where it is.
  */
 export const refuseAnotherProperty = Effect.fnUntraced(function* (
   given: string | undefined,
   record: {
-    /** The type as the glossary writes it, such as Space. */
-    readonly term: string;
+    readonly type: "space" | "project";
     readonly name: string;
     readonly property_id: string;
     /** The name of the Property it is at. */
@@ -72,8 +71,9 @@ export const refuseAnotherProperty = Effect.fnUntraced(function* (
   if (given === undefined) return;
   const named = yield* propertyNamed(given);
   if (named.id === record.property_id) return;
+  const typeTerm = term(record.type);
   return yield* new ToolError({
-    message: `The ${record.term} "${record.name}" is at ${record.property}, not at ${named.name}. A ${record.term} does not move to another Property.`,
+    message: `The ${typeTerm} "${record.name}" is at ${record.property}, not at ${named.name}. A ${typeTerm} does not move to another Property.`,
   });
 });
 

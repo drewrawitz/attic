@@ -14,6 +14,7 @@ import {
 import type { SqlClient } from "effect/sql";
 import type { SqlError } from "effect/sql/SqlError";
 import type { Currency } from "./money.ts";
+import { term } from "./records.ts";
 import { Write, type AtomicBatch, type Ids } from "./write.ts";
 
 /**
@@ -21,6 +22,22 @@ import { Write, type AtomicBatch, type Ids } from "./write.ts";
  * the client as written, so it says what to do next.
  */
 export class ToolError extends Data.TaggedError("ToolError")<{ readonly message: string }> {}
+
+// Where a client finds the id of a record. A Quote is in no result of search, and get_record
+// takes none: it comes back inside its Project.
+const whereIdsAre = (type: Parameters<typeof term>[0]) =>
+  type === "quote"
+    ? "A Quote's id is in the record of its Project, which get_record returns."
+    : "Ids come from search and from the records get_record returns.";
+
+/**
+ * The error for a record that is not there. It names the type and the id that was given, and
+ * says where an id of that type is found.
+ */
+export const noRecord = (type: Parameters<typeof term>[0], id: string) =>
+  new ToolError({
+    message: `There is no ${term(type)} with the id "${id}". ${whereIdsAre(type)}`,
+  });
 
 /**
  * The input of a tool that takes nothing. An empty `Schema.Struct({})` will not do: it means

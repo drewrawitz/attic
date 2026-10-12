@@ -2,9 +2,8 @@ import { Effect, Schema } from "effect";
 import { SqlClient } from "effect/sql";
 import { formatRow, storedJson } from "../output.ts";
 import { propertyNamed } from "../property.ts";
-import type { RecordType } from "../records.ts";
 import { jsonList, jsonObject } from "../sql.ts";
-import { defineTool, ToolError } from "../tool.ts";
+import { defineTool, noRecord } from "../tool.ts";
 import { FROM_PROPERTY_KEYS } from "./get-schema.ts";
 
 // The types of record there are to get. A Quote is not one: it comes back with its Project.
@@ -455,15 +454,6 @@ const cut = (record: JsonObject): JsonObject => {
     lists_cut: `Each of these lists has more than ${MOST_ENTRIES} entries, and only the first ${MOST_ENTRIES} are here: ${long.map(([name]) => name).join(", ")}. Read the rest with query.`,
   };
 };
-
-/** A type as the glossary writes it: Item, Space. */
-export const term = (type: Type | RecordType) => `${type.charAt(0).toUpperCase()}${type.slice(1)}`;
-
-/** The error for a record that is not there, which names its type and the id that was given. */
-export const noRecord = (type: Type | RecordType, id: string) =>
-  new ToolError({
-    message: `There is no ${term(type)} with the id "${id}". Ids come from search and from the records get_record returns.`,
-  });
 
 // The keys a Space shows, as a sentence names them: `paint` and `flooring`.
 const FROM_PROPERTY_KEYS_AS_TEXT = new Intl.ListFormat("en", { type: "conjunction" }).format(

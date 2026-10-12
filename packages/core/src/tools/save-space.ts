@@ -84,7 +84,7 @@ export const saveSpace = defineTool({
             message: `There is no Space with the id "${id}". To save one by its name, leave the id out.`,
           });
         }
-        yield* refuseAnotherProperty(given, { term: "Space", ...space });
+        yield* refuseAnotherProperty(given, { type: "space", ...space });
         if (space.taken !== null) {
           return yield* new ToolError({
             message: `Another Space at ${space.property} is already named "${space.taken}". A Property has one Space for each name, whatever its case.`,

@@ -2,8 +2,8 @@ import { Effect, Schema } from "effect";
 import { SqlClient } from "effect/sql";
 import { partialDate } from "../dates.ts";
 import { amount, inCents } from "../money.ts";
-import { projectsById } from "../project.ts";
-import { nameByOthers, SHAPES } from "../records.ts";
+import { projectWith } from "../project.ts";
+import { joinedName, SHAPES } from "../records.ts";
 import {
   dataPatch,
   definedColumns,
@@ -15,10 +15,10 @@ import {
   updateRow,
   valueOrCleared,
 } from "../save.ts";
-import { defineTool, optional, ToolError } from "../tool.ts";
+import { defineTool, noRecord, optional, ToolError } from "../tool.ts";
 import { vendorOrNew } from "../vendor.ts";
 import { Ids } from "../write.ts";
-import { noRecord, readRecord } from "./get-record.ts";
+import { readRecord } from "./get-record.ts";
 
 const NO_PROJECT_OR_VENDOR =
   "Give a Project and a Vendor to save a Quote, or the id of the Quote to update.";
@@ -59,12 +59,6 @@ const quoteNow = Effect.fnUntraced(function* (id: string) {
       JOIN vendors AS vendor ON vendor.id = quote.vendor_id
      WHERE quote.id = ${id}`;
   return quote === undefined ? yield* noRecord("quote", id) : quote;
-});
-
-// The Project a save gives the id of, as it is now. It has to be there.
-const projectNow = Effect.fnUntraced(function* (id: string) {
-  const project = (yield* projectsById([id])).get(id);
-  return project === undefined ? yield* noRecord("project", id) : project;
 });
 
 // The Quote a Project has from a Vendor, if it has one.
@@ -120,7 +114,7 @@ export const saveQuote = defineTool({
       const was = id === undefined ? undefined : yield* quoteNow(id);
       const project =
         given.project !== undefined
-          ? yield* projectNow(given.project)
+          ? yield* projectWith(given.project)
           : was === undefined
             ? undefined
             : { id: was.project_id, title: was.project_title };
@@ -150,7 +144,7 @@ export const saveQuote = defineTool({
         type: "quote",
         id: toUpdate?.id ?? (yield* (yield* Ids).next),
         // A Quote has no name of its own. It is called what `records.ts` says it is named by.
-        name: nameByOthers(SHAPES.quote.namedBy, {
+        name: joinedName(SHAPES.quote.namedBy, {
           vendor_id: vendor.name,
           project_id: project.title,
         }),

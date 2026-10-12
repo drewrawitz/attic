@@ -3,7 +3,7 @@ import { SqlClient } from "effect/sql";
 import { partialDate } from "../dates.ts";
 import { amount, inCents } from "../money.ts";
 import { noteOn, notesMovedTo } from "../note.ts";
-import { projectsById, type Project } from "../project.ts";
+import { projectAmong, projectsById, type Project } from "../project.ts";
 import { propertyForOnce } from "../property.ts";
 import {
   dataPatch,
@@ -23,10 +23,10 @@ import {
   valueOrCleared,
 } from "../save.ts";
 import { spaceOrNewOnce } from "../space.ts";
-import { defineTool, optional, ToolError } from "../tool.ts";
+import { defineTool, noRecord, optional, ToolError } from "../tool.ts";
 import { vendorOrNewOnce } from "../vendor.ts";
 import { Ids } from "../write.ts";
-import { noRecord, readRecord } from "./get-record.ts";
+import { readRecord } from "./get-record.ts";
 
 // What a call's list is called, and what its entries are.
 const LIST_WORDS = { field: "work", singular: "piece of Work", plural: "pieces of Work" };
@@ -49,7 +49,7 @@ With an id, the Work with that id is updated. Without one, new Work is logged, w
 
 Work needs a Property or at least one Item. With no \`property\`, new Work is at the one Current property. When there is not exactly one, Work that names Items and no Spaces is saved at no Property, and any other Work is refused with the Properties to choose from. Work on an Item that was done away from every Property, such as a bike serviced at a shop, has \`property\` named in \`clear\`.
 
-\`item_ids\` are the ids of the Items the Work was done to, and \`spaces\` are the names of the Spaces it was done in. Each list replaces the whole set, and an empty list empties it. An Item that is not there is an error. A Space is one at the Work's Property, matched whatever its case, and one that is not there yet is created, and listed in the reply. So Work at no Property takes no Spaces. Work that moves to another Property loses its Spaces, unless the same save gives it some there, and its Notes move with it. Work that is in a Project, or was logged against a Schedule on a Property, stays at its Property, unless the same save takes it out of the Project.
+\`item_ids\` are the ids of the Items the Work was done to, and \`spaces\` are the names of the Spaces it was done in. Each list replaces the whole set, and an empty list empties it. An Item that is not there is an error. A Space is one at the Work's Property, matched whatever its case, and one that is not there yet is created, and listed in the reply. So Work at no Property takes no Spaces. Work that moves to another Property loses its Spaces, unless the same save gives it some there, and its Notes move with it. Work that was logged against a Schedule on a Property stays at its Property. So does Work that is in a Project, unless the same save takes it out of the Project, or puts it in a Project at the Property it moves to.
 
 \`project\` is the id of the Project the Work is part of, as search or get_record gives it. It is a Project at the Work's Property, and one that is at another Property is refused. The Project's record then lists the Work, and counts its cost in \`total_cost\`. To take Work out of its Project, name \`project\` in \`clear\`.
 
@@ -236,10 +236,8 @@ const stepsFor = Effect.fnUntraced(function* (
   const missing = (entry.item_ids ?? []).find((each) => !known.itemIds.has(each));
   if (missing !== undefined) return yield* noRecord("item", missing);
   // And so does the Project it names.
-  const givenProject = entry.project === undefined ? undefined : known.projects.get(entry.project);
-  if (entry.project !== undefined && givenProject === undefined) {
-    return yield* noRecord("project", entry.project);
-  }
+  const givenProject =
+    entry.project === undefined ? undefined : yield* projectAmong(entry.project, known.projects);
 
   yield* refuseGivenAndCleared(entry, clear);
   const wanted = valueOrCleared(clear);

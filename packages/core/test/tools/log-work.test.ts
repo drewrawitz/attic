@@ -1394,3 +1394,54 @@ it.effect("naming project in clear takes Work out of its Project, and it can the
     expect(moved.record).toMatchObject({ property: "Elm Court apartment", project: null });
   }).pipe(Effect.provide(TestDatabase)),
 );
+
+// After a save, Work in a Project is at the Project's Property. So Work that was logged at the
+// wrong Property, and so in the wrong Project, is put right in one save.
+it.effect("Work that moves can go into a Project at the Property it moves to", () =>
+  Effect.gen(function* () {
+    yield* loadHousehold;
+    yield* todayIs(TODAY);
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`
+      INSERT INTO projects (id, property_id, title) VALUES
+        ('project-elm', 'seed-property-elm', 'Kitchen repaint'),
+        ('project-patio', 'seed-property-maple', 'Patio lighting')`;
+    const TRENCH = "seed-work-lighting-trench";
+
+    // A Project at the Property the Work would leave is no way to move it.
+    expect(
+      yield* logging({ id: TRENCH, property: "Elm Court apartment", project: "project-patio" }),
+    ).toEqual({
+      refused:
+        'The Project "Patio lighting" is at Maple Street house, and "Trenched and laid cable for the path lights" is not. Work in a Project is at the Project\'s Property: give `property` as Maple Street house, or leave `project` out.',
+    });
+
+    const moved = yield* logging({
+      id: TRENCH,
+      property: "Elm Court apartment",
+      project: "project-elm",
+    });
+    expect(moved.record).toMatchObject({
+      property: "Elm Court apartment",
+      project_id: "project-elm",
+      project: "Kitchen repaint",
+      // It was done in the Exterior of the Property it left, and is in no Space now.
+      spaces: [],
+      changes: [
+        {
+          before: { property_id: "seed-property-maple", project_id: LIGHTING },
+          after: { property_id: "seed-property-elm", project_id: "project-elm" },
+        },
+      ],
+    });
+    // The Project it left has one piece of Work now, and the one it joined has this one.
+    expect(yield* getting("project", LIGHTING)).toMatchObject({
+      total_cost: 380,
+      work: [{ id: "seed-work-lighting-transformer" }],
+    });
+    expect(yield* getting("project", "project-elm")).toMatchObject({
+      total_cost: 450,
+      work: [{ id: TRENCH }],
+    });
+  }).pipe(Effect.provide(TestDatabase)),
+);

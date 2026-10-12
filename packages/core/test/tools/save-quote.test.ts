@@ -263,7 +263,8 @@ it.effect("with an id, a save updates that Quote, and can put right its Vendor",
     });
     expect(yield* saving({ id: "no-such-quote", amount: 1 })).toEqual({
       refused:
-        'There is no Quote with the id "no-such-quote". Ids come from search and from the records get_record returns.',
+        // search finds no Quote, and get_record takes none, so the error says where one is.
+        'There is no Quote with the id "no-such-quote". A Quote\'s id is in the record of its Project, which get_record returns.',
     });
     expect(yield* counting).toEqual(settled);
     expect(settled).toEqual({

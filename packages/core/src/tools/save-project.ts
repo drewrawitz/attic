@@ -2,7 +2,7 @@ import { Effect, Schema } from "effect";
 import { SqlClient } from "effect/sql";
 import { partialDate, today } from "../dates.ts";
 import { noteOn } from "../note.ts";
-import { PROJECT_STATUSES, projectsById } from "../project.ts";
+import { PROJECT_STATUSES, projectWith, type ProjectStatus } from "../project.ts";
 import { propertyFor, refuseAnotherProperty } from "../property.ts";
 import {
   dataPatch,
@@ -20,7 +20,7 @@ import {
 import { spaceOrNewOnce } from "../space.ts";
 import { defineTool, optional, ToolError } from "../tool.ts";
 import { Ids } from "../write.ts";
-import { noRecord, readRecord } from "./get-record.ts";
+import { readRecord } from "./get-record.ts";
 
 const NO_TITLE = "Give a title to create a Project, or the id of the Project to update.";
 
@@ -43,17 +43,11 @@ With no \`property\`, a new Project is at the one Current property, and when the
 What comes back is the id of the Change that recorded the save, and every record it created or updated: the Project, any Space made on first use, and the Note. It also has the whole Project as get_record returns it.`;
 
 // The status a new Project has unless the save gives one, which is the table's own default.
-const OPEN: (typeof PROJECT_STATUSES)[number] = "open";
+const OPEN: ProjectStatus = "open";
 
 // The fields a save can empty. A Project always has a Property, a title, and a status. Its
 // Spaces are a set, and a set is emptied with an empty list.
 const CLEARABLE = ["start_on", "end_on"] as const;
-
-// The Project a save gives the id of, as it is now. It has to be there.
-const projectNow = Effect.fnUntraced(function* (id: string) {
-  const project = (yield* projectsById([id])).get(id);
-  return project === undefined ? yield* noRecord("project", id) : project;
-});
 
 export const saveProject = defineTool({
   name: "save_project",
@@ -110,7 +104,7 @@ export const saveProject = defineTool({
       yield* refuseGivenAndCleared(given, clear);
       const wanted = valueOrCleared(clear);
 
-      const was = id === undefined ? undefined : yield* projectNow(id);
+      const was = id === undefined ? undefined : yield* projectWith(id);
       const called = title ?? was?.title;
       if (called === undefined) return yield* new ToolError({ message: NO_TITLE });
 
@@ -121,7 +115,7 @@ export const saveProject = defineTool({
           ? yield* propertyFor(given.property)
           : { id: was.property_id, name: was.property };
       if (was !== undefined) {
-        yield* refuseAnotherProperty(given.property, { term: "Project", name: was.title, ...was });
+        yield* refuseAnotherProperty(given.property, { type: "project", name: was.title, ...was });
       }
 
       // A Space is one at a Property, so the Spaces a save names are ones at the Project's. A

@@ -1,11 +1,12 @@
 import { Effect, Schema } from "effect";
 import { SqlClient } from "effect/sql";
 import {
-  calledNow,
   listedName,
+  nameInTable,
   recordName,
   RECORD_TYPES,
   SHAPES,
+  term,
   type LinkSet,
   type RecordShape,
   type RecordType,
@@ -14,7 +15,6 @@ import type { Listed } from "../save.ts";
 import { compact, jsonList, jsonObject } from "../sql.ts";
 import { defineTool, ToolError, type ToolAnnotations } from "../tool.ts";
 import { Write, type Step } from "../write.ts";
-import { term } from "./get-record.ts";
 
 const DESCRIPTION = `Undoes a Change, so that every record the Change touched is as it was before. A Change is one write made through a tool. Every tool that writes returns the id of its Change as \`change_id\`, and get_record lists a record's latest Changes, newest first, each with its id and the record as it was before and after. The rest are in the \`changes\` and \`change_records\` tables, which query reads.
 
@@ -78,22 +78,27 @@ const ids = (type: RecordType, outcomes: ReadonlyArray<Outcome>) =>
 // object, which is what the column holds.
 const before = (column: string) => `json_extract(touched.before, '$.${column}')`;
 
-// What a record that another is named by is called once the undo is done. One that the Change
-// touched is called what the Change's own snapshot says: the undo brings it back under that
-// name, and until it does the record is not there to ask. Any other is called what it is
-// called now. A statement that reads this is given the Change as `?1`.
-const calledOnceUndone = (type: RecordType, id: string) => `coalesce(
-  (SELECT ${recordName(SHAPES[type], (column) => `json_extract(coalesce(also.before, also.after), '$.${column}')`)}
+// A column of a record as it is once the undo is done, read from the row of `change_records`
+// a statement has under this alias: as it was before the Change, and for a record the undo
+// takes out, as the Change left it.
+const snapshotOnceUndone = (alias: string) => (column: string) =>
+  `json_extract(coalesce(${alias}.before, ${alias}.after), '$.${column}')`;
+
+// The name of a record that another is named by. One that the Change touched has the name the
+// Change's own snapshot gives it: the undo brings it back under that name, and until it does
+// the record is not there to ask. Any other has the name in its table. A statement that reads
+// this is given the Change as `?1`.
+const nameInChangeOrTable = (type: RecordType, id: string) => `coalesce(
+  (SELECT ${recordName(SHAPES[type], snapshotOnceUndone("also"))}
      FROM change_records AS also
     WHERE also.change_id = ?1 AND also.entity_type = '${type}' AND also.entity_id = ${id}),
-  ${calledNow(type, id)})`;
+  ${nameInTable(type, id)})`;
 
-// What a record the undo brings back is named by once it is back, read from the Change's
-// snapshot of it as `touched`.
-const nameOnceBack = (shape: RecordShape) => recordName(shape, before, calledOnceUndone);
+// What a record the undo brings back is named by, read from what it was before the Change.
+const nameFromBefore = (shape: RecordShape) => recordName(shape, before, nameInChangeOrTable);
 
 // What a row there is now is named by, read under this alias.
-const nameNow = (shape: RecordShape, alias: string) =>
+const nameOfRow = (shape: RecordShape, alias: string) =>
   recordName(shape, (column) => `${alias}.${column}`);
 
 // The rows of a SELECT as one JSON column: a list with an object for each row, which has these
@@ -189,12 +194,8 @@ const pick = (
   outcomes: ReadonlyArray<Outcome>,
 ) => touched.filter((record) => record.type === type && outcomes.includes(record.outcome));
 
-// A column of a record as it is once the undo is done, and of one that is taken out as it was.
-const onceUndone = (column: string) =>
-  `json_extract(coalesce(touched.before, touched.after), '$.${column}')`;
-
-// What a record of each type is named by, read that way.
-const NAME_ONCE_UNDONE = `CASE touched.entity_type ${EACH_TYPE.map(([type, shape]) => `WHEN '${type}' THEN ${recordName(shape, onceUndone, calledOnceUndone)}`).join(" ")} END`;
+// What a record of each type is named by once the undo is done.
+const NAME_ONCE_UNDONE = `CASE touched.entity_type ${EACH_TYPE.map(([type, shape]) => `WHEN '${type}' THEN ${recordName(shape, snapshotOnceUndone("touched"), nameInChangeOrTable)}`).join(" ")} END`;
 
 // The records the Change touched, by type and then by id, each named as it is once the undo is
 // done.
@@ -342,7 +343,7 @@ const WAYS_OF_POINTING: ReadonlyArray<WayOfPointing> = EACH_TYPE.flatMap(([type,
     const { rowsFrom, rowTarget, snapshotsFrom, snapshotTarget } = inSql;
     const { rowIf = "", snapshotIf = "" } = inSql;
     const inUse = `
-      SELECT '${type}' AS type, record.id, ${nameNow(shape, "record")} AS name,
+      SELECT '${type}' AS type, record.id, ${nameOfRow(shape, "record")} AS name,
              '${targetType}' AS target_type, ${rowTarget} AS target, NULL AS removed_by
         FROM ${rowsFrom}
        WHERE ${rowIf} ${rowTarget} IN ${ids(targetType, ["taken_out"])}
@@ -351,7 +352,7 @@ const WAYS_OF_POINTING: ReadonlyArray<WayOfPointing> = EACH_TYPE.flatMap(([type,
     // An empty pointer is no pointer, and `NOT IN` alone would let one through. Ids sort by
     // when they were made, so the greatest is the latest Change that took the record out.
     const missing = `
-      SELECT '${type}' AS type, touched.entity_id AS id, ${nameOnceBack(shape)} AS name,
+      SELECT '${type}' AS type, touched.entity_id AS id, ${nameFromBefore(shape)} AS name,
              '${targetType}' AS target_type, ${snapshotTarget} AS target,
              (SELECT max(removed.change_id) FROM change_records AS removed
                WHERE removed.entity_type = '${targetType}'
@@ -425,8 +426,8 @@ const NAMES_HELD: ReadonlyArray<Read & { readonly type: RecordType }> = EACH_TYP
             type,
             fields: ["type", "id", "name", "holder_id", "holder_name", "same_change"],
             text: compact(`
-              SELECT '${type}' AS type, touched.entity_id AS id, ${nameOnceBack(shape)} AS name,
-                     holder.id AS holder_id, ${nameNow(shape, "holder")} AS holder_name,
+              SELECT '${type}' AS type, touched.entity_id AS id, ${nameFromBefore(shape)} AS name,
+                     holder.id AS holder_id, ${nameOfRow(shape, "holder")} AS holder_name,
                      holder.id IN ${ids(type, ANY_OUTCOME)} AS same_change
                 FROM change_records AS touched
                 JOIN ${table} AS holder
@@ -464,11 +465,11 @@ const LOOPS: ReadonlyArray<Read & { readonly type: RecordType }> = EACH_TYPE.fla
         text: compact(`
           WITH RECURSIVE
             tree (id, name, above) AS (
-              SELECT touched.entity_id, ${nameOnceBack(shape)}, ${before(column)}
+              SELECT touched.entity_id, ${nameFromBefore(shape)}, ${before(column)}
                 FROM change_records AS touched
                WHERE ${matching(type, BROUGHT_BACK)}
               UNION ALL
-              SELECT record.id, ${nameNow(shape, "record")}, record.${column}
+              SELECT record.id, ${nameOfRow(shape, "record")}, record.${column}
                 FROM ${shape.table} AS record
                WHERE record.id NOT IN ${ids(type, ANY_OUTCOME)}
             ),
@@ -542,7 +543,7 @@ const WAYS_OF_FOLLOWING: ReadonlyArray<WayOfFollowing> = EACH_TYPE.flatMap(([typ
   ).map(([targetType, targetShape]) => {
     const targetTable = targetShape.table;
     const leftBehind = `
-        SELECT '${type}' AS type, record.id, ${nameNow(shape, "record")} AS name,
+        SELECT '${type}' AS type, record.id, ${nameOfRow(shape, "record")} AS name,
                '${targetType}' AS target_type, touched.entity_id AS target,
                (SELECT max(added.change_id) FROM change_records AS added
                  WHERE added.entity_type = '${type}' AND added.entity_id = record.id
@@ -556,9 +557,9 @@ const WAYS_OF_FOLLOWING: ReadonlyArray<WayOfFollowing> = EACH_TYPE.flatMap(([typ
            AND record.id NOT IN ${ids(type, ANY_OUTCOME)}
          ORDER BY touched.entity_id, record.id`;
     const stranded = `
-        SELECT '${type}' AS type, touched.entity_id AS id, ${nameOnceBack(shape)} AS name,
+        SELECT '${type}' AS type, touched.entity_id AS id, ${nameFromBefore(shape)} AS name,
                '${targetType}' AS target_type, now.id AS target,
-               ${nameNow(targetShape, "now")} AS target_name,
+               ${nameOfRow(targetShape, "now")} AS target_name,
                (SELECT max(mover.change_id) FROM change_records AS mover
                  WHERE mover.entity_type = '${targetType}' AND mover.entity_id = now.id
                    AND mover.before IS NOT NULL AND mover.after IS NOT NULL
