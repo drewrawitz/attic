@@ -1001,3 +1001,337 @@ The Vendor "Acme Supply" (id-0001) would be called that again, and the Vendor "A
       expect(yield* sql`SELECT count(*) AS changes FROM changes`).toEqual([{ changes: 2 }]);
     }).pipe(Effect.provide(TestDatabase)),
 );
+
+const LOOP =
+  "Nothing was undone, because a record would be back under one that is under it already, which is a loop. One of the others in the loop has to come out from under its parent first, by a save of it or by undoing the Change that put it there:";
+
+// A save refuses a parent that would make a loop. An undo gives a Category its parent back
+// with no save, and the Change that put the parent under it touched another record, so no
+// later Change is in the way.
+it.effect("an undo that would bring a Category back under one that is under it is refused", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const under = sql`
+      SELECT id, parent_id FROM categories WHERE id IN ('camping', 'tents') ORDER BY id`;
+    yield* calling(saveCategory)({ id: "camping", name: "Camping" });
+    yield* calling(saveCategory)({ id: "tents", name: "Tents", parent: "camping" });
+    const cleared = yield* calling(saveCategory)({ id: "tents", clear: ["parent"] });
+    const swapped = yield* calling(saveCategory)({ id: "camping", parent: "tents" });
+
+    expect(yield* undoing(cleared.change_id as string)).toEqual({
+      refused: `${LOOP}
+The Category "Tents" (tents) would be back under the Category "Camping" (camping), which is under the Category "Tents" (tents).`,
+    });
+    expect(yield* under).toEqual([
+      { id: "camping", parent_id: "tents" },
+      { id: "tents", parent_id: null },
+    ]);
+    expect(yield* sql`SELECT count(*) AS changes FROM changes`).toEqual([{ changes: 4 }]);
+
+    // With Camping out from under it, Tents can go back under Camping.
+    yield* undoing(swapped.change_id as string);
+    expect(yield* undoing(cleared.change_id as string)).toMatchObject({
+      restored: [{ type: "category", id: "tents", name: "Tents" }],
+    });
+    expect(yield* under).toEqual([
+      { id: "camping", parent_id: null },
+      { id: "tents", parent_id: "camping" },
+    ]);
+  }).pipe(Effect.provide(TestDatabase)),
+);
+
+// What each of these Categories is under.
+const parentsOf = (...ids: ReadonlyArray<string>) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const rows = yield* sql<{ id: string; parent_id: string | null }>`
+      SELECT id, parent_id FROM categories WHERE id IN ${sql.in(ids)}`;
+    return Object.fromEntries(rows.map(({ id, parent_id }) => [id, parent_id]));
+  });
+
+it.effect("a loop by way of a third Category is refused, and the error names all three", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* calling(saveCategory)({ id: "camping", name: "Camping" });
+    yield* calling(saveCategory)({ id: "tents", name: "Tents", parent: "camping" });
+    yield* calling(saveCategory)({ id: "tent-stakes", name: "Tent stakes", parent: "tents" });
+    const cleared = yield* calling(saveCategory)({ id: "tents", clear: ["parent"] });
+    yield* calling(saveCategory)({ id: "camping", parent: "tent-stakes" });
+
+    expect(yield* undoing(cleared.change_id as string)).toEqual({
+      refused: `${LOOP}
+The Category "Tents" (tents) would be back under the Category "Camping" (camping), which is under the Category "Tent stakes" (tent-stakes), which is under the Category "Tents" (tents).`,
+    });
+    expect(yield* parentsOf("camping", "tents", "tent-stakes")).toEqual({
+      camping: "tent-stakes",
+      tents: null,
+      "tent-stakes": "tents",
+    });
+    expect(yield* sql`SELECT count(*) AS changes FROM changes`).toEqual([{ changes: 5 }]);
+  }).pipe(Effect.provide(TestDatabase)),
+);
+
+it.effect("undoing a change of parent that makes no loop goes through", () =>
+  Effect.gen(function* () {
+    yield* calling(saveCategory)({ id: "camping", name: "Camping", parent: "outdoor" });
+    yield* calling(saveCategory)({ id: "tents", name: "Tents", parent: "camping" });
+    const cleared = yield* calling(saveCategory)({ id: "tents", clear: ["parent"] });
+    // A Category goes under the Tents, and the one above them moves, each by a save that
+    // never touched the Tents.
+    yield* calling(saveCategory)({ id: "tent-stakes", name: "Tent stakes", parent: "tents" });
+    yield* calling(saveCategory)({ id: "camping", parent: "sports" });
+
+    expect(yield* undoing(cleared.change_id as string)).toMatchObject({
+      restored: [{ type: "category", id: "tents", name: "Tents" }],
+    });
+    expect(yield* parentsOf("camping", "tents", "tent-stakes")).toEqual({
+      camping: "sports",
+      tents: "camping",
+      "tent-stakes": "tents",
+    });
+  }).pipe(Effect.provide(TestDatabase)),
+);
+
+// An undo made before loops were refused could leave one, and so could two saves at the same
+// moment (ADR 0006). The Tents are not in this one. They would only be under it.
+it.effect(
+  "an undo goes through under a loop that was there already, and does not walk it forever",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* calling(saveCategory)({ id: "camping", name: "Camping", parent: "outdoor" });
+      yield* calling(saveCategory)({ id: "tents", name: "Tents", parent: "camping" });
+      const cleared = yield* calling(saveCategory)({ id: "tents", clear: ["parent"] });
+      yield* sql`UPDATE categories SET parent_id = 'camping' WHERE id = 'outdoor'`;
+
+      expect(yield* undoing(cleared.change_id as string)).toMatchObject({
+        restored: [{ type: "category", id: "tents", name: "Tents" }],
+      });
+      expect(yield* parentsOf("tents")).toEqual({ tents: "camping" });
+    }).pipe(Effect.provide(TestDatabase)),
+);
+
+// No tool deletes a Category yet. One that is deleted while another is under it has to point
+// that one elsewhere in the same Change, so the Change is written here by hand: the Shelters
+// are deleted, and the Tents that were under them go to the top. An undo puts the Shelters
+// back under Camping, and the Tents back under the Shelters.
+it.effect("an undo that would put a Category back into a loop is refused", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* calling(saveCategory)({ id: "camping", name: "Camping" });
+    yield* calling(saveCategory)({ id: "shelters", name: "Shelters", parent: "camping" });
+    yield* calling(saveCategory)({ id: "tents", name: "Tents", parent: "shelters" });
+
+    const deleted = yield* (yield* Ids).next;
+    yield* sql`INSERT INTO changes (id, tool) VALUES (${deleted}, 'delete_record')`;
+    const recording = (column: "before" | "after") =>
+      sql.unsafe(
+        `INSERT INTO change_records (change_id, entity_type, entity_id, ${column})
+         SELECT ?, 'category', record.id, ${snapshot(SHAPES.category)} FROM categories AS record
+          WHERE record.id IN ('shelters', 'tents')
+         ON CONFLICT (change_id, entity_type, entity_id) DO UPDATE SET ${column} = excluded.${column}`,
+        [deleted],
+      );
+    yield* recording("before");
+    yield* sql`UPDATE categories SET parent_id = NULL WHERE id = 'tents'`;
+    yield* sql`DELETE FROM categories WHERE id = 'shelters'`;
+    yield* recording("after");
+    const swapped = yield* calling(saveCategory)({ id: "camping", parent: "tents" });
+
+    // The loop has two Categories the undo brings back, and is said once.
+    expect(yield* undoing(deleted)).toEqual({
+      refused: `${LOOP}
+The Category "Shelters" (shelters) would be back under the Category "Camping" (camping), which is under the Category "Tents" (tents), which would be back under the Category "Shelters" (shelters).`,
+    });
+    expect(yield* parentsOf("camping", "shelters", "tents")).toEqual({
+      camping: "tents",
+      tents: null,
+    });
+    expect(yield* sql`SELECT count(*) AS changes FROM changes`).toEqual([{ changes: 5 }]);
+
+    yield* undoing(swapped.change_id as string);
+    expect(yield* undoing(deleted)).toMatchObject({
+      restored: [{ type: "category", id: "tents" }],
+      put_back: [{ type: "category", id: "shelters" }],
+    });
+    expect(yield* parentsOf("camping", "shelters", "tents")).toEqual({
+      camping: null,
+      shelters: "camping",
+      tents: "shelters",
+    });
+  }).pipe(Effect.provide(TestDatabase)),
+);
+
+const leftBehind = (toUndo: string) =>
+  `Nothing was undone, because undoing the Change "${toUndo}" would move a record, and what was added to it since would stay behind. Undo the Change that added that first, and then this one:`;
+
+// A Note on a record is at that record's Property, and a save that moves the record moves its
+// Notes in the same Change. This Note was added after the move, by a Change that never touched
+// the Item, so no later Change is in the way.
+it.effect("an undo that would move an Item away from a Note added to it since is refused", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* calling(saveProperty)({ name: "Maple Street house" });
+    yield* calling(saveProperty)({ name: "Birch Lane house" });
+    const saved = yield* calling(saveItem)({ name: "Desk", property: "Maple Street house" });
+    const desk = (saved.record as { id: string }).id;
+    const moved = yield* calling(saveItem)({ id: desk, property: "Birch Lane house" });
+    const added = yield* calling(addNote)({
+      body: "The left drawer sticks.",
+      attach_to: { type: "item", id: desk },
+    });
+    const [note] = added.created as { id: string }[];
+
+    expect(yield* undoing(moved.change_id as string)).toEqual({
+      refused: `${leftBehind(moved.change_id as string)}
+The Item "Desk" (${desk}) would go back to where it was, and the Note "The left drawer sticks." (${note!.id}) on it would stay. The Change "${String(added.change_id)}" added the Note.`,
+    });
+    expect(yield* getting("item", desk)).toMatchObject({
+      property: "Birch Lane house",
+      notes: [{ id: note!.id }],
+    });
+    expect(yield* getting("note", note!.id)).toMatchObject({ property: "Birch Lane house" });
+    expect(yield* sql`SELECT count(*) AS changes FROM changes`).toEqual([{ changes: 5 }]);
+
+    // With the Note out, the Desk goes back to the Property it was at.
+    yield* undoing(added.change_id as string);
+    expect(yield* undoing(moved.change_id as string)).toMatchObject({
+      restored: [{ type: "item", id: desk, name: "Desk" }],
+    });
+    expect(yield* getting("item", desk)).toMatchObject({
+      property: "Maple Street house",
+      notes: [],
+    });
+  }).pipe(Effect.provide(TestDatabase)),
+);
+
+// Work moves the same way. The Note it was logged with moved with it, in the Change to undo,
+// so that one goes back with the Work and is not in the way. The one added since is.
+it.effect("an undo that would move Work away from a Note added to it since is refused", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* calling(saveProperty)({ name: "Maple Street house" });
+    yield* calling(saveProperty)({ name: "Birch Lane house" });
+    const logged = yield* calling(logWork)({
+      kind: "repair",
+      title: "Patched the fence",
+      property: "Maple Street house",
+      note: "Two boards were rotten.",
+    });
+    const fence = (logged.record as { id: string }).id;
+    const moved = yield* calling(logWork)({ id: fence, property: "Birch Lane house" });
+    expect(moved.updated).toMatchObject([{ type: "work" }, { type: "note" }]);
+    const added = yield* calling(addNote)({
+      body: "The gate latch still sticks.",
+      attach_to: { type: "work", id: fence },
+    });
+    const [later] = added.created as { id: string }[];
+
+    expect(yield* undoing(moved.change_id as string)).toEqual({
+      refused: `${leftBehind(moved.change_id as string)}
+The Work "Patched the fence" (${fence}) would go back to where it was, and the Note "The gate latch still sticks." (${later!.id}) on it would stay. The Change "${String(added.change_id)}" added the Note.`,
+    });
+    expect(yield* sql`SELECT body, property_id FROM notes ORDER BY id`).toEqual([
+      { body: "Two boards were rotten.", property_id: "id-0003" },
+      { body: "The gate latch still sticks.", property_id: "id-0003" },
+    ]);
+    expect(yield* getting("work", fence)).toMatchObject({ property: "Birch Lane house" });
+    expect(yield* sql`SELECT count(*) AS changes FROM changes`).toEqual([{ changes: 5 }]);
+
+    // With the later Note out, the Work goes back, and the Note it was logged with goes too.
+    yield* undoing(added.change_id as string);
+    expect(yield* undoing(moved.change_id as string)).toMatchObject({
+      restored: [{ type: "note" }, { type: "work", id: fence }],
+    });
+    expect(yield* getting("work", fence)).toMatchObject({
+      property: "Maple Street house",
+      notes: [{ body: "Two boards were rotten." }],
+    });
+    expect(yield* sql`SELECT body, property_id FROM notes`).toEqual([
+      { body: "Two boards were rotten.", property_id: "id-0001" },
+    ]);
+  }).pipe(Effect.provide(TestDatabase)),
+);
+
+const STRANDED =
+  "Nothing was undone, because a record would come back apart from the one it is on, which is elsewhere now. Undo the Change that moved that one first, or move it back:";
+
+// The same rule from the other side. The Note is a record of the Change, and its Item is not:
+// the Note was taken out by an undo, and the Desk moved while it was out. Undoing that undo
+// would put the Note back at the Property it was at, which the Desk has left.
+it.effect("an undo that would put a Note back where its Item no longer is is refused", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* calling(saveProperty)({ name: "Maple Street house" });
+    yield* calling(saveProperty)({ name: "Birch Lane house" });
+    const saved = yield* calling(saveItem)({ name: "Desk", property: "Maple Street house" });
+    const desk = (saved.record as { id: string }).id;
+    const added = yield* calling(addNote)({
+      body: "The left drawer sticks.",
+      attach_to: { type: "item", id: desk },
+    });
+    const [note] = added.created as { id: string }[];
+    const takenOut = yield* undoing(added.change_id as string);
+    // The Note is out, so the save that moves the Desk has no Note to move with it.
+    const moved = yield* calling(saveItem)({ id: desk, property: "Birch Lane house" });
+    expect(moved.updated).toEqual([{ type: "item", id: desk, name: "Desk" }]);
+
+    expect(yield* undoing(takenOut.change_id as string)).toEqual({
+      refused: `${STRANDED}
+The Note "The left drawer sticks." (${note!.id}) would come back on the Item "Desk" (${desk}), which is elsewhere now. The Change "${String(moved.change_id)}" moved the Item.`,
+    });
+    expect(yield* sql`SELECT count(*) AS notes FROM notes`).toEqual([{ notes: 0 }]);
+    expect(yield* sql`SELECT count(*) AS changes FROM changes`).toEqual([{ changes: 6 }]);
+
+    // With the Desk back, the Note comes back at the Property the Desk is at.
+    yield* undoing(moved.change_id as string);
+    expect(yield* undoing(takenOut.change_id as string)).toMatchObject({
+      put_back: [{ type: "note", id: note!.id }],
+    });
+    expect(yield* getting("note", note!.id)).toMatchObject({ property: "Maple Street house" });
+    expect(yield* getting("item", desk)).toMatchObject({
+      property: "Maple Street house",
+      notes: [{ id: note!.id }],
+    });
+  }).pipe(Effect.provide(TestDatabase)),
+);
+
+// The way the first refusal gives is to take the later Note out and then undo the move. The
+// Note cannot then come back by undoing the undo that took it out: it would come back at the
+// Property the Desk has left again.
+it.effect("a Note taken out to clear the way cannot come back where its Item no longer is", () =>
+  Effect.gen(function* () {
+    yield* calling(saveProperty)({ name: "Maple Street house" });
+    yield* calling(saveProperty)({ name: "Birch Lane house" });
+    const saved = yield* calling(saveItem)({ name: "Desk", property: "Maple Street house" });
+    const desk = (saved.record as { id: string }).id;
+    const moved = yield* calling(saveItem)({ id: desk, property: "Birch Lane house" });
+    const added = yield* calling(addNote)({
+      body: "The left drawer sticks.",
+      attach_to: { type: "item", id: desk },
+    });
+    const [note] = added.created as { id: string }[];
+    const takenOut = yield* undoing(added.change_id as string);
+    const movedBack = yield* undoing(moved.change_id as string);
+    expect(movedBack).toMatchObject({ restored: [{ type: "item", id: desk }] });
+
+    // The Desk was moved back by an undo, and that undo is the Change the error names.
+    expect(yield* undoing(takenOut.change_id as string)).toEqual({
+      refused: `${STRANDED}
+The Note "The left drawer sticks." (${note!.id}) would come back on the Item "Desk" (${desk}), which is elsewhere now. The Change "${String(movedBack.change_id)}" moved the Item.`,
+    });
+    expect(yield* getting("item", desk)).toMatchObject({
+      property: "Maple Street house",
+      notes: [],
+    });
+
+    // With that undone the Desk is at the Birch Lane house again, and so is the Note.
+    yield* undoing(movedBack.change_id as string);
+    yield* undoing(takenOut.change_id as string);
+    expect(yield* getting("item", desk)).toMatchObject({
+      property: "Birch Lane house",
+      notes: [{ id: note!.id }],
+    });
+    expect(yield* getting("note", note!.id)).toMatchObject({ property: "Birch Lane house" });
+  }).pipe(Effect.provide(TestDatabase)),
+);
