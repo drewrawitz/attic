@@ -26,7 +26,7 @@ An undo is refused, and nothing is written, when it would lose something, or lea
 - A record it would bring back had a name that another record has now, where no two can share one: a Property, a Vendor, or a Space at its Property. The error names both. Rename the other record first, or undo the Change that made it.
 - A Category it would bring back would be under one that is under it, however far down, which is a loop: its parent was cleared, that parent was put under it, and the clearing is being undone. The error names every Category in the loop. Take one of the others out from under its parent first, with save_category, or undo the Change that put it there.
 - A record it would move back to another Property has had a Note added to it since. A save that moves a record moves its Notes, and an undo would leave this one where it is. The error names the Note and the Change that added it. Undo that Change first, and then this one.
-- A Note it would bring back is on a record that has moved to another Property since, so the Note would come back at the Property the record left. The error names both, and the Change that moved the record. Move the record back first, or undo that Change.
+- A Note it would bring back is on a record that has moved to another Property since, so the Note would come back at the Property the record left. The error names both, and the Change that moved the record. Undo that Change first, or move the record back.
 
 An undo is a Change too, so it can be undone, and then the records are as the first Change left them. Changes are kept forever, and undoing one does not remove it.
 
@@ -415,7 +415,7 @@ const NAMES_HELD: ReadonlyArray<Read & { readonly type: RecordType }> = EACH_TYP
 
 // One record on the way up from a record the undo brings back, in a walk that comes round to
 // where it began. `began` is the id of the record the walk began at, and `far` is how many
-// records up from it this one is. The last record of a walk is the one it began at.
+// records up from it this one is. A walk ends at the record it began at.
 interface Looped extends Listed {
   readonly began: string;
   readonly far: number;
@@ -446,19 +446,20 @@ const LOOPS: ReadonlyArray<Read & { readonly type: RecordType }> = EACH_TYPE.fla
                 FROM ${table} AS record
                WHERE record.id NOT IN ${ids(type, ANY_OUTCOME)}
             ),
-            walk (began, at, far) AS (
+            walk (began, reached, far) AS (
               SELECT tree.id, tree.above, 1
                 FROM tree
                WHERE tree.id IN ${ids(type, BROUGHT_BACK)} AND tree.above IS NOT NULL
               UNION ALL
               SELECT walk.began, tree.above, walk.far + 1
-                FROM walk JOIN tree ON tree.id = walk.at
-               WHERE walk.at <> walk.began AND tree.above IS NOT NULL
+                FROM walk JOIN tree ON tree.id = walk.reached
+               WHERE walk.reached <> walk.began AND tree.above IS NOT NULL
                  AND walk.far < (SELECT count(*) FROM tree)
             )
           SELECT '${type}' AS type, tree.id, tree.name, walk.began, walk.far
-            FROM walk JOIN tree ON tree.id = walk.at
-           WHERE walk.began IN (SELECT round.began FROM walk AS round WHERE round.at = round.began)
+            FROM walk JOIN tree ON tree.id = walk.reached
+           WHERE walk.began IN
+                 (SELECT closed.began FROM walk AS closed WHERE closed.reached = closed.began)
            ORDER BY walk.began, walk.far`),
       })),
 );
@@ -471,80 +472,91 @@ interface LeftBehind extends Listed {
   readonly added_by: string | null;
 }
 
-// A record that is attached to another can follow it in a column: a Note is at the Property
-// of the record it is on. A save that moves the record moves the Note in the same Change, so
-// undoing the save moves both back. A Note added since is in no snapshot of the Change, and
-// the undo would move the record and leave the Note. These are the ones attached to a record
-// of a type that the undo restores with another value in that column. Ids sort by when they
-// were made, so the greatest is the latest Change that added the record.
-const LEFT_BEHIND: ReadonlyArray<Read & { readonly type: RecordType }> = EACH_TYPE.flatMap(
+// A record the undo brings back, attached to one that is not a record of the Change and is
+// elsewhere now, with that one. `target_moved_by` is the id of the Change that moved that
+// one, when one did.
+interface Stranded extends Listed {
+  readonly target_type: RecordType;
+  readonly target: string;
+  readonly target_name: string;
+  readonly target_moved_by: string | null;
+}
+
+// One type of record that another can be attached to and follow in a column: a Note is at
+// the Property of the Item it is on. A save that moves the Item moves the Note in the same
+// Change, and nothing in the database holds the two together. An undo must not part them, so
+// each way comes with a read for each side of that.
+interface WayOfFollowing {
+  /** The type that is attached, and the type it is attached to. */
+  readonly type: RecordType;
+  readonly targetType: RecordType;
+  /**
+   * The records attached this way to one the undo restores with another value in the column.
+   * A record of the Change itself is not one of them: it moved in the Change, and goes back
+   * with the record it is on. One that was added since is in no snapshot, and would stay.
+   */
+  readonly leftBehind: Read;
+  /**
+   * The records the undo brings back that were attached this way to one which is not a
+   * record of the Change, and has another value in the column now than they come back with.
+   */
+  readonly stranded: Read;
+}
+
+// Ids sort by when they were made, so the greatest is the latest Change that added a record,
+// or that gave one another value in the column.
+const WAYS_OF_FOLLOWING: ReadonlyArray<WayOfFollowing> = EACH_TYPE.flatMap(
   ([type, { table, namedBy, attachedBy }]) => {
     const follows = attachedBy?.follows;
     if (attachedBy === undefined || follows === undefined) return [];
     const { typeColumn, idColumn, of } = attachedBy;
+    // A type with no such column has nothing to follow.
     return EACH_TYPE.filter(
       ([targetType, { columns }]) => of.includes(targetType) && columns.includes(follows),
-    ).map(([targetType, target]) => ({
-      type: targetType,
-      fields: ["type", "id", "name", "target_type", "target", "added_by"],
-      text: compact(`
+    ).map(([targetType, { table: targetTable, namedBy: targetNamedBy }]) => {
+      const leftBehind = `
         SELECT '${type}' AS type, record.id, record.${namedBy} AS name,
                '${targetType}' AS target_type, touched.entity_id AS target,
                (SELECT max(added.change_id) FROM change_records AS added
                  WHERE added.entity_type = '${type}' AND added.entity_id = record.id
                    AND added.before IS NULL) AS added_by
           FROM change_records AS touched
-          JOIN ${target.table} AS now ON now.id = touched.entity_id
+          JOIN ${targetTable} AS now ON now.id = touched.entity_id
           JOIN ${table} AS record
             ON record.${typeColumn} = '${targetType}' AND record.${idColumn} = touched.entity_id
          WHERE ${matching(targetType, ["restored"])}
            AND ${before(follows)} IS NOT now.${follows}
            AND record.id NOT IN ${ids(type, ANY_OUTCOME)}
-         ORDER BY touched.entity_id, record.id`),
-    }));
-  },
-);
-
-// A record the undo brings back that is attached to one which has moved since, with that one.
-// `moved_by` is the id of the Change that moved it, when one did.
-interface MovedSince extends Listed {
-  readonly target_type: RecordType;
-  readonly target: string;
-  readonly target_name: string;
-  readonly moved_by: string | null;
-}
-
-// The same rule from the other side. A Note that the undo brings back comes back at the
-// Property it was at. The record it is on is as it is now when it is not a record of the
-// Change, and it may have moved while the Note was out. These are those Notes, each with the
-// record it is on, and the latest Change that gave that record another value in the column.
-const MOVED_SINCE: ReadonlyArray<Read & { readonly type: RecordType }> = EACH_TYPE.flatMap(
-  ([type, { namedBy, attachedBy }]) => {
-    const follows = attachedBy?.follows;
-    if (attachedBy === undefined || follows === undefined) return [];
-    const { typeColumn, idColumn, of } = attachedBy;
-    return EACH_TYPE.filter(
-      ([targetType, { columns }]) => of.includes(targetType) && columns.includes(follows),
-    ).map(([targetType, target]) => ({
-      type,
-      fields: ["type", "id", "name", "target_type", "target", "target_name", "moved_by"],
-      text: compact(`
+         ORDER BY touched.entity_id, record.id`;
+      const stranded = `
         SELECT '${type}' AS type, touched.entity_id AS id, ${before(namedBy)} AS name,
                '${targetType}' AS target_type, now.id AS target,
-               now.${target.namedBy} AS target_name,
+               now.${targetNamedBy} AS target_name,
                (SELECT max(mover.change_id) FROM change_records AS mover
                  WHERE mover.entity_type = '${targetType}' AND mover.entity_id = now.id
                    AND mover.before IS NOT NULL AND mover.after IS NOT NULL
                    AND json_extract(mover.before, '$.${follows}')
-                       IS NOT json_extract(mover.after, '$.${follows}')) AS moved_by
+                       IS NOT json_extract(mover.after, '$.${follows}')) AS target_moved_by
           FROM change_records AS touched
-          JOIN ${target.table} AS now ON now.id = ${before(idColumn)}
+          JOIN ${targetTable} AS now ON now.id = ${before(idColumn)}
          WHERE ${matching(type, BROUGHT_BACK)}
            AND ${before(typeColumn)} = '${targetType}'
            AND ${before(follows)} IS NOT now.${follows}
            AND now.id NOT IN ${ids(targetType, ANY_OUTCOME)}
-         ORDER BY touched.entity_id`),
-    }));
+         ORDER BY touched.entity_id`;
+      return {
+        type,
+        targetType,
+        leftBehind: {
+          text: compact(leftBehind),
+          fields: ["type", "id", "name", "target_type", "target", "added_by"],
+        },
+        stranded: {
+          text: compact(stranded),
+          fields: ["type", "id", "name", "target_type", "target", "target_name", "target_moved_by"],
+        },
+      };
+    });
   },
 );
 
@@ -571,65 +583,66 @@ const someOf = (pointing: ReadonlyArray<Listed>) => {
 const together = (reads: ReadonlyArray<Read>) =>
   `SELECT ${reads.map(({ fields, text }, at) => `${list(fields, text)} AS read_${at}`).join(", ")}`;
 
-// That statement is at its longest with every read there is in it. It is built here, once, so
-// that a type too many stops the module from loading, and not the undo of a Change that
-// touched everything.
-compact(
-  together([
-    ...WAYS_OF_POINTING.flatMap(({ inUse, missing }) => [inUse, missing]),
-    ...NAMES_HELD,
-    ...LOOPS,
-    ...LEFT_BEHIND,
-    ...MOVED_SINCE,
-  ]),
-);
+// The kinds of read there are. Each has rows of its own, and a refusal of its own.
+type Kind = "inUse" | "missing" | "held" | "looped" | "leftBehind" | "stranded";
+
+// A read with its kind, and the records of the Change it is about: it can find something
+// only when the undo does one of these things to a record of this type.
+interface ReadAbout extends Read {
+  readonly kind: Kind;
+  readonly type: RecordType;
+  readonly outcomes: ReadonlyArray<Outcome>;
+}
+
+// Every read an undo can make before it writes.
+const EVERY_READ: ReadonlyArray<ReadAbout> = [
+  ...WAYS_OF_POINTING.map(({ targetType, inUse }): ReadAbout => ({
+    ...inUse,
+    kind: "inUse",
+    type: targetType,
+    outcomes: ["taken_out"],
+  })),
+  ...WAYS_OF_POINTING.map(({ type, missing }): ReadAbout => ({
+    ...missing,
+    kind: "missing",
+    type,
+    outcomes: BROUGHT_BACK,
+  })),
+  ...NAMES_HELD.map((read): ReadAbout => ({ ...read, kind: "held", outcomes: BROUGHT_BACK })),
+  ...LOOPS.map((read): ReadAbout => ({ ...read, kind: "looped", outcomes: BROUGHT_BACK })),
+  ...WAYS_OF_FOLLOWING.map(({ targetType, leftBehind }): ReadAbout => ({
+    ...leftBehind,
+    kind: "leftBehind",
+    type: targetType,
+    outcomes: ["restored"],
+  })),
+  ...WAYS_OF_FOLLOWING.map(({ type, stranded }): ReadAbout => ({
+    ...stranded,
+    kind: "stranded",
+    type,
+    outcomes: BROUGHT_BACK,
+  })),
+];
+
+// The statement is at its longest with every read in it. It is built here, once, so that a
+// type too many stops the module from loading, and not the undo of a Change that touched
+// everything.
+compact(together(EVERY_READ));
 
 /**
  * What blocks an undo that no later Change accounts for, read in one statement before anything
- * is written. There are six kinds of read: the records that point at one the undo takes out,
- * the records it brings back that pointed at one that is not there, the records it brings
- * back under a name another has now, the records it brings back under one that would then be
- * under them, the records attached to one it would move, and the records it brings back
- * that are attached to one which has moved. Only the reads that can matter to this Change
- * are made.
+ * is written. Only the reads that can matter to this Change are made.
  */
 const whatBlocks = Effect.fnUntraced(function* (toUndo: string, touched: ReadonlyArray<Touched>) {
-  const any = (type: RecordType, outcomes: ReadonlyArray<Outcome>) =>
-    pick(touched, type, outcomes).length > 0;
-  const reads = [
-    ...WAYS_OF_POINTING.filter(({ targetType }) => any(targetType, ["taken_out"])).map((way) => ({
-      kind: "inUse" as const,
-      ...way.inUse,
-    })),
-    ...WAYS_OF_POINTING.filter(({ type }) => any(type, BROUGHT_BACK)).map((way) => ({
-      kind: "missing" as const,
-      ...way.missing,
-    })),
-    ...NAMES_HELD.filter(({ type }) => any(type, BROUGHT_BACK)).map((read) => ({
-      kind: "held" as const,
-      ...read,
-    })),
-    ...LOOPS.filter(({ type }) => any(type, BROUGHT_BACK)).map((read) => ({
-      kind: "looped" as const,
-      ...read,
-    })),
-    ...LEFT_BEHIND.filter(({ type }) => any(type, ["restored"])).map((read) => ({
-      kind: "leftBehind" as const,
-      ...read,
-    })),
-    ...MOVED_SINCE.filter(({ type }) => any(type, BROUGHT_BACK)).map((read) => ({
-      kind: "movedSince" as const,
-      ...read,
-    })),
-  ];
-  if (reads.length === 0) {
-    return { inUse: [], missing: [], held: [], looped: [], leftBehind: [], movedSince: [] };
-  }
-
+  const reads = EVERY_READ.filter(({ type, outcomes }) => pick(touched, type, outcomes).length > 0);
   const sql = yield* SqlClient.SqlClient;
-  const [row = {}] = yield* sql.unsafe<Readonly<Record<string, string>>>(together(reads), [toUndo]);
+  // With no read to make there is no statement to send.
+  const [row = {}] =
+    reads.length === 0
+      ? []
+      : yield* sql.unsafe<Readonly<Record<string, string>>>(together(reads), [toUndo]);
   // What every read of one kind found.
-  const found = <Row extends Listed>(kind: (typeof reads)[number]["kind"]) =>
+  const found = <Row extends Listed>(kind: Kind) =>
     reads.flatMap((read, at) =>
       read.kind === kind ? (JSON.parse(row[`read_${at}`] ?? "[]") as Row[]).map(listed) : [],
     );
@@ -639,7 +652,7 @@ const whatBlocks = Effect.fnUntraced(function* (toUndo: string, touched: Readonl
     held: found<NameHeld>("held"),
     looped: found<Looped>("looped"),
     leftBehind: found<LeftBehind>("leftBehind"),
-    movedSince: found<MovedSince>("movedSince"),
+    stranded: found<Stranded>("stranded"),
   };
 });
 
@@ -713,26 +726,27 @@ const refuseLoops = (touched: ReadonlyArray<Touched>, looped: ReadonlyArray<Loop
   const broughtBack = new Set(
     touched.filter(({ outcome }) => BROUGHT_BACK.includes(outcome)).map(key),
   );
+  // What a record is to the one above it: one the undo brings back as it was before, and
+  // any other as it is now.
+  const under = (record: Listed) =>
+    broughtBack.has(key(record)) ? "would be back under" : "is under";
   // A loop is walked from each record in it that the undo brings back, and said once.
   const said = new Set<string>();
   const walks = Map.groupBy(looped, ({ type, began }) => key({ type, id: began }));
   return refuseFor(
     [...walks.values()].flatMap((walk) => {
-      // A walk comes round to the record it began at, so its last record is its first.
+      // A walk ends at the record it began at.
       const last = walk.at(-1);
       if (last === undefined || said.has(key(last))) return [];
       for (const each of walk) said.add(key(each));
-      // The way round, a record and then the one it would be under: one the undo brings
-      // back as it was before, and any other as it is now.
-      const round = [last, ...walk];
-      const links = walk.map((above, at) => {
-        const below = round[at]!;
-        const under = broughtBack.has(key(below)) ? "would be back under" : "is under";
-        return `${at === 0 ? `The ${named(below)}` : ", which"} ${under} the ${named(above)}`;
-      });
-      return [`${links.join("")}.`];
+      const round = [
+        `${named(last)} ${under(last)}`,
+        ...walk.slice(0, -1).map((each) => `${named(each)}, which ${under(each)}`),
+        named(last),
+      ];
+      return [`The ${round.join(" the ")}.`];
     }),
-    "a record would be back under one that is under it already, and that would make a loop. One of the others in the loop has to come out from under its parent first, by a save of it or by undoing the Change that put it there:",
+    "a record would be back under one that is under it already, which is a loop. One of the others in the loop has to come out from under its parent first, by a save of it or by undoing the Change that put it there:",
   );
 };
 
@@ -758,18 +772,20 @@ const refuseLeftBehind = (
     `undoing the Change "${toUndo}" would move a record, and what was added to it since would stay behind. Undo the Change that added that first, and then this one:`,
   );
 
-// Refuses an undo that would bring a record back where the one it is attached to no longer
-// is. Nothing in the database would turn it away.
-const refuseMovedSince = (movedSince: ReadonlyArray<MovedSince>) =>
+// Refuses an undo that would bring a record back apart from the one it is attached to, which
+// is elsewhere now. Nothing in the database would turn it away.
+const refuseStranded = (stranded: ReadonlyArray<Stranded>) =>
   refuseFor(
-    movedSince.map((attached) => {
-      const { target_type, target, target_name, moved_by } = attached;
-      const on = named({ type: target_type, id: target, name: target_name });
+    stranded.map((attached) => {
+      const { target_type, target, target_name, target_moved_by } = attached;
+      const attachedTo = named({ type: target_type, id: target, name: target_name });
       const movedBy =
-        moved_by === null ? "" : ` The Change "${moved_by}" moved the ${term(target_type)}.`;
-      return `The ${named(attached)} would come back on the ${on}, which has moved since.${movedBy}`;
+        target_moved_by === null
+          ? ""
+          : ` The Change "${target_moved_by}" moved the ${term(target_type)}.`;
+      return `The ${named(attached)} would come back on the ${attachedTo}, which is elsewhere now.${movedBy}`;
     }),
-    "a record would come back where the one it is on no longer is. Move that one back first, or undo the Change that moved it:",
+    "a record would come back apart from the one it is on, which is elsewhere now. Undo the Change that moved that one first, or move it back:",
   );
 
 /**
@@ -819,7 +835,7 @@ export const undo = defineTool({
       yield* refuseNameHeld(toUndo, blocks.held);
       yield* refuseLoops(touched, blocks.looped);
       yield* refuseLeftBehind(toUndo, touched, blocks.leftBehind);
-      yield* refuseMovedSince(blocks.movedSince);
+      yield* refuseStranded(blocks.stranded);
 
       // A statement is about several records, and is handed over with each of them. One that
       // is about none of this Change's records is left out.

@@ -1003,7 +1003,7 @@ The Vendor "Acme Supply" (id-0001) would be called that again, and the Vendor "A
 );
 
 const LOOP =
-  "Nothing was undone, because a record would be back under one that is under it already, and that would make a loop. One of the others in the loop has to come out from under its parent first, by a save of it or by undoing the Change that put it there:";
+  "Nothing was undone, because a record would be back under one that is under it already, which is a loop. One of the others in the loop has to come out from under its parent first, by a save of it or by undoing the Change that put it there:";
 
 // A save refuses a parent that would make a loop. An undo gives a Category its parent back
 // with no save, and the Change that put the parent under it touched another record, so no
@@ -1253,6 +1253,9 @@ The Work "Patched the fence" (${fence}) would go back to where it was, and the N
   }).pipe(Effect.provide(TestDatabase)),
 );
 
+const STRANDED =
+  "Nothing was undone, because a record would come back apart from the one it is on, which is elsewhere now. Undo the Change that moved that one first, or move it back:";
+
 // The same rule from the other side. The Note is a record of the Change, and its Item is not:
 // the Note was taken out by an undo, and the Desk moved while it was out. Undoing that undo
 // would put the Note back at the Property it was at, which the Desk has left.
@@ -1274,8 +1277,8 @@ it.effect("an undo that would put a Note back where its Item no longer is is ref
     expect(moved.updated).toEqual([{ type: "item", id: desk, name: "Desk" }]);
 
     expect(yield* undoing(takenOut.change_id as string)).toEqual({
-      refused: `Nothing was undone, because a record would come back where the one it is on no longer is. Move that one back first, or undo the Change that moved it:
-The Note "The left drawer sticks." (${note!.id}) would come back on the Item "Desk" (${desk}), which has moved since. The Change "${String(moved.change_id)}" moved the Item.`,
+      refused: `${STRANDED}
+The Note "The left drawer sticks." (${note!.id}) would come back on the Item "Desk" (${desk}), which is elsewhere now. The Change "${String(moved.change_id)}" moved the Item.`,
     });
     expect(yield* sql`SELECT count(*) AS notes FROM notes`).toEqual([{ notes: 0 }]);
     expect(yield* sql`SELECT count(*) AS changes FROM changes`).toEqual([{ changes: 6 }]);
@@ -1290,5 +1293,45 @@ The Note "The left drawer sticks." (${note!.id}) would come back on the Item "De
       property: "Maple Street house",
       notes: [{ id: note!.id }],
     });
+  }).pipe(Effect.provide(TestDatabase)),
+);
+
+// The way the first refusal gives is to take the later Note out and then undo the move. The
+// Note cannot then come back by undoing the undo that took it out: it would come back at the
+// Property the Desk has left again.
+it.effect("a Note taken out to clear the way cannot come back where its Item no longer is", () =>
+  Effect.gen(function* () {
+    yield* calling(saveProperty)({ name: "Maple Street house" });
+    yield* calling(saveProperty)({ name: "Birch Lane house" });
+    const saved = yield* calling(saveItem)({ name: "Desk", property: "Maple Street house" });
+    const desk = (saved.record as { id: string }).id;
+    const moved = yield* calling(saveItem)({ id: desk, property: "Birch Lane house" });
+    const added = yield* calling(addNote)({
+      body: "The left drawer sticks.",
+      attach_to: { type: "item", id: desk },
+    });
+    const [note] = added.created as { id: string }[];
+    const takenOut = yield* undoing(added.change_id as string);
+    const movedBack = yield* undoing(moved.change_id as string);
+    expect(movedBack).toMatchObject({ restored: [{ type: "item", id: desk }] });
+
+    // The Desk was moved back by an undo, and that undo is the Change the error names.
+    expect(yield* undoing(takenOut.change_id as string)).toEqual({
+      refused: `${STRANDED}
+The Note "The left drawer sticks." (${note!.id}) would come back on the Item "Desk" (${desk}), which is elsewhere now. The Change "${String(movedBack.change_id)}" moved the Item.`,
+    });
+    expect(yield* getting("item", desk)).toMatchObject({
+      property: "Maple Street house",
+      notes: [],
+    });
+
+    // With that undone the Desk is at the Birch Lane house again, and so is the Note.
+    yield* undoing(movedBack.change_id as string);
+    yield* undoing(takenOut.change_id as string);
+    expect(yield* getting("item", desk)).toMatchObject({
+      property: "Birch Lane house",
+      notes: [{ id: note!.id }],
+    });
+    expect(yield* getting("note", note!.id)).toMatchObject({ property: "Birch Lane house" });
   }).pipe(Effect.provide(TestDatabase)),
 );
