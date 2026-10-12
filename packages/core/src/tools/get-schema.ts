@@ -73,8 +73,11 @@ const DATA_KEYS = {
   property: {
     lease_until:
       "When the lease runs out. May be a Partial date. It is not the Property's end date.",
+    sqft: "The size of the whole Property in square feet. A Space's `sqft` is that Space's own size.",
     paint:
-      "Paint for the whole Property, in the same shape as a Space's. A Space's own entry wins, surface by surface.",
+      "Paint that is the same in every Space, such as the trim, in the same shape as a Space's. A Space shows it as `from_property`. A Space's own entry wins, surface by surface.",
+    flooring:
+      "The floor that is the same in every Space, in the same shape as a Space's. A Space with no flooring of its own shows it as `from_property`.",
   },
   work: {
     permit: "The permit number.",
@@ -91,6 +94,16 @@ const DATA_KEYS = {
       "The `data` keys an Item in the Category should have, as a list of names. An Item is expected to have the keys of every Category it sits under, parents included.",
   },
 };
+
+/**
+ * The keys of a Property's `data` that are marked as holding a fact that is the same in every
+ * Space. A Space shows what its Property has under these, and under no other key (ADR 0015).
+ * `get_record` reads this list and `get_schema` publishes it, so there is one list. A key is
+ * marked only once it is one of the Property's well-known keys above.
+ */
+export const FROM_PROPERTY_KEYS = ["paint", "flooring"] as const satisfies ReadonlyArray<
+  keyof typeof DATA_KEYS.property
+>;
 
 // A row of sqlite_master: a table or view, and the statement that created it.
 interface Definition {
@@ -145,7 +158,7 @@ const categoryTree = (rows: ReadonlyArray<CategoryRow>): ReadonlyArray<Category>
 export const getSchema = defineTool({
   name: "get_schema",
   description:
-    "Returns how Attic stores its records: the definition of every table and view, the conventions the data follows, the Category tree with the `data` keys each Category expects, the well-known `data` keys for each kind of record, and a warning about comparing Partial dates. An Item is expected to have the keys of every Category it sits under, parents included. Call it before writing SQL or saving records. It takes no input.",
+    "Returns how Attic stores its records: the definition of every table and view, the conventions the data follows, the Category tree with the `data` keys each Category expects, the well-known `data` keys for each kind of record, the keys of a Property's `data` that a Space shows as `from_property`, and a warning about comparing Partial dates. An Item is expected to have the keys of every Category it sits under, parents included. Call it before writing SQL or saving records. It takes no input.",
   input: NoInput,
   annotations: { readOnlyHint: true },
   run: () =>
@@ -173,6 +186,7 @@ export const getSchema = defineTool({
         views: defined("view"),
         categories: categoryTree(categories),
         data_keys: DATA_KEYS,
+        from_property_keys: FROM_PROPERTY_KEYS,
       };
     }),
 });
