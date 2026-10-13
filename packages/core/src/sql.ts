@@ -19,10 +19,20 @@ export const jsonList = (entry: string, select: string) =>
 
 /**
  * The rows of a SELECT as one JSON list of objects. Each has these fields, read from the column
- * of that name.
+ * of that name. A field named in `holdingJson` holds JSON text, and goes in as the JSON it is:
+ * a JSON value that passes through a subquery comes out as plain text.
  */
-export const jsonRows = (fields: ReadonlyArray<string>, select: string) =>
-  jsonList(jsonObject(fields.map((field) => [field, field])), select);
+export const jsonRows = (
+  fields: ReadonlyArray<string>,
+  select: string,
+  holdingJson: ReadonlyArray<string> = [],
+) =>
+  jsonList(
+    jsonObject(
+      fields.map((field) => [field, holdingJson.includes(field) ? `json(${field})` : field]),
+    ),
+    select,
+  );
 
 /**
  * The rows in a JSON list that `jsonRows` built, as a statement returned it. A column that is

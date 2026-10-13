@@ -1153,6 +1153,7 @@ it.effect(
         "seed-item-dumbbells",
         "seed-item-fridge",
         "seed-item-microwave",
+        "seed-item-router",
         "seed-item-watch",
         "seed-item-couch",
         "seed-item-desk",

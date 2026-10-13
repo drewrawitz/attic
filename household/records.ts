@@ -219,6 +219,17 @@ const RECORDS: ReadonlyArray<readonly [table: string, rows: ReadonlyArray<Row>]>
         price_cents: 34999,
         data: { brand: "Garmin", model: "Forerunner 255", serial: "SEED-WATCH-0001" },
       },
+      // What `gaps` finds through the Category tree: it is filed under Networking, and the serial
+      // it lacks is expected by Electronics, the Category above it. It is in no Space.
+      {
+        id: "seed-item-router",
+        property_id: MAPLE,
+        category_id: "networking",
+        name: "Office router",
+        acquired_on: "2024-08-15",
+        price_cents: 27900,
+        data: { brand: "eero", model: "Pro 6E" },
+      },
       {
         id: "seed-item-couch",
         property_id: MAPLE,

@@ -1,6 +1,6 @@
 import { Effect, Schema } from "effect";
 import { SqlClient } from "effect/sql";
-import { formatRow, storedJson } from "../output.ts";
+import { formatRow, isObject, storedObject, type JsonObject } from "../output.ts";
 import { propertyNamed } from "../property.ts";
 import { jsonList, jsonObject } from "../sql.ts";
 import { defineTool, noRecord } from "../tool.ts";
@@ -98,8 +98,11 @@ const items = (where: string) =>
       ORDER BY item.name COLLATE NOCASE, item.id`,
   );
 
-// A Gone Item keeps its row for the money trail. It is no longer in a Space or at a Property.
-const NOT_GONE = `item.status IN ('active', 'listed')`;
+/**
+ * The Items the User still has, in a statement that reads Items as `item`. A Gone Item keeps its
+ * row for the money trail. It is no longer in a Space or at a Property.
+ */
+export const NOT_GONE = `item.status IN ('active', 'listed')`;
 
 // Spaces as a list shows them, by name.
 const spaces = (where: string) =>
@@ -391,20 +394,17 @@ const RECORDS = Object.fromEntries(TYPES.map((type) => [type, STATEMENTS[type](t
   Record<Type, string>
 >;
 
-type JsonObject = Readonly<Record<string, unknown>>;
-
-const isObject = (value: unknown): value is JsonObject =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
-
-// What a Space shows of its Property's `data`: only the keys that are marked as the same in
-// every Space. Every other key stays on the Property, whose size is not the size of any Space
-// (ADR 0015). Under a marked key, a Space with no entry of its own shows all of the Property's.
-// Where both have an entry and both entries are objects, the Space shows the objects
-// inside the Property's that it has none of its own for. A list kept by slug is an object of
-// objects (ADR 0002), such as paint by surface, so a Space with wall paint of its own still shows
-// the Property's trim. Anything else inside an entry is the Space's own to say: its flooring is
-// never topped up from the Property's.
-const fromProperty = (own: JsonObject, propertyData: JsonObject): JsonObject =>
+/**
+ * What a Space shows of its Property's `data`: only the keys that are marked as the same in
+ * every Space. Every other key stays on the Property, whose size is not the size of any Space
+ * (ADR 0015). Under a marked key, a Space with no entry of its own shows all of the Property's.
+ * Where both have an entry and both entries are objects, the Space shows the objects
+ * inside the Property's that it has none of its own for. A list kept by slug is an object of
+ * objects (ADR 0002), such as paint by surface, so a Space with wall paint of its own still shows
+ * the Property's trim. Anything else inside an entry is the Space's own to say: its flooring is
+ * never topped up from the Property's.
+ */
+export const fromProperty = (own: JsonObject, propertyData: JsonObject): JsonObject =>
   Object.fromEntries(
     FROM_PROPERTY_KEYS.flatMap((key): [string, unknown][] => {
       if (!Object.hasOwn(propertyData, key)) return [];
@@ -425,12 +425,6 @@ interface SpaceRow {
   readonly data: string;
   readonly from_property: string;
 }
-
-// A `data` column as it is stored. The schema checks that each one holds an object.
-const storedObject = (text: string): JsonObject => {
-  const value = storedJson(text);
-  return isObject(value) ? value : {};
-};
 
 // A Space's row, with what the Space shows of its Property's `data` in place of the whole of it.
 // That is worked out from both as they are stored. `formatRow` shows a key ending in `_cents`

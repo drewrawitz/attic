@@ -958,6 +958,7 @@ it.effect("moving day: a list update moves every Belonging and leaves the Fixtur
     const names = [
       "Adjustable dumbbells",
       "Microwave",
+      "Office router",
       "Running watch",
       "Sectional couch",
       "Standing desk",
