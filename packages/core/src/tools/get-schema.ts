@@ -47,9 +47,11 @@ and a household's data is small enough that LIKE over text + data is instant.`;
 const PARTIAL_DATES =
   "Comparing dates as plain text misses Partial dates. A Partial date stands for the whole period it names, but `date >= '2023-03'` skips a row dated '2023'. To catch it, add `OR date = '2023'`.";
 
-// The well-known `data` keys for each kind of record, with what each one holds. `data` takes
-// any key. Reaching for these first is what keeps one fact from ending up under three names.
-const DATA_KEYS = {
+/**
+ * The well-known `data` keys for each kind of record, with what each one holds. `data` takes
+ * any key. Reaching for these first is what keeps one fact from ending up under three names.
+ */
+export const DATA_KEYS = {
   item: {
     brand: "Who makes it.",
     model: "The exact model, as the maker writes it.",

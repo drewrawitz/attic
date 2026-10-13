@@ -1,6 +1,7 @@
 import type { Tool } from "./tool.ts";
 import { addNote } from "./tools/add-note.ts";
 import { deleteRecord } from "./tools/delete-record.ts";
+import { gaps } from "./tools/gaps.ts";
 import { getRecord } from "./tools/get-record.ts";
 import { getSchema } from "./tools/get-schema.ts";
 import { logWork } from "./tools/log-work.ts";
@@ -25,6 +26,7 @@ export const tools: ReadonlyArray<Tool> = [
   query,
   search,
   getRecord,
+  gaps,
   saveProperty,
   saveSpace,
   saveVendor,

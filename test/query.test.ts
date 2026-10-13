@@ -300,7 +300,7 @@ test(
     expect(
       await query(`SELECT count(*) AS items, sum(price_cents) AS paid_cents FROM inventory`),
     ).toEqual({
-      rows: [{ items: 8, paid_cents: 815498 }],
+      rows: [{ items: 9, paid_cents: 843398 }],
     });
 
     const missing = await query(
@@ -309,6 +309,7 @@ test(
     expect(missing.rows!.map(({ name }) => name)).toEqual([
       "Adjustable dumbbells",
       "Microwave",
+      "Office router",
       "Running watch",
       "Sectional couch",
       "Standing desk",

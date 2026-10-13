@@ -33,6 +33,18 @@ export const storedJson = (text: string): unknown => {
   }
 };
 
+/** A JSON object, such as a record's `data`. */
+export type JsonObject = Readonly<Record<string, unknown>>;
+
+export const isObject = (value: unknown): value is JsonObject =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+/** A `data` column as it is stored. The schema checks that each one holds an object. */
+export const storedObject = (text: string): JsonObject => {
+  const value = storedJson(text);
+  return isObject(value) ? value : {};
+};
+
 const CENTS = "_cents";
 
 // Money is stored as integer cents and shown in dollars. This walks into objects and lists,
