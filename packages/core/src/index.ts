@@ -1,3 +1,4 @@
+import type { Prompt } from "./prompt.ts";
 import type { Tool } from "./tool.ts";
 import { addNote } from "./tools/add-note.ts";
 import { deleteRecord } from "./tools/delete-record.ts";
@@ -15,6 +16,7 @@ import { saveSpace } from "./tools/save-space.ts";
 import { saveVendor } from "./tools/save-vendor.ts";
 import { search } from "./tools/search.ts";
 import { undo } from "./tools/undo.ts";
+import { walkTheHouse, walkTheHousePrompt } from "./tools/walk-the-house.ts";
 
 export { Currency } from "./money.ts";
 export { callTool, type Tool, type ToolResult } from "./tool.ts";
@@ -27,6 +29,7 @@ export const tools: ReadonlyArray<Tool> = [
   search,
   getRecord,
   gaps,
+  walkTheHouse,
   saveProperty,
   saveSpace,
   saveVendor,
@@ -39,3 +42,6 @@ export const tools: ReadonlyArray<Tool> = [
   deleteRecord,
   undo,
 ];
+
+/** Every prompt Attic has. The server registers each one. */
+export const prompts: ReadonlyArray<Prompt> = [walkTheHousePrompt];

@@ -189,10 +189,17 @@ export interface ToolResult {
 // All the client hears of a failure nobody planned for. The rest goes to the log.
 const UNEXPECTED = "Attic hit an error it did not expect. The details are in the Worker's log.";
 
+// The text a client is sent for what a tool returned. That is JSON, unless the tool returned a
+// string. A string is there to be read and followed, so it goes out as written: as JSON it
+// would be in quotes, with each of its line breaks written as \n.
+const textOf = (returned: unknown) =>
+  typeof returned === "string" ? returned : JSON.stringify(returned);
+
 /**
  * Runs a tool and turns how it ended into what the client is sent. It is given what the tool
  * runs on. To that it adds the one write of this call, which records a Change under the
- * tool's name. A `ToolError` goes out as the tool wrote it.
+ * tool's name. What the tool returns goes out as JSON, or as written when it is a string. A
+ * `ToolError` goes out as the tool wrote it.
  * Anything else is logged, and the client is told only that there was a failure: a query or a
  * batch the database turned down, a tool that threw, a database that could not be opened.
  * Nothing gets past this as a thrown error, because the MCP SDK would send the client its
@@ -204,7 +211,7 @@ export const callTool = (
   services: Layer.Layer<ToolServices, unknown>,
 ): Effect.Effect<ToolResult> =>
   Effect.suspend(() => tool.run(input)).pipe(
-    Effect.map((result) => ({ text: JSON.stringify(result), isError: false })),
+    Effect.map((returned) => ({ text: textOf(returned), isError: false })),
     Effect.catchTag("ToolError", ({ message }) => Effect.succeed({ text: message, isError: true })),
     Effect.provide(Write.layer(tool.name).pipe(Layer.provideMerge(services))),
     Effect.catchCause((cause) =>

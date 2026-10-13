@@ -33,6 +33,26 @@ it.effect("what a tool returns goes to the client as JSON", () =>
   }).pipe(Effect.provide(TestDatabase)),
 );
 
+// A tool that returns a string: words for the client to follow.
+const returnsText = defineTool({
+  name: "returns_text",
+  description: "Returns what to ask the User.",
+  input: NoInput,
+  annotations: { readOnlyHint: true },
+  run: () => Effect.succeed('Ask about each Space.\nSay "saved" after each one.'),
+});
+
+// As JSON it would be in quotes, with each line break written as \n.
+it.effect("a string a tool returns goes to the client as written, and not as JSON", () =>
+  Effect.gen(function* () {
+    const result = yield* call(returnsText, {});
+    expect(result).toEqual({
+      text: 'Ask about each Space.\nSay "saved" after each one.',
+      isError: false,
+    });
+  }).pipe(Effect.provide(TestDatabase)),
+);
+
 it.effect("a failure the caller can act on goes to the client as the tool wrote it", () =>
   Effect.gen(function* () {
     const result = yield* call(categoryName, { id: "gardening" });
