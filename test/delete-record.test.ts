@@ -153,6 +153,7 @@ test(
       "Work at no Property that named only that Item is deleted with it",
       "the error lists what uses it",
       "delete the duplicate, with the one to keep as its `replacement`",
+      "Nothing the deleted record held itself is copied to the other",
       "A replacement for a Space or a Project is one at the same Property.",
       "A replacement for a Category is not one under it.",
       "An Item that would then have a Category twice keeps it once.",

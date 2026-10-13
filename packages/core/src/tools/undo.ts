@@ -6,6 +6,7 @@ import {
   named,
   nameInTable,
   nameOfRow,
+  pointingRows,
   recordKey,
   recordName,
   SHAPES,
@@ -14,10 +15,12 @@ import {
   type Listed,
   type LinkSet,
   type RecordShape,
+  type PointerSource,
   type RecordType,
+  type WayOfPointing,
   WAYS_OF_POINTING,
 } from "../records.ts";
-import { compact, jsonRows } from "../sql.ts";
+import { compact, jsonRows, rowsIn } from "../sql.ts";
 import { defineTool, ToolError, type ToolAnnotations } from "../tool.ts";
 import { stepsAbout, Write } from "../write.ts";
 
@@ -316,48 +319,56 @@ interface PointerReads {
   readonly missing: Read;
 }
 
-// One way of pointing, as the SQL to read it two times over: among the rows there are now,
-// each read as `record`, and among the Change's snapshots of its records as they were.
-interface WayInSql {
-  /** What a read of the rows selects FROM, and the id a row points at. */
-  readonly rowsFrom: string;
-  readonly rowTarget: string;
-  /** What a read of the snapshots selects FROM, and the id a snapshot pointed at. */
-  readonly snapshotsFrom: string;
-  readonly snapshotTarget: string;
-  /** What else has to hold of a row, and of a snapshot, when not every one points this way. */
-  readonly rowIf?: string;
-  readonly snapshotIf?: string;
-}
+// The Change's snapshots of its records as they were, which pointed one way: the other side
+// of `pointingRows`, which has the rows there are now.
+const pointingSnapshots = (way: WayOfPointing): PointerSource => {
+  const snapshots = "change_records AS touched";
+  switch (way.by) {
+    case "column":
+      return { from: snapshots, target: before(way.column) };
+    case "set":
+      return {
+        from: `${snapshots}, json_each(touched.before, '$.${way.set.name}') AS linked`,
+        target: "linked.value",
+      };
+    case "attachment": {
+      const { typeColumn, idColumn } = way.attachedBy;
+      return {
+        from: snapshots,
+        target: before(idColumn),
+        onlyIf: `${before(typeColumn)} = '${way.targetType}'`,
+      };
+    }
+  }
+};
 
-const pointerReads = (
-  type: RecordType,
-  shape: RecordShape,
-  targetType: RecordType,
-  inSql: WayInSql,
-): PointerReads => {
-  const { rowsFrom, rowTarget, snapshotsFrom, snapshotTarget } = inSql;
-  const { rowIf = "", snapshotIf = "" } = inSql;
+// What else has to hold, as the start of a WHERE that goes on.
+const andThen = (onlyIf: string | undefined) => (onlyIf === undefined ? "" : `${onlyIf} AND`);
+
+const pointerReads = (way: WayOfPointing): PointerReads => {
+  const { type, shape, targetType } = way;
+  const [rows, snapshots] = [pointingRows(way), pointingSnapshots(way)];
   const inUse = `
     SELECT '${type}' AS type, record.id, ${nameOfRow(shape, "record")} AS name,
-           '${targetType}' AS target_type, ${rowTarget} AS target, NULL AS removed_by
-      FROM ${rowsFrom}
-     WHERE ${rowIf} ${rowTarget} IN ${ids(targetType, ["taken_out"])}
+           '${targetType}' AS target_type, ${rows.target} AS target, NULL AS removed_by
+      FROM ${rows.from}
+     WHERE ${andThen(rows.onlyIf)} ${rows.target} IN ${ids(targetType, ["taken_out"])}
        AND record.id NOT IN ${ids(type, ANY_OUTCOME)}
      ORDER BY record.id`;
   // An empty pointer is no pointer, and `NOT IN` alone would let one through. Ids sort by
   // when they were made, so the greatest is the latest Change that took the record out.
   const missing = `
     SELECT '${type}' AS type, touched.entity_id AS id, ${nameFromBefore(shape)} AS name,
-           '${targetType}' AS target_type, ${snapshotTarget} AS target,
+           '${targetType}' AS target_type, ${snapshots.target} AS target,
            (SELECT max(removed.change_id) FROM change_records AS removed
              WHERE removed.entity_type = '${targetType}'
-               AND removed.entity_id = ${snapshotTarget}
+               AND removed.entity_id = ${snapshots.target}
                AND removed.after IS NULL) AS removed_by
-      FROM ${snapshotsFrom}
-     WHERE ${matching(type, BROUGHT_BACK)} AND ${snapshotIf} ${snapshotTarget} IS NOT NULL
-       AND ${snapshotTarget} NOT IN (SELECT id FROM ${SHAPES[targetType].table})
-       AND ${snapshotTarget} NOT IN ${ids(targetType, ["put_back"])}
+      FROM ${snapshots.from}
+     WHERE ${matching(type, BROUGHT_BACK)} AND ${andThen(snapshots.onlyIf)}
+           ${snapshots.target} IS NOT NULL
+       AND ${snapshots.target} NOT IN (SELECT id FROM ${SHAPES[targetType].table})
+       AND ${snapshots.target} NOT IN ${ids(targetType, ["put_back"])}
      ORDER BY touched.entity_id`;
   return {
     type,
@@ -367,49 +378,7 @@ const pointerReads = (
   };
 };
 
-// What a read of the rows of a type selects FROM, and what a read of the snapshots does.
-const rowsOf = ({ table }: RecordShape) => `${table} AS record`;
-const SNAPSHOTS = "change_records AS touched";
-
-const POINTER_READS: ReadonlyArray<PointerReads> = [
-  // By a column of its row, or by a link set, as `records.ts` lists the ways.
-  ...WAYS_OF_POINTING.map(({ type, shape, targetType, via }) =>
-    pointerReads(
-      type,
-      shape,
-      targetType,
-      typeof via === "string"
-        ? {
-            rowsFrom: rowsOf(shape),
-            rowTarget: `record.${via}`,
-            snapshotsFrom: SNAPSHOTS,
-            snapshotTarget: before(via),
-          }
-        : {
-            rowsFrom: `${rowsOf(shape)} JOIN ${via.table} AS link ON link.${via.from} = record.id`,
-            rowTarget: `link.${via.to}`,
-            snapshotsFrom: `${SNAPSHOTS}, json_each(touched.before, '$.${via.name}') AS linked`,
-            snapshotTarget: "linked.value",
-          },
-    ),
-  ),
-  // A record that is attached by type and id points at one of each type it can be on.
-  ...EACH_TYPE.flatMap(([type, shape]) => {
-    const { attachedBy } = shape;
-    return attachedBy === undefined
-      ? []
-      : attachedBy.of.map((targetType) =>
-          pointerReads(type, shape, targetType, {
-            rowsFrom: rowsOf(shape),
-            rowTarget: `record.${attachedBy.idColumn}`,
-            rowIf: `record.${attachedBy.typeColumn} = '${targetType}' AND`,
-            snapshotsFrom: SNAPSHOTS,
-            snapshotTarget: before(attachedBy.idColumn),
-            snapshotIf: `${before(attachedBy.typeColumn)} = '${targetType}' AND`,
-          }),
-        );
-  }),
-];
+const POINTER_READS: ReadonlyArray<PointerReads> = WAYS_OF_POINTING.map(pointerReads);
 
 // A record the undo brings back under a name that another record of its type has now, with
 // the record that has it. `same_change` is 1 when that one is a record of the Change too.
@@ -658,7 +627,7 @@ const whatBlocks = Effect.fnUntraced(function* (toUndo: string, touched: Readonl
   // What every read of one kind found.
   const found = <Row extends Listed>(kind: Kind) =>
     reads.flatMap((read, at) =>
-      read.kind === kind ? (JSON.parse(row[`read_${at}`] ?? "[]") as Row[]).map(asListed) : [],
+      read.kind === kind ? rowsIn<Row>(row[`read_${at}`]).map(asListed) : [],
     );
   return {
     inUse: found<Pointer>("inUse"),

@@ -24,6 +24,12 @@ export const jsonList = (entry: string, select: string) =>
 export const jsonRows = (fields: ReadonlyArray<string>, select: string) =>
   jsonList(jsonObject(fields.map((field) => [field, field])), select);
 
+/**
+ * The rows in a JSON list that `jsonRows` built, as a statement returned it. A column that is
+ * not there, or is null, has none.
+ */
+export const rowsIn = <Row>(list: string | null | undefined) => JSON.parse(list ?? "[]") as Row[];
+
 // D1's limits page allows a statement 100,000 bytes, and each statement of a batch the same
 // (read on 2026-10-12). Nothing was sent to local D1 to find out whether it holds to that, so
 // no test would catch a longer one, and this does.

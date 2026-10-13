@@ -251,7 +251,12 @@ const savingTwoOfOneVendor = Effect.gen(function* () {
   yield* calling(saveProperty)({ name: "Maple Street house" });
   const [keep] = created(yield* calling(saveVendor)({ name: "Brightside Electric" })) as [Listed];
   const [duplicate, texts] = created(
-    yield* calling(saveVendor)({ name: "Briteside Electric", note: "Prefers texts." }),
+    yield* calling(saveVendor)({
+      name: "Briteside Electric",
+      role: "electrician",
+      data: { phone: "555-0163" },
+      note: "Prefers texts.",
+    }),
   ) as [Listed, Listed];
   const [lighting] = created(yield* calling(saveProject)({ title: "Outdoor lighting" })) as [
     Listed,
@@ -292,9 +297,12 @@ it.effect("a Vendor deleted with a replacement is merged into it, in one Change"
       ],
     });
 
-    // Everything that pointed at the one points at the other, its Note included.
+    // Everything that pointed at the one points at the other, its Note included. Nothing the
+    // one held itself is copied: its role and its `data` went with it.
     expect(yield* getting("vendor", keep.id)).toMatchObject({
       name: "Brightside Electric",
+      role: null,
+      data: {},
       items: [{ id: transformer.id }],
       work: [{ id: wiring.id }],
       quotes: [{ id: quote.id, project_id: lighting.id, amount: 4200 }],
@@ -1059,7 +1067,20 @@ it.effect("undoing a merge of Spaces, of Projects, and of Categories puts each b
         extra_categories: [CARDIO.id, "sports"],
       }),
     ) as [Listed];
-    const records = [kitchen, pantry, shelf, painted, tiled, remodel, dim, keep, brightside, wired];
+    const records = [
+      kitchen,
+      pantry,
+      shelf,
+      painted,
+      tiled,
+      remodel,
+      dim,
+      keep,
+      brightside,
+      wired,
+      bike,
+      watch,
+    ];
     const [was, rows] = [yield* reading(records), yield* everyRow];
 
     const spaces = yield* deleting({ type: "space", id: pantry.id, replacement: kitchen.id });
