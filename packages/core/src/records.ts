@@ -49,6 +49,24 @@ export interface NamedByOthers {
   readonly between: string;
 }
 
+/**
+ * How a record is attached to one of several types: the column with that record's type, the
+ * column with its id, and the types it can be. No foreign key holds the two columns. A type no
+ * tool writes yet is left out until it is here.
+ */
+export interface AttachedBy {
+  readonly typeColumn: string;
+  readonly idColumn: string;
+  readonly of: ReadonlyArray<RecordType>;
+  /**
+   * The pointer column in which it follows the record it is attached to, where that record
+   * has the column too: a Note is at the Property of the record it is on. Nothing in the
+   * database holds the two together. A save that moves the record moves what is attached
+   * to it, in the same Change.
+   */
+  readonly follows?: string;
+}
+
 /** What a record of one type is. */
 export interface RecordShape {
   readonly table: string;
@@ -75,23 +93,8 @@ export interface RecordShape {
    * record points at others by its link sets too, and by what it is attached to.
    */
   readonly pointerColumns: Readonly<Record<string, RecordType>>;
-  /**
-   * How the record is attached to one of several types: the column with that record's type,
-   * the column with its id, and the types it can be. A Note is attached this way. No foreign
-   * key holds the two columns. A type no tool writes yet is left out until it is here.
-   */
-  readonly attachedBy?: {
-    readonly typeColumn: string;
-    readonly idColumn: string;
-    readonly of: ReadonlyArray<RecordType>;
-    /**
-     * The pointer column in which it follows the record it is attached to, where that record
-     * has the column too: a Note is at the Property of the record it is on. Nothing in the
-     * database holds the two together. A save that moves the record moves what is attached
-     * to it, in the same Change.
-     */
-    readonly follows?: string;
-  };
+  /** How the record is attached to one of several types. A Note is attached this way. */
+  readonly attachedBy?: AttachedBy;
   /**
    * The columns no two records of the type can have the same values in: the name of a
    * Property or a Vendor, the Property and the name of a Space, and the Project and the Vendor
@@ -269,6 +272,92 @@ export const SHAPES = {
   },
 } as const satisfies Readonly<Record<RecordType, RecordShape>>;
 
+/** Each type with what a record of it is, a type after the types it points at. */
+export const EACH_TYPE = RECORD_TYPES.map((type): readonly [RecordType, RecordShape] => [
+  type,
+  SHAPES[type],
+]);
+
+// What every way of pointing has.
+interface Pointing {
+  /** The type that points, and what a record of it is. */
+  readonly type: RecordType;
+  readonly shape: RecordShape;
+  /** The type it points at. */
+  readonly targetType: RecordType;
+}
+
+/**
+ * One way a record of one type points at a record of another: by a column of its row, by a
+ * link set, or by being attached to it, which is by its type and its id.
+ */
+export type WayOfPointing = Pointing &
+  (
+    | { readonly by: "column"; readonly column: string }
+    | { readonly by: "set"; readonly set: LinkSet }
+    | { readonly by: "attachment"; readonly attachedBy: AttachedBy }
+  );
+
+/** Every way of pointing there is, with the ways of a type after those of the types before it. */
+export const WAYS_OF_POINTING: ReadonlyArray<WayOfPointing> = EACH_TYPE.flatMap(([type, shape]) => {
+  const { pointerColumns, links, attachedBy } = shape;
+  return [
+    ...Object.entries(pointerColumns).map(([column, targetType]): WayOfPointing => ({
+      type,
+      shape,
+      targetType,
+      by: "column",
+      column,
+    })),
+    ...links.map((set): WayOfPointing => ({ type, shape, targetType: set.of, by: "set", set })),
+    // A record that is attached by type and id points at one of each type it can be on.
+    ...(attachedBy === undefined
+      ? []
+      : attachedBy.of.map((targetType): WayOfPointing => ({
+          type,
+          shape,
+          targetType,
+          by: "attachment",
+          attachedBy,
+        }))),
+  ];
+});
+
+/**
+ * Where a statement finds the records that point one way, and what each points at: what it
+ * selects FROM, the SQL of the id that is pointed at, and what else has to hold where not
+ * everything it selects from points this way.
+ */
+export interface PointerSource {
+  readonly from: string;
+  readonly target: string;
+  readonly onlyIf?: string;
+}
+
+/** The rows there are now that point one way, each read as `record`. */
+export const pointingRows = (way: WayOfPointing): PointerSource => {
+  const rows = `${way.shape.table} AS record`;
+  switch (way.by) {
+    case "column":
+      return { from: rows, target: `record.${way.column}` };
+    case "set": {
+      const { table, from, to } = way.set;
+      return {
+        from: `${rows} JOIN ${table} AS link ON link.${from} = record.id`,
+        target: `link.${to}`,
+      };
+    }
+    case "attachment": {
+      const { typeColumn, idColumn } = way.attachedBy;
+      return {
+        from: rows,
+        target: `record.${idColumn}`,
+        onlyIf: `record.${typeColumn} = '${way.targetType}'`,
+      };
+    }
+  }
+};
+
 // The column a record of a type is named by, for a type that has one. A record that is named by
 // the records it points at points at ones with a column of their own, so a name is never more
 // than one step away.
@@ -313,6 +402,10 @@ export const recordName = (
     .join(` || '${namedBy.between}' || `);
 };
 
+/** The SQL of what a row there is now is named by, read under this alias. */
+export const nameOfRow = (shape: RecordShape, alias: string) =>
+  recordName(shape, (column) => `${alias}.${column}`);
+
 /**
  * The same name in code, for a save that has the names of the records it points at: those
  * names, joined the way `namedBy` says. `names` has each one under the pointer column it goes
@@ -332,6 +425,50 @@ export const listedName = (type: RecordType, text: string) => {
   return longestName === undefined || text.length <= longestName
     ? text
     : `${text.slice(0, longestName)}…`;
+};
+
+/** A record as a reply lists it and an error names it: by its type, its id, and its name. */
+export interface Listed {
+  readonly type: RecordType;
+  readonly id: string;
+  /**
+   * Its name, or what stands for one: the title of Work, the body of a Note, the Vendor and
+   * the Project of a Quote.
+   */
+  readonly name: string;
+}
+
+/** A record as a reply lists it: under the start of a name that runs long. */
+export const asListed = <Row extends Listed>(record: Row): Row => ({
+  ...record,
+  name: listedName(record.type, record.name),
+});
+
+/** A record by its type and its id together, which no two records share. */
+export const recordKey = ({ type, id }: Pick<Listed, "type" | "id">) => `${type} ${id}`;
+
+/** Each of these records once, where one comes several times: the first of it, in its place. */
+export const distinctRecords = <Row extends Pick<Listed, "type" | "id">>(
+  records: ReadonlyArray<Row>,
+): ReadonlyArray<Row> => {
+  const seen = new Set<string>();
+  return records.filter((record) => {
+    const key = recordKey(record);
+    return !seen.has(key) && seen.add(key) !== undefined;
+  });
+};
+
+/** A record as an error names it. */
+export const named = ({ type, id, name }: Listed) => `${term(type)} "${name}" (${id})`;
+
+// The most records an error names in one list. It counts the rest.
+const MOST_NAMED = 5;
+
+/** The first few of a list of records as an error names them, and a count of the rest. */
+export const someOf = (records: ReadonlyArray<Listed>) => {
+  const some = records.slice(0, MOST_NAMED).map((each) => `the ${named(each)}`);
+  const more = records.length > MOST_NAMED ? `, and ${records.length - MOST_NAMED} more` : "";
+  return `${some.join(", ")}${more}`;
 };
 
 /**

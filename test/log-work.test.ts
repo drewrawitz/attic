@@ -25,9 +25,9 @@ const LEANTO = "Shed lean-to";
 const BUILDER = "Shed and Fence Plumbing";
 const LOGGED = `SELECT id FROM work WHERE title GLOB '${TITLE}*'`;
 
-// Takes out what these tests wrote. No tool deletes a record yet, and the database is kept
-// between runs, so each test starts and ends with this. The Items and the Spaces a piece of
-// Work names go with it.
+// Takes out what these tests wrote. The database is kept between runs, and so is every
+// Change, which no tool takes out. So each test starts and ends with this. The Items and the
+// Spaces a piece of Work names go with it.
 const cleanUp = onDatabase(
   `DELETE FROM changes WHERE id IN (
      SELECT change_id FROM change_records

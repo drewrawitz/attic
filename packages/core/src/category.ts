@@ -9,6 +9,12 @@ export interface Category {
   readonly parent_id: string | null;
 }
 
+/**
+ * The Category an Item is in unless a save names one, which is the table's own default. So it
+ * has to be there, and no tool deletes it.
+ */
+export const DEFAULT_CATEGORY = "other";
+
 /** Every Category there is. The list is short, so a tool reads it whole and looks in it. */
 export const everyCategory = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;

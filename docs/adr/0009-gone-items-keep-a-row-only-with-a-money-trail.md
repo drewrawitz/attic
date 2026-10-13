@@ -8,3 +8,4 @@ An earlier design never deleted anything and had a `discarded` status. It was dr
 
 - A replaced Fixture, such as the old dishwasher, is deleted. Its history survives as Work on the Property.
 - Deleting is a normal operation and not a rare correction, so the change log has to be able to bring a deleted row back.
+- `delete_record` is the tool (issue 51). A deleted Item comes off the Work that named it, and that Work stays. Work at no Property that named only that Item would be about nothing, so it is deleted with the Item, in the same Change.

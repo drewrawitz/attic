@@ -25,8 +25,9 @@ const STOREROOM = "Crate storeroom";
 const CARRIER = "Crate and Carry";
 const CRATES = `SELECT id FROM items WHERE name GLOB '${CRATE}*'`;
 
-// Takes out what these tests wrote. No tool deletes a record yet, and the database is kept
-// between runs, so each test starts and ends with this. An Item's extra Categories go with it.
+// Takes out what these tests wrote. The database is kept between runs, and so is every
+// Change, which no tool takes out. So each test starts and ends with this. An Item's extra
+// Categories go with it.
 const cleanUp = onDatabase(
   `DELETE FROM changes WHERE id IN (
      SELECT change_id FROM change_records

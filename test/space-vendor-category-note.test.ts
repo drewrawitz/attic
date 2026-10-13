@@ -26,8 +26,8 @@ const CATEGORY = "sunroom-furniture";
 const NOTED = "Written through the Worker:";
 const CABIN = "Juniper Lane cabin";
 
-// Takes out what these tests wrote. No tool deletes a record yet, and the database is kept
-// between runs, so each test starts and ends with this.
+// Takes out what these tests wrote. The database is kept between runs, and so is every
+// Change, which no tool takes out. So each test starts and ends with this.
 const cleanUp = onDatabase(
   `DELETE FROM changes WHERE id IN (
      SELECT change_id FROM change_records

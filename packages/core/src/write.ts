@@ -48,6 +48,15 @@ export interface Step {
   readonly statement: Statement<unknown>;
 }
 
+/**
+ * One statement as steps of a write: handed over with each record it is about. A statement
+ * that is about no record makes no step, and so does not run.
+ */
+export const stepsAbout = (
+  records: ReadonlyArray<Pick<Step, "type" | "id">>,
+  statement: Statement<unknown>,
+): ReadonlyArray<Step> => records.map(({ type, id }) => ({ type, id, statement }));
+
 // The statement that writes down, in a Change, how the records of one type are at that point of
 // the batch. It runs twice: before the tool's statements for `before`, and after them for
 // `after`. A record that is not there at that point gets nothing, which leaves `before` null

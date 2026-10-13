@@ -1,20 +1,28 @@
 import { Effect, Schema } from "effect";
 import { SqlClient } from "effect/sql";
 import {
-  listedName,
+  asListed,
+  EACH_TYPE,
+  named,
   nameInTable,
+  nameOfRow,
+  pointingRows,
+  recordKey,
   recordName,
-  RECORD_TYPES,
   SHAPES,
+  someOf,
   term,
+  type Listed,
   type LinkSet,
   type RecordShape,
+  type PointerSource,
   type RecordType,
+  type WayOfPointing,
+  WAYS_OF_POINTING,
 } from "../records.ts";
-import type { Listed } from "../save.ts";
-import { compact, jsonList, jsonObject } from "../sql.ts";
+import { compact, jsonRows, rowsIn } from "../sql.ts";
 import { defineTool, ToolError, type ToolAnnotations } from "../tool.ts";
-import { Write, type Step } from "../write.ts";
+import { stepsAbout, Write } from "../write.ts";
 
 const DESCRIPTION = `Undoes a Change, so that every record the Change touched is as it was before. A Change is one write made through a tool. Every tool that writes returns the id of its Change as \`change_id\`, and get_record lists a record's latest Changes, newest first, each with its id and the record as it was before and after. The rest are in the \`changes\` and \`change_records\` tables, which query reads.
 
@@ -97,15 +105,6 @@ const nameInChangeOrTable = (type: RecordType, id: string) => `coalesce(
 // What a record the undo brings back is named by, read from what it was before the Change.
 const nameFromBefore = (shape: RecordShape) => recordName(shape, before, nameInChangeOrTable);
 
-// What a row there is now is named by, read under this alias.
-const nameOfRow = (shape: RecordShape, alias: string) =>
-  recordName(shape, (column) => `${alias}.${column}`);
-
-// The rows of a SELECT as one JSON column: a list with an object for each row, which has these
-// fields, each read from the column of that name.
-const list = (fields: ReadonlyArray<string>, select: string) =>
-  jsonList(jsonObject(fields.map((field) => [field, field])), select);
-
 // One statement of an undo, as SQL on one line. It is about every record of one type that the
 // undo does one of these things to, and reads them from the Change itself. So an undo is the same few
 // statements however many records the Change touched. A statement that touches several rows is
@@ -168,9 +167,6 @@ const takingOut = (type: RecordType, { table }: RecordShape): Reversal => ({
   text: compact(`DELETE FROM ${table} WHERE id IN ${ids(type, ["taken_out"])}`),
 });
 
-// Each type with what a record of it is, a type after the types it points at.
-const EACH_TYPE = RECORD_TYPES.map((type): [RecordType, RecordShape] => [type, SHAPES[type]]);
-
 // Every statement an undo can have, in the order the foreign keys allow. Rows come back with a
 // type after the types it points at, and go out in the other order. A row is restored once the
 // rows it pointed at are back, and before the rows it no longer points at go out.
@@ -232,8 +228,8 @@ const LATER = `
 // What an undo reads of the Change `?1` first, in one statement: one row, or none when there
 // is no such Change.
 const CHANGE = compact(`
-  SELECT ${list(["type", "id", "name", "outcome"], TOUCHED)} AS touched,
-         ${list(["id", "tool", "created_at", "undoes"], LATER)} AS later
+  SELECT ${jsonRows(["type", "id", "name", "outcome"], TOUCHED)} AS touched,
+         ${jsonRows(["id", "tool", "created_at", "undoes"], LATER)} AS later
     FROM changes AS to_undo
    WHERE to_undo.id = ?1`);
 
@@ -303,10 +299,10 @@ interface Pointer extends Listed {
 
 const POINTER = ["type", "id", "name", "target_type", "target", "removed_by"];
 
-// One way a record of a type can point at a record of another: by a column of its row, by a
-// link set, or by being attached to it. An undo must leave none of them pointing at nothing,
-// so each comes with a read for each side of that.
-interface WayOfPointing {
+// The reads an undo makes of one way a record of a type can point at a record of another: by a
+// column of its row, by a link set, or by being attached to it. An undo must leave none of
+// them pointing at nothing, so each way comes with a read for each side of that.
+interface PointerReads {
   /** The type that points, and the type it points at. */
   readonly type: RecordType;
   readonly targetType: RecordType;
@@ -323,87 +319,66 @@ interface WayOfPointing {
   readonly missing: Read;
 }
 
-// One way of pointing, as the SQL to read it two times over: among the rows there are now,
-// each read as `record`, and among the Change's snapshots of its records as they were.
-interface WayInSql {
-  /** What a read of the rows selects FROM, and the id a row points at. */
-  readonly rowsFrom: string;
-  readonly rowTarget: string;
-  /** What a read of the snapshots selects FROM, and the id a snapshot pointed at. */
-  readonly snapshotsFrom: string;
-  readonly snapshotTarget: string;
-  /** What else has to hold of a row, and of a snapshot, when not every one points this way. */
-  readonly rowIf?: string;
-  readonly snapshotIf?: string;
-}
+// The Change's snapshots of its records as they were, which pointed one way: the other side
+// of `pointingRows`, which has the rows there are now.
+const pointingSnapshots = (way: WayOfPointing): PointerSource => {
+  const snapshots = "change_records AS touched";
+  switch (way.by) {
+    case "column":
+      return { from: snapshots, target: before(way.column) };
+    case "set":
+      return {
+        from: `${snapshots}, json_each(touched.before, '$.${way.set.name}') AS linked`,
+        target: "linked.value",
+      };
+    case "attachment": {
+      const { typeColumn, idColumn } = way.attachedBy;
+      return {
+        from: snapshots,
+        target: before(idColumn),
+        onlyIf: `${before(typeColumn)} = '${way.targetType}'`,
+      };
+    }
+  }
+};
 
-const WAYS_OF_POINTING: ReadonlyArray<WayOfPointing> = EACH_TYPE.flatMap(([type, shape]) => {
-  const { table, links, pointerColumns, attachedBy } = shape;
-  const way = (targetType: RecordType, inSql: WayInSql): WayOfPointing => {
-    const { rowsFrom, rowTarget, snapshotsFrom, snapshotTarget } = inSql;
-    const { rowIf = "", snapshotIf = "" } = inSql;
-    const inUse = `
-      SELECT '${type}' AS type, record.id, ${nameOfRow(shape, "record")} AS name,
-             '${targetType}' AS target_type, ${rowTarget} AS target, NULL AS removed_by
-        FROM ${rowsFrom}
-       WHERE ${rowIf} ${rowTarget} IN ${ids(targetType, ["taken_out"])}
-         AND record.id NOT IN ${ids(type, ANY_OUTCOME)}
-       ORDER BY record.id`;
-    // An empty pointer is no pointer, and `NOT IN` alone would let one through. Ids sort by
-    // when they were made, so the greatest is the latest Change that took the record out.
-    const missing = `
-      SELECT '${type}' AS type, touched.entity_id AS id, ${nameFromBefore(shape)} AS name,
-             '${targetType}' AS target_type, ${snapshotTarget} AS target,
-             (SELECT max(removed.change_id) FROM change_records AS removed
-               WHERE removed.entity_type = '${targetType}'
-                 AND removed.entity_id = ${snapshotTarget}
-                 AND removed.after IS NULL) AS removed_by
-        FROM ${snapshotsFrom}
-       WHERE ${matching(type, BROUGHT_BACK)} AND ${snapshotIf} ${snapshotTarget} IS NOT NULL
-         AND ${snapshotTarget} NOT IN (SELECT id FROM ${SHAPES[targetType].table})
-         AND ${snapshotTarget} NOT IN ${ids(targetType, ["put_back"])}
-       ORDER BY touched.entity_id`;
-    return {
-      type,
-      targetType,
-      inUse: { text: compact(inUse), fields: POINTER },
-      missing: { text: compact(missing), fields: POINTER },
-    };
+// What else has to hold, as the start of a WHERE that goes on.
+const andThen = (onlyIf: string | undefined) => (onlyIf === undefined ? "" : `${onlyIf} AND`);
+
+const pointerReads = (way: WayOfPointing): PointerReads => {
+  const { type, shape, targetType } = way;
+  const [rows, snapshots] = [pointingRows(way), pointingSnapshots(way)];
+  const inUse = `
+    SELECT '${type}' AS type, record.id, ${nameOfRow(shape, "record")} AS name,
+           '${targetType}' AS target_type, ${rows.target} AS target, NULL AS removed_by
+      FROM ${rows.from}
+     WHERE ${andThen(rows.onlyIf)} ${rows.target} IN ${ids(targetType, ["taken_out"])}
+       AND record.id NOT IN ${ids(type, ANY_OUTCOME)}
+     ORDER BY record.id`;
+  // An empty pointer is no pointer, and `NOT IN` alone would let one through. Ids sort by
+  // when they were made, so the greatest is the latest Change that took the record out.
+  const missing = `
+    SELECT '${type}' AS type, touched.entity_id AS id, ${nameFromBefore(shape)} AS name,
+           '${targetType}' AS target_type, ${snapshots.target} AS target,
+           (SELECT max(removed.change_id) FROM change_records AS removed
+             WHERE removed.entity_type = '${targetType}'
+               AND removed.entity_id = ${snapshots.target}
+               AND removed.after IS NULL) AS removed_by
+      FROM ${snapshots.from}
+     WHERE ${matching(type, BROUGHT_BACK)} AND ${andThen(snapshots.onlyIf)}
+           ${snapshots.target} IS NOT NULL
+       AND ${snapshots.target} NOT IN (SELECT id FROM ${SHAPES[targetType].table})
+       AND ${snapshots.target} NOT IN ${ids(targetType, ["put_back"])}
+     ORDER BY touched.entity_id`;
+  return {
+    type,
+    targetType,
+    inUse: { text: compact(inUse), fields: POINTER },
+    missing: { text: compact(missing), fields: POINTER },
   };
-  const rowsFrom = `${table} AS record`;
-  const snapshotsFrom = "change_records AS touched";
-  return [
-    ...Object.entries(pointerColumns).map(([column, targetType]) =>
-      way(targetType, {
-        rowsFrom,
-        rowTarget: `record.${column}`,
-        snapshotsFrom,
-        snapshotTarget: before(column),
-      }),
-    ),
-    ...links.map((set) =>
-      way(set.of, {
-        rowsFrom: `${rowsFrom} JOIN ${set.table} AS link ON link.${set.from} = record.id`,
-        rowTarget: `link.${set.to}`,
-        snapshotsFrom: `${snapshotsFrom}, json_each(touched.before, '$.${set.name}') AS linked`,
-        snapshotTarget: "linked.value",
-      }),
-    ),
-    // A record that is attached by type and id points at one of each type it can be on.
-    ...(attachedBy === undefined
-      ? []
-      : attachedBy.of.map((targetType) =>
-          way(targetType, {
-            rowsFrom,
-            rowTarget: `record.${attachedBy.idColumn}`,
-            rowIf: `record.${attachedBy.typeColumn} = '${targetType}' AND`,
-            snapshotsFrom,
-            snapshotTarget: before(attachedBy.idColumn),
-            snapshotIf: `${before(attachedBy.typeColumn)} = '${targetType}' AND`,
-          }),
-        )),
-  ];
-});
+};
+
+const POINTER_READS: ReadonlyArray<PointerReads> = WAYS_OF_POINTING.map(pointerReads);
 
 // A record the undo brings back under a name that another record of its type has now, with
 // the record that has it. `same_change` is 1 when that one is a record of the Change too.
@@ -587,28 +562,9 @@ const WAYS_OF_FOLLOWING: ReadonlyArray<WayOfFollowing> = EACH_TYPE.flatMap(([typ
   });
 });
 
-// A record as a reply lists it: named the way the reply of a save names one, which is by the
-// start of a name that runs long.
-const listed = <Row extends Listed>(record: Row): Row => ({
-  ...record,
-  name: listedName(record.type, record.name),
-});
-
-// A record as an error names it.
-const named = ({ type, id, name }: Listed) => `${term(type)} "${name}" (${id})`;
-
-// The most records an error names as pointing at one record. It counts the rest.
-const MOST_NAMED = 5;
-
-const someOf = (pointing: ReadonlyArray<Listed>) => {
-  const some = pointing.slice(0, MOST_NAMED).map((each) => `the ${named(each)}`);
-  const more = pointing.length > MOST_NAMED ? `, and ${pointing.length - MOST_NAMED} more` : "";
-  return `${some.join(", ")}${more}`;
-};
-
 // The one statement that makes several reads: each is a JSON column of it.
 const together = (reads: ReadonlyArray<Read>) =>
-  `SELECT ${reads.map(({ fields, text }, at) => `${list(fields, text)} AS read_${at}`).join(", ")}`;
+  `SELECT ${reads.map(({ fields, text }, at) => `${jsonRows(fields, text)} AS read_${at}`).join(", ")}`;
 
 // The kinds of read there are. Each has rows of its own, and a refusal of its own.
 type Kind = "inUse" | "missing" | "held" | "looped" | "leftBehind" | "stranded";
@@ -623,13 +579,13 @@ interface ReadAbout extends Read {
 
 // Every read an undo can make before it writes.
 const EVERY_READ: ReadonlyArray<ReadAbout> = [
-  ...WAYS_OF_POINTING.map(({ targetType, inUse }): ReadAbout => ({
+  ...POINTER_READS.map(({ targetType, inUse }): ReadAbout => ({
     ...inUse,
     kind: "inUse",
     type: targetType,
     outcomes: ["taken_out"],
   })),
-  ...WAYS_OF_POINTING.map(({ type, missing }): ReadAbout => ({
+  ...POINTER_READS.map(({ type, missing }): ReadAbout => ({
     ...missing,
     kind: "missing",
     type,
@@ -671,7 +627,7 @@ const whatBlocks = Effect.fnUntraced(function* (toUndo: string, touched: Readonl
   // What every read of one kind found.
   const found = <Row extends Listed>(kind: Kind) =>
     reads.flatMap((read, at) =>
-      read.kind === kind ? (JSON.parse(row[`read_${at}`] ?? "[]") as Row[]).map(listed) : [],
+      read.kind === kind ? rowsIn<Row>(row[`read_${at}`]).map(asListed) : [],
     );
   return {
     inUse: found<Pointer>("inUse"),
@@ -749,23 +705,22 @@ const refuseNameHeld = Effect.fnUntraced(function* (toUndo: string, held: Readon
 // Refuses an undo that would leave a record under itself, by way of the records above it.
 // Nothing in the database would turn it away.
 const refuseLoops = (touched: ReadonlyArray<Touched>, looped: ReadonlyArray<Looped>) => {
-  const key = ({ type, id }: Pick<Listed, "type" | "id">) => `${type} ${id}`;
   const broughtBack = new Set(
-    touched.filter(({ outcome }) => BROUGHT_BACK.includes(outcome)).map(key),
+    touched.filter(({ outcome }) => BROUGHT_BACK.includes(outcome)).map(recordKey),
   );
   // What a record is to the one above it: one the undo brings back as it was before, and
   // any other as it is now.
   const under = (record: Listed) =>
-    broughtBack.has(key(record)) ? "would be back under" : "is under";
+    broughtBack.has(recordKey(record)) ? "would be back under" : "is under";
   // A loop is walked from each record in it that the undo brings back, and said once.
   const said = new Set<string>();
-  const walks = Map.groupBy(looped, ({ type, began }) => key({ type, id: began }));
+  const walks = Map.groupBy(looped, ({ type, began }) => recordKey({ type, id: began }));
   return refuseFor(
     [...walks.values()].flatMap((walk) => {
       // A walk ends at the record it began at.
       const last = walk.at(-1);
-      if (last === undefined || said.has(key(last))) return [];
-      for (const each of walk) said.add(key(each));
+      if (last === undefined || said.has(recordKey(last))) return [];
+      for (const each of walk) said.add(recordKey(each));
       const round = [
         `${named(last)} ${under(last)}`,
         ...walk.slice(0, -1).map((each) => `${named(each)}, which ${under(each)}`),
@@ -824,7 +779,7 @@ const refuseStranded = (stranded: ReadonlyArray<Stranded>) =>
 const touchedBy = (toUndo: string, found: ReadonlyArray<Touched>) => {
   const stray = found.find(({ type }) => !Object.hasOwn(SHAPES, type));
   return stray === undefined
-    ? Effect.succeed(found.map(listed))
+    ? Effect.succeed(found.map(asListed))
     : Effect.die(
         new Error(
           `The Change "${toUndo}" touched a "${stray.type}", and there is no type of record called "${stray.type}".`,
@@ -866,12 +821,9 @@ export const undo = defineTool({
 
       // A statement is about several records, and is handed over with each of them. One that
       // is about none of this Change's records is left out.
-      const steps = REVERSALS.flatMap(({ type, outcomes, text }) => {
-        const about = pick(touched, type, outcomes);
-        if (about.length === 0) return [];
-        const statement = sql.unsafe(text, [toUndo]);
-        return about.map(({ id }): Step => ({ type, id, statement }));
-      });
+      const steps = REVERSALS.flatMap(({ type, outcomes, text }) =>
+        stepsAbout(pick(touched, type, outcomes), sql.unsafe(text, [toUndo])),
+      );
       const theUndo = yield* (yield* Write).run(steps, toUndo);
 
       const those = (outcome: Outcome) =>

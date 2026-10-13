@@ -551,9 +551,10 @@ it.effect("undoing an update of Work puts its Items and its Spaces back as they 
   }).pipe(Effect.provide(TestDatabase)),
 );
 
-// No tool deletes a record yet. So the Change of a delete is written here the way a tool's
-// write records one: under the next id, with each record whole in `before`, with its link
-// sets, and null in `after`. Returns the id of the Change.
+// These tests are older than `delete_record`, and hold `undo` to the Change alone, whichever
+// tool wrote it. So the Change of a delete is written here the way a tool's write records
+// one: under the next id, with each record whole in `before`, with its link sets, and null
+// in `after`. Returns the id of the Change. The tests of `delete_record` undo a real delete.
 const deletingByHand = (...records: ReadonlyArray<readonly [type: RecordType, id: string]>) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
