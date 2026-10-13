@@ -7,6 +7,10 @@ import { defineTool, NoInput } from "../tool.ts";
 // name is the one place it is used: the script says Property.
 const NAME = "walk_the_house";
 
+// What the interview fills in. The script opens with it, and the tool and the prompt each say it
+// in their description, so it is written once.
+const FILLED_IN = "its Spaces, their size and paint, and the Items in them, with their models";
+
 // The script: one fixed text, written for a client to follow. It ships twice, as the tool and as
 // the prompt below, and both are this one text, so the two cannot come apart.
 //
@@ -17,7 +21,7 @@ const NAME = "walk_the_house";
 //
 // It tells the client not to ask for photos or Receipts, because no tool takes a Document yet.
 // They come with step 6 of the `v1` route.
-const SCRIPT = `This is the script for going through a Property with the User, one Space at a time, to put on record its Spaces, their size and paint, and the Items in them, with their models. Follow the steps in order. Ask a question or two at a time, and save as you go.
+const SCRIPT = `This is the script for going through a Property with the User, one Space at a time, to put on record ${FILLED_IN}. Follow the steps in order. Ask a question or two at a time, and save as you go.
 
 1. Settle which Property this is. Ask the User for its name, unless that is already clear. Read it with \`get_record\`, which takes a Property by its name and returns its Spaces and the Items at it. If it is not on record, the error says which Properties are, and a new one is created with \`save_property\`. Give this Property in every call that takes one. Then read \`get_schema\` once, for the Category tree, the keys of \`data\` each Category expects, and the well-known keys of \`data\`.
 
@@ -28,7 +32,7 @@ const SCRIPT = `This is the script for going through a Property with the User, o
 4. Ask what is in the Space, and save its Items with \`save_item\`, as one list of up to ${MOST_IN_ONE_CALL}. Each entry of the list has fields of its own, with this Property and this Space among them.
    - One Item is one line on an insurance claim. A matching set, such as six dining chairs, is one Item with \`data.quantity\`.
    - Save each one as a Fixture, which stays with the Property when the User leaves, or as a Belonging, which is the User's own. Ask when it is not clear which.
-   - Give each one a Category from the tree.
+   - Give each one a Category from the tree, by its id.
    - Where a Category of the Item expects a key, such as \`data.model\` or \`data.serial\`, ask for it, and have the User read it off the Item itself, from its plate or its sticker.
    - Ask what was paid for it and when it was bought, and leave out what the User does not know. A date can be a year, or a year and a month.
    - An Item that is on record already is updated by its id. Saved by its name, it would be there twice.
@@ -42,7 +46,7 @@ Do not:
 - Make a new Category where one in the tree fits. \`save_category\` is for an Item that none fits.
 - Ask for photos or Receipts. Attic cannot take them yet.`;
 
-const DESCRIPTION = `Returns the script for going through a Property with the User: an interview, one Space at a time, that puts on record its Spaces, their size and paint, and the Items in them, with their models. Call it when the User wants to set up a Property, or to go through one, and then follow what comes back. The script says which tools to call and in what order. This tool reads no record and writes none. It takes no input.`;
+const DESCRIPTION = `Returns the script for going through a Property with the User: an interview, one Space at a time, that puts on record ${FILLED_IN}. Call it when the User wants to set up a Property, or to go through one, and then follow what comes back. The script says which tools to call and in what order. This tool reads no record and writes none. It takes no input.`;
 
 export const walkTheHouse = defineTool({
   name: NAME,
@@ -55,7 +59,6 @@ export const walkTheHouse = defineTool({
 /** The same script for a client that shows prompts. */
 export const walkTheHousePrompt: Prompt = {
   name: NAME,
-  description:
-    "Go through a Property with the User, one Space at a time, and put on record its Spaces, their size and paint, and the Items in them, with their models.",
+  description: `Go through a Property with the User, one Space at a time, and put on record ${FILLED_IN}.`,
   text: SCRIPT,
 };
