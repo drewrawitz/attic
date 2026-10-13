@@ -10,7 +10,7 @@ Attic has no app. It is a remote MCP server on Cloudflare (Workers, D1, R2, KV) 
 
 - `apps/server` is the Worker.
 - `packages/core` is the domain logic, written with Effect. Nothing in it is specific to Workers, so its tests run in Node.
-  Every tool is declared there with `defineTool`, one file each in `src/tools/`, and listed in `src/index.ts`. The Worker registers whatever is on that list.
+  Every tool is declared there with `defineTool`, one file each in `src/tools/`, and listed in `src/index.ts`. The Worker registers whatever is on that list. A prompt, which `src/prompt.ts` describes, is a fixed text for a client to follow. `src/index.ts` has a list of those too, and the Worker registers it the same way.
   A tool that writes does its reads, builds its statements, and hands them to `Write` in `src/write.ts`. That runs them as one atomic batch, together with the Change that records them. `src/records.ts` is the one place that says what a record of each type is and what it points at. A Change's snapshots are built from it, and `undo` works from it. `src/save.ts` holds the rules every save tool follows.
   The rules about what a save names are each in one place too. `src/property.ts` works out the Current property, with today's date in the configured timezone. `src/space.ts` and `src/vendor.ts` find a Space or a Vendor by its name, or create it on first use. `src/category.ts` finds a Category, or lists the closest matches. `src/project.ts` finds a Project by its id. `src/note.ts` writes the optional Note of a save. `src/money.ts` takes an amount in dollars, stores it as cents, and writes one out in the configured currency.
 - `alchemy.run.ts` declares the Cloudflare resources: the Worker, the D1 database, the R2 bucket, and the KV namespace.

@@ -3,12 +3,13 @@ import {
   callTool,
   Currency,
   Ids,
+  prompts,
   tools,
   type Tool,
   type ToolResult,
 } from "@attic/core";
 import { D1Client } from "@effect/sql-d1";
-import { McpServer, type CallToolResult } from "@modelcontextprotocol/server";
+import { McpServer, type CallToolResult, type GetPromptResult } from "@modelcontextprotocol/server";
 import { createMcpHandler, getMcpAuthContext } from "agents/mcp/server";
 import { DateTime, Effect, Layer } from "effect";
 import type { WorkerEnv } from "../../../alchemy.run.ts";
@@ -18,13 +19,24 @@ import { isAllowed } from "./allowlist.ts";
 // so whatever is the same for every request is done here, once, when the module loads. A
 // tool's input is already what the SDK takes: a Standard Schema that checks a call and
 // describes itself as JSON Schema, made in `defineTool`.
-const registrations = tools.map((tool) => ({
+const toolRegistrations = tools.map((tool) => ({
   tool,
   config: {
     description: tool.description,
     inputSchema: tool.input,
     annotations: tool.annotations,
   },
+}));
+
+// Every prompt as the MCP SDK registers it, made once in the same way. A prompt takes nothing
+// and is a fixed text, so what a client is sent when it asks for one is made here too. The text
+// goes out as a message from the User, which is how a client puts a prompt in a conversation.
+const promptRegistrations = prompts.map(({ name, description, text }) => ({
+  name,
+  config: { description },
+  result: {
+    messages: [{ role: "user", content: { type: "text", text } }],
+  } satisfies GetPromptResult,
 }));
 
 // Whether whoever is calling may use this Attic, from the email sign-in stored with the
@@ -73,8 +85,13 @@ const runTool = async (env: WorkerEnv, tool: Tool, input: unknown): Promise<Call
 
 const createServer = (env: WorkerEnv) => {
   const server = new McpServer({ name: "attic", version: "0.0.0" });
-  for (const { tool, config } of registrations) {
+  for (const { tool, config } of toolRegistrations) {
     server.registerTool(tool.name, config, (input) => runTool(env, tool, input));
+  }
+  // A prompt is not held to the allowlist as a call to a tool is. Its text is in the repo, with
+  // nothing of the User's in it, and the tools it sends a client to are each checked.
+  for (const { name, config, result } of promptRegistrations) {
+    server.registerPrompt(name, config, () => result);
   }
   return server;
 };
