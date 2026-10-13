@@ -13,18 +13,26 @@ import type { DATA_KEYS } from "./get-schema.ts";
 // counts are of every one, shown or not. The Spaces are not cut: a Property has few.
 const MOST_SHOWN = 50;
 
+// The characters that are nothing in a text: a space, a tab, and the two that break a line. An
+// Item's keys are checked in SQL and a Space's in code, and both go by this one list. The
+// statement is handed it as a value, because `compact` would make one space of it.
+const BLANKS = " \t\n\r";
+
+// A character of a text that is not one of them.
+const NOT_BLANK = new RegExp(`[^${BLANKS}]`);
+
 // Whether there is something under a key of an Item's `data`, where `own` is the key's row of
-// `json_each`. A key can be there with nothing under it: a null, text with nothing in it, or an
+// `json_each`. A key can be there with nothing under it: a null, text that is all blanks, or an
 // object or a list with nothing in it, which is what a merge patch leaves behind when it takes
-// out a list's last entry. A zero and a false are facts. `something` below is the same rule for
-// a Space, whose `data` is read in code.
-const SOMETHING = `CASE own.type
-                     WHEN 'null' THEN 0
-                     WHEN 'text' THEN trim(own.value) <> ''
-                     WHEN 'object' THEN own.value <> '{}'
-                     WHEN 'array' THEN own.value <> '[]'
-                     ELSE 1
-                   END`;
+// out a list's last entry. A zero and a false are facts. `somethingIn` below is the same rule
+// for a Space, whose `data` is read in code.
+const KEY_HAS_SOMETHING = `CASE own.type
+                             WHEN 'null' THEN 0
+                             WHEN 'text' THEN trim(own.value, ?3) <> ''
+                             WHEN 'object' THEN own.value <> '{}'
+                             WHEN 'array' THEN own.value <> '[]'
+                             ELSE 1
+                           END`;
 
 // DIY Work often cost nothing, so only Work that someone was paid for is missing its Cost.
 const NO_COST = `(work.diy = 0 AND work.cost_cents IS NULL)`;
@@ -34,7 +42,7 @@ const DATE_YEAR_ONLY = `coalesce(length(work.date) = 4, 0)`;
 
 // One statement reads everything that is missing at a Property. So a call is two reads, the
 // one that finds the Property and this one, however many Items there are. It is given the
-// Property's id, and the name of the one Space to keep to, or null for every Space.
+// Property's id, the name of the one Space to keep to, or null for every Space, and BLANKS.
 //
 //   space     the Spaces at the Property, each with its `data`, and whether it has the name
 //             that was given. The database compares the name, so case is ignored the same way
@@ -75,7 +83,7 @@ WITH
               JOIN json_each(category.data, '$.expects') AS expected
              WHERE json_type(category.data, '$.expects') = 'array' AND expected.type = 'text'
                AND NOT EXISTS (SELECT 1 FROM json_each(held.data) AS own
-                                WHERE own.key = expected.value AND ${SOMETHING}))
+                                WHERE own.key = expected.value AND ${KEY_HAS_SOMETHING}))
      GROUP BY item_id
   ),
   item_gap (id, name, space_id, no_price, no_acquired_on, missing_keys, position) AS (
@@ -141,7 +149,7 @@ interface Row {
 }
 
 // A Space at the Property, as GAPS reads it.
-interface SpaceHere {
+interface SpaceRow {
   readonly id: string;
   readonly name: string;
   readonly data: JsonObject;
@@ -179,11 +187,11 @@ type SpaceKey = keyof typeof DATA_KEYS.space;
 const SIZE = "sqft" satisfies SpaceKey;
 const PAINT = "paint" satisfies SpaceKey;
 
-// Whether there is something under a key of a Space's `data`, by the rule SOMETHING holds an
-// Item's keys to.
-const something = (value: unknown) => {
+// Whether there is something under a key of a Space's `data`, by the rule KEY_HAS_SOMETHING
+// holds an Item's keys to.
+const somethingIn = (value: unknown) => {
   if (value === undefined || value === null) return false;
-  if (typeof value === "string") return value.trim() !== "";
+  if (typeof value === "string") return NOT_BLANK.test(value);
   return typeof value !== "object" || Object.keys(value).length > 0;
 };
 
@@ -191,8 +199,8 @@ const something = (value: unknown) => {
 // would show some: its own, or what its Property has for every Space (ADR 0015). Its size is
 // its own alone, since a Property's size is the size of no Space.
 const missingFromSpace = (own: JsonObject, propertyData: JsonObject) => [
-  ...(something(own[SIZE]) ? [] : [`data.${SIZE}`]),
-  ...(something(own[PAINT]) || something(fromProperty(own, propertyData)[PAINT])
+  ...(somethingIn(own[SIZE]) ? [] : [`data.${SIZE}`]),
+  ...(somethingIn(own[PAINT]) || somethingIn(fromProperty(own, propertyData)[PAINT])
     ? []
     : [`data.${PAINT}`]),
 ];
@@ -232,7 +240,7 @@ const workEntry = ({ id, name, no_cost, no_date, date_year_only, spaces }: WorkR
 
 // The error for a Space that was asked for by a name no Space at the Property has. It lists
 // the ones that are there.
-const noSuchSpace = (name: string, propertyName: string, everySpace: ReadonlyArray<SpaceHere>) =>
+const noSuchSpace = (name: string, propertyName: string, everySpace: ReadonlyArray<SpaceRow>) =>
   new ToolError({
     message: `There is no Space "${name}" at ${propertyName}. ${
       everySpace.length === 0
@@ -291,12 +299,12 @@ export const gaps = defineTool({
     Effect.gen(function* () {
       const property = yield* propertyFor(given);
       const sql = yield* SqlClient.SqlClient;
-      const [row] = yield* sql.unsafe<Row>(GAPS, [property.id, spaceName ?? null]);
+      const [row] = yield* sql.unsafe<Row>(GAPS, [property.id, spaceName ?? null, BLANKS]);
       // The Property was found a moment ago, and no tool deletes one.
       if (row === undefined) return yield* noRecord("property", property.id);
 
       const oneSpace = spaceName !== undefined;
-      const everySpace = rowsIn<SpaceHere>(row.every_space);
+      const everySpace = rowsIn<SpaceRow>(row.every_space);
       const lookedAt = oneSpace ? everySpace.filter((space) => space.has_name === 1) : everySpace;
       if (oneSpace && lookedAt.length === 0) {
         return yield* noSuchSpace(spaceName, property.name, everySpace);

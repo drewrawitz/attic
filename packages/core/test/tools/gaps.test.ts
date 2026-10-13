@@ -114,7 +114,8 @@ it.effect("a key that only a parent Category expects counts, and so does one of 
 );
 
 // A key is there in name only when what is under it is null, text with nothing in it, or an
-// object or a list with nothing in it. A merge patch that takes out a list's last entry leaves
+// object or a list with nothing in it. Text that is all spaces, tabs, and line breaks has
+// nothing in it. A merge patch that takes out a list's last entry leaves
 // the empty object behind. A zero and a false are facts.
 it.effect("a key with nothing under it is missing, and a zero or a false is not", () =>
   Effect.gen(function* () {
@@ -123,16 +124,17 @@ it.effect("a key with nothing under it is missing, and a zero or a false is not"
     yield* sql`
       INSERT INTO categories (id, name, data)
       VALUES ('gadgets', 'Gadgets',
-              '{"expects":["brand","model","serial","parts","colors","quantity","original_box"]}')`;
+              '{"expects":["brand","model","serial","parts","colors","condition","quantity","original_box"]}')`;
     yield* sql`
       INSERT INTO items (id, property_id, space_id, category_id, name, acquired_on, price_cents, data)
       VALUES ('i-gadget', 'p-oak', 's-den', 'gadgets', 'Gadget', '2024', 100,
-              '{"brand":null,"model":"","serial":"  ","parts":{},"colors":[],"quantity":0,"original_box":false}')`;
+              '{"brand":null,"model":"","serial":"  ","parts":{},"colors":[],"condition":"\\t\\n","quantity":0,"original_box":false}')`;
 
     const { spaces } = yield* asking();
     expect(spaces![0]!.items[0]!.missing).toEqual([
       "data.brand",
       "data.colors",
+      "data.condition",
       "data.model",
       "data.parts",
       "data.serial",
@@ -391,8 +393,8 @@ it.effect("a Space with no size is missing it, and so is one with no paint", () 
         ('s-shed', 'p-oak', 'Shed', '{"sqft":80,"flooring":{"type":"concrete"}}'),
         ('s-porch', 'p-oak', 'Porch', '{}'),
         -- A patch that took the last surface out left the key behind.
-        ('s-nook', 'p-oak', 'Nook', '{"sqft":"","paint":{}}'),
-        ('s-loft', 'p-oak', 'Loft', '{"sqft":null,"paint":"  "}'),
+        ('s-nook', 'p-oak', 'Nook', '{"sqft":"\\t","paint":{}}'),
+        ('s-loft', 'p-oak', 'Loft', '{"sqft":null,"paint":" \\t\\n"}'),
         ('s-yard', 'p-oak', 'Yard', '{"sqft":0,"paint":[]}')`;
 
     const { counts, spaces } = yield* asking();
