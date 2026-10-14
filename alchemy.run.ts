@@ -15,6 +15,11 @@ import * as Redacted from "effect/Redacted";
 const PRODUCTION = "prod";
 
 export const DB = Cloudflare.D1.Database("DB", { migrations: "./migrations" });
+// Where the file of a Document is kept. The nightly run copies new files to the backup bucket
+// by one cursor: the key of the last file it copied. It lists this bucket after that key. So a
+// key here has to sort after every key that is already in the bucket when its file gets there,
+// which is why a key starts with a ULID. A file under a key that sorts before the cursor is
+// never copied, and nothing says so (ADR 0016).
 export const FILES = Cloudflare.R2.Bucket("FILES");
 export const OAUTH_KV = Cloudflare.KV.Namespace("OAUTH_KV");
 
@@ -124,10 +129,11 @@ export const BACKUP_SETTINGS = Object.keys(backupSettings);
 // Plain http is only for an address on this machine, which is where the tests' stand-in for
 // the bucket is. An export is the whole database.
 const THIS_MACHINE = new Set(["localhost", "127.0.0.1", "[::1]"]);
+const isOnThisMachine = (address: string) => THIS_MACHINE.has(new URL(address).hostname);
 const httpsOrThisMachine = (address: string) => {
   if (!URL.canParse(address)) return false;
-  const { protocol, hostname } = new URL(address);
-  return protocol === "https:" || (protocol === "http:" && THIS_MACHINE.has(hostname));
+  const { protocol } = new URL(address);
+  return protocol === "https:" || (protocol === "http:" && isOnThisMachine(address));
 };
 
 // What the Worker is bound to for the backup: all six, the two that are secrets as secrets, or
@@ -184,6 +190,15 @@ export const Worker = Cloudflare.Worker(
     const exportWaitMs = dev ? yield* optional("EXPORT_WAIT_MS") : "";
     const forTests: { readonly EXPORT_WAIT_MS?: string } =
       exportWaitMs === "" ? {} : { EXPORT_WAIT_MS: exportWaitMs };
+    // Dev mode backs nothing up to a real bucket. Its database and its files are local ones,
+    // and a copy of local files would move the cursor of the real backup past files that are
+    // not in it yet (ADR 0016). So it binds the backup only for a bucket on this machine,
+    // which is where the tests' stand-in is.
+    const configured = yield* backup;
+    const backupBindings =
+      dev && configured !== undefined && !isOnThisMachine(configured.BACKUP_ENDPOINT)
+        ? undefined
+        : configured;
     const consentSecret = yield* ConsentSecret;
     const db = yield* DB;
     const timeZone = yield* timezone;
@@ -219,7 +234,7 @@ export const Worker = Cloudflare.Worker(
         CLOUDFLARE_ACCOUNT_ID: db.accountId,
         DATABASE_ID: db.databaseId,
         // All six of the backup's bindings, or none of them.
-        ...(yield* backup),
+        ...backupBindings,
         ...forTests,
       },
       // Local dev has no use for a domain.

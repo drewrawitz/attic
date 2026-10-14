@@ -1,9 +1,16 @@
 import { expect } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import { nightlyCron } from "../alchemy.run.ts";
-import { ACCESS_KEY, BACKUP_ON, bucket } from "./support/backup.ts";
 import {
-  beforeAll,
+  ACCESS_KEY,
+  backedUpWorker,
+  BACKUP_ON,
+  bucket,
+  untilBackupIsOff,
+  untilBackupIsOn,
+  withBackup,
+} from "./support/backup.ts";
+import {
   cloudflare,
   deployWith,
   eventually,
@@ -11,13 +18,15 @@ import {
   stack,
   test,
 } from "./support/harness.ts";
-import { runNightly } from "./support/nightly.ts";
+import { lineOf, runNightly } from "./support/nightly.ts";
 import { dateIn, timeZoneOnAnotherDate } from "./support/timezones.ts";
 
-// The nightly run, through the real Worker on the local simulators. Alchemy's local runtime
-// fires the Worker's `scheduled` handler when asked, as a Cron Trigger does at night.
-// Cloudflare's API and the backup bucket are stood in for on this machine, the way Google is.
-// What holds for a run whatever its chores are is in nightly-chores.test.ts.
+// The nightly run, through the real Worker on the local simulators, and the first of its
+// chores, the export of the database. Alchemy's local runtime fires the Worker's `scheduled`
+// handler when asked, as a Cron Trigger does at night. Cloudflare's API and the backup bucket
+// are stood in for on this machine, the way Google is. The second chore, the copy of the files,
+// is in nightly-files.test.ts, and what holds for a run whatever its chores are is in
+// nightly-chores.test.ts.
 
 // A Cron Trigger is in UTC. The run is at 3 in the morning by the timezone's standard time,
 // the time its clocks keep in winter, so that a deploy plans the same trigger whether or not
@@ -49,30 +58,23 @@ test(
 const SQL = "CREATE TABLE cellar (shelf TEXT);\nINSERT INTO cellar VALUES ('crème de cassis');\n";
 const EXPORT = SQL.repeat(4000);
 
-// The Worker with a backup bucket configured, for every test down to the ones that change its
-// settings again. A run on the Worker that was there before never reaches Cloudflare, which is
-// how the wait can tell the two apart.
-const withBackup = beforeAll(
-  deployWith(BACKUP_ON).pipe(
-    Effect.andThen(
-      eventually(async (url) => {
-        cloudflare.exportsWill({ sql: EXPORT });
-        await runNightly(url);
-        expect(cloudflare.calls).not.toHaveLength(0);
-      }),
-    ),
-  ),
-);
-
 // A test body that runs against the Worker that has a backup bucket, which starts out empty.
 // It is given the Worker's address, and the id of the database the Worker is to export.
 const onBackedUpWorker = (body: (url: string, databaseId: string) => Promise<void>) =>
-  Effect.gen(function* () {
-    yield* withBackup;
-    const { url, databaseId } = yield* stack;
-    bucket.empty();
-    yield* Effect.promise(() => body(url!, databaseId));
-  });
+  Effect.flatMap(backedUpWorker, ({ url, databaseId }) =>
+    Effect.promise(() => body(url, databaseId)),
+  );
+
+// One nightly run, read for the export: the line the export logged. The copy of the files
+// runs after the export in every run. `FILES` is empty here, so all it does is look for its
+// cursor in the bucket, and what it logs and sends is left out of what these tests read.
+const runForExport = async (url: string) => {
+  const { outcome, log } = await runNightly(url);
+  return { outcome, line: lineOf("database backup", log) };
+};
+
+// The requests the bucket was sent for an export.
+const exportRequests = () => bucket.requests.filter(({ key }) => key.startsWith("database/"));
 
 test(
   "a run leaves the export in the bucket under today's date, byte for byte",
@@ -81,7 +83,7 @@ test(
     // The tests leave the timezone unset, which is UTC. The date is read on both sides of the
     // run, in case it runs across midnight.
     const dates = [dateIn("UTC")];
-    const { outcome, log } = await runNightly(url);
+    const { outcome, line } = await runForExport(url);
     dates.push(dateIn("UTC"));
 
     expect(outcome).toBe("ok");
@@ -92,12 +94,12 @@ test(
 
     // Three subrequests: the call that starts the export, the read of the signed address,
     // and the PUT.
-    expect([cloudflare.calls.length, cloudflare.downloads(), bucket.requests.length]).toEqual([
+    expect([cloudflare.calls.length, cloudflare.downloads(), exportRequests().length]).toEqual([
       1, 1, 1,
     ]);
 
     // The line says what was exported, its size in bytes, and how long it took.
-    expect(log).toMatch(
+    expect(line).toMatch(
       new RegExp(`^database backup: exported ${key}, 328000 bytes, in \\d+\\.\\d s\\.\\n$`),
     );
   }),
@@ -109,10 +111,10 @@ test(
   "the request to the bucket is signed over its headers, not its body, and says how long it is",
   onBackedUpWorker(async (url) => {
     cloudflare.exportsWill({ sql: EXPORT });
-    await runNightly(url);
+    await runForExport(url);
 
-    expect(bucket.requests).toHaveLength(1);
-    const [{ method, headers }] = bucket.requests as [(typeof bucket.requests)[number]];
+    expect(exportRequests()).toHaveLength(1);
+    const [{ method, headers }] = exportRequests() as [(typeof bucket.requests)[number]];
     expect(method).toBe("PUT");
     expect(headers.authorization).toMatch(
       new RegExp(
@@ -131,10 +133,10 @@ test(
   "an export that is not done the first two times still ends in one object",
   onBackedUpWorker(async (url, databaseId) => {
     cloudflare.exportsWill({ sql: EXPORT, notYet: 2 });
-    const { outcome, log } = await runNightly(url);
+    const { outcome, line } = await runForExport(url);
 
     expect(outcome).toBe("ok");
-    expect(log).toMatch(/^database backup: exported database\/\S+\.sql, 328000 bytes, /);
+    expect(line).toMatch(/^database backup: exported database\/\S+\.sql, 328000 bytes, /);
     expect([...bucket.objects.values()].map(({ body }) => body.toString("utf8"))).toEqual([EXPORT]);
     // One call starts the export, and each one after it carries the bookmark the first was
     // given, which is how Cloudflare knows it is the same export.
@@ -159,15 +161,15 @@ test(
   "an export that is never done stops after 20 calls, with a logged failure and no object",
   onBackedUpWorker(async (url) => {
     cloudflare.exportsWill({ sql: EXPORT, notYet: Infinity });
-    const { outcome, log } = await runNightly(url);
+    const { outcome, line } = await runForExport(url);
 
     expect(outcome).toBe("ok");
-    expect(log).toBe(
+    expect(line).toBe(
       "database backup: failed. Cloudflare had not finished the export after 20 calls.\n",
     );
     expect(cloudflare.calls).toHaveLength(20);
     expect(cloudflare.downloads()).toBe(0);
-    expect(bucket.requests).toHaveLength(0);
+    expect(exportRequests()).toHaveLength(0);
   }),
 );
 
@@ -176,14 +178,14 @@ test(
   "an export that is not done and has no bookmark to ask again with is not asked about twice",
   onBackedUpWorker(async (url) => {
     cloudflare.exportsWill({ sql: EXPORT, notYet: 1, withoutBookmark: true });
-    const { outcome, log } = await runNightly(url);
+    const { outcome, line } = await runForExport(url);
 
     expect(outcome).toBe("ok");
-    expect(log).toBe(
+    expect(line).toBe(
       "database backup: failed. Cloudflare answered the call for an export with neither a signed address nor a bookmark to ask again with.\n",
     );
     expect(cloudflare.calls).toHaveLength(1);
-    expect(bucket.requests).toHaveLength(0);
+    expect(exportRequests()).toHaveLength(0);
   }),
 );
 
@@ -191,10 +193,10 @@ test(
   "a second run on the same day replaces that day's export",
   onBackedUpWorker(async (url) => {
     cloudflare.exportsWill({ sql: EXPORT });
-    await runNightly(url);
+    await runForExport(url);
     const later = `${EXPORT}INSERT INTO cellar VALUES ('one more jar');\n`;
     cloudflare.exportsWill({ sql: later });
-    await runNightly(url);
+    await runForExport(url);
 
     expect([...bucket.objects.values()].map(({ body }) => body.toString("utf8"))).toEqual([later]);
   }),
@@ -210,14 +212,14 @@ test(
       sql: EXPORT,
       error: "D1_ERROR: the cellar flooded,\n  up to the shelf",
     });
-    const { outcome, log } = await runNightly(url);
+    const { outcome, line } = await runForExport(url);
 
     expect(outcome).toBe("ok");
-    expect(log).toBe(
+    expect(line).toBe(
       "database backup: failed. Cloudflare could not make the export: D1_ERROR: the cellar flooded, up to the shelf\n",
     );
     expect(cloudflare.calls).toHaveLength(1);
-    expect(bucket.requests).toHaveLength(0);
+    expect(exportRequests()).toHaveLength(0);
   }),
 );
 
@@ -225,15 +227,15 @@ test(
   "a token that Cloudflare turns away ends in a logged failure, with the token left out",
   onBackedUpWorker(async (url) => {
     cloudflare.exportsWill({ sql: EXPORT, refusesToken: true });
-    const { outcome, log } = await runNightly(url);
+    const { outcome, line } = await runForExport(url);
 
     expect(outcome).toBe("ok");
     // The stand-in sends the token back in its answer, which is logged with the token hidden.
-    expect(log).toBe(
+    expect(line).toBe(
       'database backup: failed. The call to Cloudflare for an export was answered with 403: {"success":false,"errors":[{"code":10000,"message":"Authentication error for Bearer [hidden]"}],"messages":[],"result":null}\n',
     );
-    expect(log).not.toContain(EXPORT_TOKEN);
-    expect(bucket.requests).toHaveLength(0);
+    expect(line).not.toContain(EXPORT_TOKEN);
+    expect(exportRequests()).toHaveLength(0);
   }),
 );
 
@@ -241,17 +243,17 @@ test(
   "a signed address that answers 500 ends in a logged failure, with the address left out",
   onBackedUpWorker(async (url) => {
     cloudflare.exportsWill({ sql: EXPORT, signedAddressAnswers: 500 });
-    const { outcome, log } = await runNightly(url);
+    const { outcome, line } = await runForExport(url);
 
     expect(outcome).toBe("ok");
     // The stand-in sends its own address back, as S3 does in an error.
-    expect(log).toBe(
+    expect(line).toBe(
       "database backup: failed. The read of the export's signed address was answered with 500: <Error><Code>InternalError</Code><Resource>[hidden]</Resource><SignatureProvided>[hidden]</SignatureProvided></Error>\n",
     );
     const signedAddress = new URL(cloudflare.signedAddress()!);
-    expect(log).not.toContain(signedAddress.pathname);
-    expect(log).not.toContain(signedAddress.searchParams.get("X-Amz-Signature"));
-    expect(bucket.requests).toHaveLength(0);
+    expect(line).not.toContain(signedAddress.pathname);
+    expect(line).not.toContain(signedAddress.searchParams.get("X-Amz-Signature"));
+    expect(exportRequests()).toHaveLength(0);
   }),
 );
 
@@ -259,13 +261,13 @@ test(
   "an export that comes without its length ends in a logged failure and no object",
   onBackedUpWorker(async (url) => {
     cloudflare.exportsWill({ sql: EXPORT, withoutLength: true });
-    const { outcome, log } = await runNightly(url);
+    const { outcome, line } = await runForExport(url);
 
     expect(outcome).toBe("ok");
-    expect(log).toBe(
+    expect(line).toBe(
       "database backup: failed. The signed address of the export did not say how long the file is, and a bucket has to be told before the first byte.\n",
     );
-    expect(bucket.requests).toHaveLength(0);
+    expect(exportRequests()).toHaveLength(0);
   }),
 );
 
@@ -276,15 +278,15 @@ test(
     // The provider has another secret for the key than the one the Worker signs with.
     bucket.knows({ ...ACCESS_KEY, secretAccessKey: "a-newer-secret-key" });
     try {
-      const { outcome, log } = await runNightly(url);
+      const { outcome, line } = await runForExport(url);
 
       expect(outcome).toBe("ok");
       // The stand-in says the Worker's secret back, which is logged with the secret hidden.
-      expect(log).toMatch(
+      expect(line).toMatch(
         /^database backup: failed\. The PUT of database\/\d{4}-\d{2}-\d{2}\.sql to the backup bucket was answered with 403: <\?xml version="1\.0" encoding="UTF-8"\?> <Error><Code>SignatureDoesNotMatch<\/Code><Message>The request signature we calculated does not match the signature you provided\.<\/Message><Expected>\[hidden\]<\/Expected><\/Error>\n$/,
       );
-      expect(log).not.toContain(ACCESS_KEY.secretAccessKey);
-      expect(bucket.requests).toHaveLength(1);
+      expect(line).not.toContain(ACCESS_KEY.secretAccessKey);
+      expect(exportRequests()).toHaveLength(1);
       expect(bucket.objects.size).toBe(0);
     } finally {
       bucket.knows(ACCESS_KEY);
@@ -297,26 +299,26 @@ test(
   "a call that nobody answers ends in a logged failure that says which call it was",
   onBackedUpWorker(async (url) => {
     cloudflare.exportsWill({ sql: EXPORT, hangsUpOn: "call" });
-    const unreached = await runNightly(url);
+    const unreached = await runForExport(url);
     expect(unreached.outcome).toBe("ok");
-    expect(unreached.log).toMatch(
+    expect(unreached.line).toMatch(
       /^database backup: failed\. The call to Cloudflare for an export got no answer: \S.*\n$/,
     );
 
     cloudflare.exportsWill({ sql: EXPORT, hangsUpOn: "download" });
-    const unread = await runNightly(url);
-    expect(unread.log).toMatch(
+    const unread = await runForExport(url);
+    expect(unread.line).toMatch(
       /^database backup: failed\. The read of the export's signed address got no answer: \S.*\n$/,
     );
     // The line holds no part of the address that nobody answered at.
-    expect(unread.log).not.toContain("/signed/");
+    expect(unread.line).not.toContain("/signed/");
 
     cloudflare.exportsWill({ sql: EXPORT });
     bucket.hangsUp(true);
     try {
-      const unput = await runNightly(url);
+      const unput = await runForExport(url);
       expect(unput.outcome).toBe("ok");
-      expect(unput.log).toMatch(
+      expect(unput.line).toMatch(
         /^database backup: failed\. The PUT of database\/\d{4}-\d{2}-\d{2}\.sql to the backup bucket got no answer: \S.*\n$/,
       );
       expect(bucket.objects.size).toBe(0);
@@ -353,24 +355,40 @@ test(
   }),
 );
 
+// `vp run dev` reads the same .env as a deploy, and its database and its files are local ones.
+// A copy of local files would move the cursor of the real backup past files that are not in it
+// yet. The tests run in dev mode too, and their bucket is a stand-in on this machine.
+test(
+  "in dev mode, a backup bucket that is not on this machine is left alone, and the backup is off",
+  Effect.gen(function* () {
+    yield* withBackup;
+    const realBucket = { ...BACKUP_ON, BACKUP_ENDPOINT: "https://s3.eu-central-9.example.com" };
+
+    const last = yield* deployWith(realBucket).pipe(
+      Effect.andThen(untilBackupIsOff),
+      // The stand-in again, for the test after this one.
+      Effect.ensuring(deployWith(BACKUP_ON).pipe(Effect.andThen(untilBackupIsOn), Effect.orDie)),
+    );
+
+    expect(last).toEqual({
+      outcome: "ok",
+      log: "database backup: off, because no backup bucket is configured.\nfile backup: off, because no backup bucket is configured.\n",
+    });
+  }),
+);
+
 // This one also puts the settings back for whatever runs next.
 test(
-  "with no backup bucket configured, a run reaches nobody and says in one line that the backup is off",
+  "with no backup bucket configured, a run reaches nobody, and each chore says in its line that the backup is off",
   Effect.gen(function* () {
     yield* withBackup;
     yield* deployWith();
 
     // The Worker that was there before still has the backup, and its run reaches Cloudflare.
-    let last = { outcome: "", log: "" };
-    yield* eventually(async (url) => {
-      cloudflare.exportsWill({ sql: EXPORT });
-      bucket.empty();
-      last = await runNightly(url);
-      expect(cloudflare.calls).toHaveLength(0);
-    });
+    const last = yield* untilBackupIsOff;
     expect(last).toEqual({
       outcome: "ok",
-      log: "database backup: off, because no backup bucket is configured.\n",
+      log: "database backup: off, because no backup bucket is configured.\nfile backup: off, because no backup bucket is configured.\n",
     });
     expect(bucket.requests).toHaveLength(0);
   }).pipe(Effect.ensuring(Effect.orDie(deployWith()))),
@@ -388,7 +406,9 @@ test(
     // Nothing was deployed, so the Worker that was there still answers, with the backup off.
     const { url } = yield* stack;
     const { log } = yield* Effect.promise(() => runNightly(url!));
-    expect(log).toBe("database backup: off, because no backup bucket is configured.\n");
+    expect(lineOf("database backup", log)).toBe(
+      "database backup: off, because no backup bucket is configured.\n",
+    );
   }).pipe(Effect.ensuring(Effect.orDie(deployWith()))),
 );
 
