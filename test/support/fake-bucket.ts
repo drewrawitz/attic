@@ -54,9 +54,10 @@ const AUTHORIZATION =
   /^AWS4-HMAC-SHA256 Credential=([^/]+)\/(\d{8})\/([^/]+)\/s3\/aws4_request, ?SignedHeaders=([^,]+), ?Signature=([0-9a-f]{64})$/;
 
 // Stands in for the backup bucket: an S3-compatible bucket at another provider. It takes a
-// PUT of an object, and holds the Worker to what such a bucket would: the request is for this
-// bucket, it says how long its body is, and it is signed with an access key the bucket knows,
-// for the bucket's region, over the headers S3 asks for. A request that falls short gets the
+// PUT of an object and a GET of one, and holds the Worker to what such a bucket would: the
+// request is for this bucket, a PUT says how long its body is, and it is signed with an access
+// key the bucket knows, for the bucket's region, over the headers S3 asks for. A PUT that says
+// what the MD5 of its body is has to be right about it. A request that falls short gets the
 // error S3 would give, and nothing is kept.
 //
 // Alchemy's local runtime has an S3 endpoint of its own, for a local R2 bucket. It is not used
@@ -71,6 +72,8 @@ export const startFakeBucket = async (bucket: {
   // The access key the bucket knows. A test changes it, so that the Worker's no longer fits.
   let known = bucket.accessKey;
   let hangingUp = false;
+  // The key the bucket takes no PUT for.
+  let refusedKey: string | undefined;
   const objects = new Map<string, { body: Buffer; contentType: string | undefined }>();
   const requests: BucketRequest[] = [];
 
@@ -120,15 +123,38 @@ export const startFakeBucket = async (bucket: {
           `<Expected>${bucket.accessKey.secretAccessKey}</Expected>`,
         );
       }
+      if (request.method === "GET") {
+        const held = objects.get(key);
+        if (held === undefined) {
+          return refuse(404, "NoSuchKey", "The specified key does not exist.");
+        }
+        response.writeHead(200, {
+          "content-type": held.contentType ?? "binary/octet-stream",
+          "content-length": String(held.body.length),
+        });
+        return response.end(held.body);
+      }
       if (request.method !== "PUT") {
-        return refuse(405, "MethodNotAllowed", "The stand-in only takes a PUT.");
+        return refuse(405, "MethodNotAllowed", "The stand-in only takes a GET and a PUT.");
       }
       if (request.headers["content-length"] === undefined) {
         return refuse(411, "MissingContentLength", "You must provide the Content-Length header.");
       }
+      if (key === refusedKey) {
+        return refuse(500, "InternalError", "We encountered an internal error. Please try again.");
+      }
+      const md5 = createHash("md5").update(body);
+      const saidMd5 = request.headers["content-md5"];
+      if (saidMd5 !== undefined && saidMd5 !== md5.copy().digest("base64")) {
+        return refuse(
+          400,
+          "BadDigest",
+          "The Content-MD5 you specified did not match what we received.",
+        );
+      }
 
       objects.set(key, { body, contentType: request.headers["content-type"] });
-      response.writeHead(200, { etag: `"${createHash("md5").update(body).digest("hex")}"` });
+      response.writeHead(200, { etag: `"${md5.digest("hex")}"` });
       response.end();
     })();
   });
@@ -152,6 +178,15 @@ export const startFakeBucket = async (bucket: {
     // Whether the bucket drops every connection with no answer, from here on.
     hangsUp: (on: boolean) => {
       hangingUp = on;
+    },
+    // The bucket answers a PUT for this key with a 500 from here on, as a provider does on a
+    // bad night, and takes one for every key again when it is given none.
+    refuses: (key: string | undefined) => {
+      refusedKey = key;
+    },
+    // Puts an object in the bucket that the Worker did not send.
+    holds: (key: string, text: string) => {
+      objects.set(key, { body: Buffer.from(text, "utf8"), contentType: "application/json" });
     },
     close,
   };

@@ -1,10 +1,15 @@
 import type { WorkerEnv } from "../../../alchemy.run.ts";
-import { ChoreFailure, type Chore, type NightlyRun } from "./chore.ts";
+import { ChoreFailure, reasonOf, type Chore, type NightlyRun } from "./chore.ts";
 import { databaseBackup } from "./database-backup.ts";
+import { fileBackup } from "./file-backup.ts";
 
 // The nightly run. The Cron Trigger in alchemy.run.ts fires the Worker's `scheduled` handler
-// once a night, and the handler runs these chores, one after another.
-const nightlyChores = (env: WorkerEnv): ReadonlyArray<Chore> => [databaseBackup(env)];
+// once a night, and the handler runs these chores, one after another. A chore reads its
+// bindings when it runs, not when it is listed.
+export const nightlyChores = (env: WorkerEnv): ReadonlyArray<Chore> => [
+  databaseBackup(env),
+  fileBackup(env),
+];
 
 // How many subrequests one run makes at the most, between all of its chores. A cron run on
 // Workers Free gets 50 (ADR 0012), and a `fetch` past them fails. The run stops five short,
@@ -45,6 +50,7 @@ export const runChores = async (chores: ReadonlyArray<Chore>): Promise<void> => 
         throw new ChoreFailure(`${what} got no answer: ${String(error)}`);
       }
     },
+    asksLeft: () => SUBREQUEST_LIMIT - subrequests,
     keepOut: (value) => {
       if (value === "") return;
       keptOut.push(value);
@@ -56,8 +62,7 @@ export const runChores = async (chores: ReadonlyArray<Chore>): Promise<void> => 
     try {
       console.log(fitForLog(`${chore.name}: ${await chore.run(night)}`));
     } catch (error) {
-      const reason = error instanceof ChoreFailure ? error.message : String(error);
-      console.error(fitForLog(`${chore.name}: failed. ${reason}`));
+      console.error(fitForLog(`${chore.name}: failed. ${reasonOf(error)}`));
     }
   }
 };

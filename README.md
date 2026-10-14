@@ -8,7 +8,7 @@ Attic has no app. It is a remote MCP server on Cloudflare (Workers, D1, R2, KV) 
 
 ## Layout
 
-- `apps/server` is the Worker. Besides answering requests it has a nightly run, which a Cron Trigger fires: a list of chores in `src/nightly.ts`, run one after another. The first is the [backup](#backup) of the database.
+- `apps/server` is the Worker. Besides answering requests it has a nightly run, which a Cron Trigger fires: a list of chores in `src/nightly.ts`, run one after another. The two there are the [backup](#backup): an export of the database, and a copy of the files that are new.
 - `packages/core` is the domain logic, written with Effect. Nothing in it is specific to Workers, so its tests run in Node.
   Every tool is declared there with `defineTool`, one file each in `src/tools/`, and listed in `src/index.ts`. The Worker registers whatever is on that list. A prompt, which `src/prompt.ts` describes, is a fixed text for a client to follow. `src/index.ts` has a list of those too, and the Worker registers it the same way.
   A tool that writes does its reads, builds its statements, and hands them to `Write` in `src/write.ts`. That runs them as one atomic batch, together with the Change that records them. `src/records.ts` is the one place that says what a record of each type is and what it points at. A Change's snapshots are built from it, and `undo` works from it. `src/save.ts` holds the rules every save tool follows.
@@ -57,7 +57,7 @@ Both suites apply the real files in `migrations/`. The tests in `packages/core` 
 
 The tests in `test/` also sign in, and they need no Google account and no `.env`. They bring their own settings, and a stand-in for Google on your machine answers the two calls the Worker makes to it. The Worker finds Google through `GOOGLE_TOKEN_URL` and `GOOGLE_USERINFO_URL`, which only dev mode reads. A deploy always uses Google's own addresses.
 
-The nightly run is tested the same way. Alchemy's local runtime fires the Worker's `scheduled` handler when a test asks it to, and a stand-in for Cloudflare's API and one for the backup bucket answer the calls the run makes. The one for the bucket checks the signature of a request as S3 does. The Worker finds Cloudflare's API through `CLOUDFLARE_API_URL`, which only dev mode reads, like the two addresses for Google. So is `EXPORT_WAIT_MS`, which the tests set so that the Worker does not wait a second between two calls about an export. One file in `test/` runs no stack: `nightly-chores.test.ts` calls the code that runs the chores, with chores of its own, for the rules that one real chore cannot show through the Worker.
+The nightly run is tested the same way. Alchemy's local runtime fires the Worker's `scheduled` handler when a test asks it to, and a stand-in for Cloudflare's API and one for the backup bucket answer the calls the run makes. The one for the bucket checks the signature of a request as S3 does. The Worker finds Cloudflare's API through `CLOUDFLARE_API_URL`, which only dev mode reads, like the two addresses for Google. So is `EXPORT_WAIT_MS`, which the tests set so that the Worker does not wait a second between two calls about an export. No tool stores a file yet, so the tests of the copy of the files put their own objects in the local R2 bucket, through Alchemy's own R2 client. One file in `test/` runs no stack: `nightly-chores.test.ts` calls the code that runs the chores, mostly with chores of its own, for the rules that cannot be seen through the Worker.
 
 A test in `packages/core` starts on the first day of 1970, because Effect gives each test a clock that stands still. One that goes by today's date sets the day first, with `todayIs` in `test/call.ts`. The tests in `test/` run on the real clock, with the timezone left at UTC and the currency at USD.
 
@@ -155,12 +155,16 @@ vp exec alchemy deploy --stage staging
 
 A copy of the data can leave Cloudflare every night, so that it outlives the deployment and the account. It is off until its six settings are in `.env`. Until then the nightly run does nothing, and says so in the log.
 
-Every night at 3 in the morning in `ATTIC_TIMEZONE`, the Worker asks Cloudflare for an export of the database and streams it into the backup bucket as `database/<date>.sql`, such as `database/2026-10-14.sql`. Where the clocks change for the summer, the run is at 4 in those months. The database answers nothing else while an export is being made, which is why this happens at night. A second run on the same day replaces that day's export. Attic only writes to the bucket and never deletes from it (ADR 0016).
+Every night at 3 in the morning in `ATTIC_TIMEZONE`, the Worker asks Cloudflare for an export of the database and streams it into the backup bucket as `database/<date>.sql`, such as `database/2026-10-14.sql`. Where the clocks change for the summer, the run is at 4 in those months. The database answers nothing else while an export is being made, which is why this happens at night. A second run on the same day replaces that day's export.
+
+The same run then copies the files that are not in the bucket yet, each to `files/<its key in R2>`, with its content type. Files are copied a batch a night. A run on Workers Free gets 50 subrequests, which are its requests to anything but its own database, R2 bucket, and KV. The export takes between 3 and 22 of them, and each file takes one. So a night copies about 40 files, or as few as 21 when the export is slow to finish, and the rest wait for the next night. The copy keeps how far it got in the bucket itself, in `state/files-cursor.json`, so a bucket that is new or was emptied is filled again from the first file. Until a tool stores a file, which comes with step 6 of the `v1` route, there is nothing to copy.
+
+Attic writes to the bucket, reads back how far the copy got, and never deletes from it (ADR 0016). A file that is deleted from R2 stays in the backup.
 
 It takes a bucket, a key to it, and a second Cloudflare token:
 
 1. **Create a bucket at another provider than Cloudflare.** Any provider with an S3-compatible API will do. This is the backup bucket, and it should hold nothing else.
-2. **Create an access key that is limited to that bucket** and can read and write objects in it. Where the provider allows it, make it a key that cannot delete, since Attic never does.
+2. **Create an access key that is limited to that bucket** and can read, write, and list the objects in it. Where the provider allows it, make it a key that cannot delete, since Attic never does. It has to read because the copy of the files reads how far it got. It has to list because of how S3 answers an access key that may not: a read of an object that is not there yet is then refused with a 403, where the copy needs the 404 that says there is no cursor.
 3. **Set a lifecycle rule at the provider** that removes the objects under `database/` once they are, say, 90 days old. Without one, every night's export is kept for good. Put the rule on `database/` alone, so that nothing else in the bucket ever expires.
 4. **Create a Cloudflare API token that can export the database.** This is a second token, not the one that deploys. It sits in the Worker as a secret, so it should be able to do as little as possible: scope it to the one account, and give it a D1 permission and nothing else. Cloudflare's API reference does not say which D1 permission an export needs. **D1 Read** is the least there is, so start with that, and check it with the call below. If Cloudflare answers with an authentication error, give the token **D1 Edit** in its place. Both are permissions on the account, so the token reaches every D1 database in it.
 5. **Put the six settings in `.env`** and deploy again:
@@ -183,14 +187,18 @@ curl -X POST "https://api.cloudflare.com/client/v4/accounts/<account id>/d1/data
 
 An answer with `"success": true` means the token can export. Cloudflare cancels the export this starts once nobody asks about it again.
 
-The morning after, the Worker's log has one line for the night. It is in the Cloudflare dashboard, under Workers & Pages, the Worker, Logs:
+The morning after, the Worker's log has two lines for the night, one for the export and one for the files. It is in the Cloudflare dashboard, under Workers & Pages, the Worker, Logs:
 
 - `database backup: exported database/2026-10-14.sql, 48213 bytes, in 3.2 s.`
 - or `database backup: failed.`, followed by what failed, with the status and the answer Cloudflare or the bucket gave.
+- `file backup: copied 12 files, 8301447 bytes, in 6.1 s.`, with `More are waiting for the next night.` after it when the night did not get to all of them.
+- or `file backup: nothing new to copy.`
+- or `file backup: failed.`, followed by how many files were copied before it stopped and what failed, with the key of the file and the answer the bucket gave. A file that fails stops the batch, and it is the first file of the next night.
 
-A night that fails shows nowhere else, and the next night tries again.
+A night that fails shows nowhere else, and the next night tries again. The export and the files stand apart: one can fail and the other still goes through.
 
-Two more things to know:
+Three more things to know:
 
 - The nightly run takes one of the five Cron Triggers an account gets on Workers Free.
-- `vp run dev` reads the same six settings. Its database is a local one that Cloudflare cannot export, so with the backup set up, a nightly run there fails and says so. Nothing is written to the bucket.
+- `vp run dev` reads the same six settings and backs nothing up. Its database and its files are local ones, which do not belong in your backup, so a nightly run there says the backup is off. Nothing is written to the bucket.
+- If the line for the files says that `state/files-cursor.json` does not hold the key of the last file that was copied, delete that object at the provider. The next night then copies every file again, a batch a night.
