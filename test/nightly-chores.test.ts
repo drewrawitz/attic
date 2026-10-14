@@ -52,13 +52,52 @@ it("a chore that fails does not stop the next, and the run does not throw", asyn
   ]);
 });
 
+it("a chore gets one line in the log, whatever line breaks its words have", async () => {
+  const lines = logged();
+
+  await runChores([
+    { name: "first", run: async () => "did this,\n  and then that." },
+    {
+      name: "second",
+      run: async () => {
+        throw new ChoreFailure("The answer was:\r\n<Error>\n\t<Code>No</Code>\n</Error>\n");
+      },
+    },
+  ]);
+
+  expect(lines).toEqual([
+    "first: did this, and then that.",
+    "second: failed. The answer was: <Error> <Code>No</Code> </Error>",
+  ]);
+});
+
+// A call that gets no answer at all is the chore's failure too, and the line says which call.
+it("a call that reaches nobody fails the chore, in words that say what was asked", async () => {
+  const lines = logged();
+
+  await runChores([
+    {
+      name: "first",
+      // Nothing listens on port 9 of this machine.
+      run: async (night) => {
+        await night.ask("The call to nobody", "http://127.0.0.1:9/");
+        return "reached somebody.";
+      },
+    },
+  ]);
+
+  expect(lines).toEqual([
+    expect.stringMatching(/^first: failed\. The call to nobody got no answer: \S/),
+  ]);
+});
+
 // A cron run on Workers Free gets 50 subrequests (ADR 0012), and the chores of one run share
 // them. The run counts them itself and stops at 45, whichever chore is asking.
 it("a run makes 45 subrequests and no more, and says so to the chore that asks for another", async () => {
   const lines = logged();
   received = 0;
   const calls = (count: number) => async (night: NightlyRun) => {
-    for (let made = 0; made < count; made++) await night.fetch(origin);
+    for (let made = 0; made < count; made++) await night.ask("A call", origin);
     return `made ${count} calls.`;
   };
 

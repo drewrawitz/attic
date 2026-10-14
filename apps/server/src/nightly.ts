@@ -6,39 +6,44 @@ import { databaseBackup } from "./database-backup.ts";
 // once a night, and the handler runs these chores, one after another.
 const nightlyChores = (env: WorkerEnv): ReadonlyArray<Chore> => [databaseBackup(env)];
 
-/**
- * How many subrequests one run makes at the most, between all of its chores. A cron run on
- * Workers Free gets 50 (ADR 0012), and a `fetch` past them fails. The run stops five short,
- * because a `fetch` that is sent on to another address counts once more for each hop.
- */
+// How many subrequests one run makes at the most, between all of its chores. A cron run on
+// Workers Free gets 50 (ADR 0012), and a `fetch` past them fails. The run stops five short,
+// because a `fetch` that is sent on to another address counts once more for each hop.
 const SUBREQUEST_LIMIT = 45;
 
 // How long a line of the log is at the most. An answer that said no is logged with the line,
 // and can be any length.
-const LINE_LENGTH = 600;
+const MAX_LINE_LENGTH = 600;
 
-/**
- * Runs each chore, and logs one line for each: what it did, or why it stopped. A chore that
- * fails does not stop the next, and the run itself never throws. A night that fails only shows
- * in the log.
- */
+// Runs each chore, and logs one line for each: what it did, or why it stopped. A chore that
+// fails does not stop the next, and the run itself never throws. A night that fails only shows
+// in the log.
 export const runChores = async (chores: ReadonlyArray<Chore>): Promise<void> => {
   let subrequests = 0;
   // What must not be logged, longest first, so that a value inside another is not cut in two.
-  // A line is cut short only once that is hidden, or the cut could leave the head of a secret.
   const keptOut: string[] = [];
-  const fitForLog = (line: string) =>
-    keptOut.reduce((text, value) => text.replaceAll(value, "[hidden]"), line).slice(0, LINE_LENGTH);
+  // A chore's words as one line of the log. What must not be logged is hidden before the line
+  // is cut short, or the cut could leave the head of a secret.
+  const fitForLog = (words: string) =>
+    keptOut
+      .reduce((text, value) => text.replaceAll(value, "[hidden]"), words)
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, MAX_LINE_LENGTH);
 
   const night: NightlyRun = {
-    fetch: async (input, init) => {
+    ask: async (what, input, init) => {
       if (subrequests === SUBREQUEST_LIMIT) {
         throw new ChoreFailure(
           `The run has made its ${SUBREQUEST_LIMIT} subrequests. A cron run on Workers Free gets 50, so the rest waits for the next night.`,
         );
       }
       subrequests += 1;
-      return fetch(input, init);
+      try {
+        return await fetch(input, init);
+      } catch (error) {
+        throw new ChoreFailure(`${what} got no answer: ${String(error)}`);
+      }
     },
     keepOut: (value) => {
       if (value === "") return;

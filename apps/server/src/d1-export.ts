@@ -4,7 +4,7 @@ import { ChoreFailure, refusal, type NightlyRun } from "./chore.ts";
 // binding for one: an export is only there over the API, with a token.
 // https://developers.cloudflare.com/api/resources/d1/subresources/database/methods/export/
 
-/** What the Worker needs to ask Cloudflare for an export of its own database. */
+// What the Worker needs to ask Cloudflare for an export of its own database.
 export interface ExportAccess {
   readonly apiUrl: string;
   readonly accountId: string;
@@ -12,30 +12,30 @@ export interface ExportAccess {
   readonly token: string;
 }
 
-/** A finished export: the SQL file as a stream, and how many bytes it is. */
+// A finished export: the SQL file as a stream, and how many bytes it is.
 export interface ExportedFile {
   readonly body: ReadableStream<Uint8Array>;
   readonly length: number;
 }
 
-/**
- * How long the Worker waits between two calls about one export, in milliseconds. Cloudflare
- * cancels an export that nobody asks about: its docs say one "must be continually polled or
- * will automatically cancel", and not how long it waits. So the wait is kept short.
- */
+// How long the Worker waits between two calls about one export, in milliseconds. Cloudflare
+// cancels an export that nobody asks about: its docs say one "must be continually polled or
+// will automatically cancel", and not how long it waits. So the wait is kept short.
 const EXPORT_WAIT_MS = 1000;
 
-/**
- * How many times the Worker asks about one export, the call that starts it included, before
- * it gives up. Every call is one of the 50 subrequests a cron run gets on Workers Free
- * (ADR 0012), which every chore of the run shares. With the wait, this gives an export 19
- * seconds and the time the calls themselves take.
- */
-const EXPORT_CALLS = 20;
+// How many times the Worker asks about one export at the most, the call that starts it
+// included. Every call is one of the 50 subrequests a cron run gets on Workers Free (ADR 0012),
+// which every chore of the run shares. With the wait, this gives an export 19 seconds and the
+// time the calls themselves take.
+const MAX_EXPORT_CALLS = 20;
 
 // A part of a signed address's query that is at least this long is taken for a part of its
 // signature, and kept out of the log.
 const MIN_SECRET_LENGTH = 16;
+
+// The two calls an export takes, in the words a failure of one is logged with.
+const CALL = "The call to Cloudflare for an export";
+const DOWNLOAD = "The read of the export's signed address";
 
 const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -57,9 +57,10 @@ interface AnswerBody {
 // export holds the signed address, so no answer is logged whole.
 const pollExport = async (access: ExportAccess, night: NightlyRun, waitMs: number) => {
   let bookmark: string | undefined;
-  for (let asked = 1; asked <= EXPORT_CALLS; asked++) {
+  for (let asked = 1; asked <= MAX_EXPORT_CALLS; asked++) {
     if (asked > 1) await pause(waitMs);
-    const answer = await night.fetch(
+    const answer = await night.ask(
+      CALL,
       `${access.apiUrl}/accounts/${access.accountId}/d1/database/${encodeURIComponent(access.databaseId)}/export`,
       {
         method: "POST",
@@ -67,7 +68,7 @@ const pollExport = async (access: ExportAccess, night: NightlyRun, waitMs: numbe
         body: JSON.stringify({ output_format: "polling", current_bookmark: bookmark }),
       },
     );
-    if (!answer.ok) throw await refusal("Cloudflare", answer, "the call for an export");
+    if (!answer.ok) throw await refusal(CALL, answer);
 
     // An answer that cannot be read has no bookmark either, which stops the export below.
     const { result }: AnswerBody = await answer.json<AnswerBody>().catch(() => ({}));
@@ -89,13 +90,11 @@ const pollExport = async (access: ExportAccess, night: NightlyRun, waitMs: numbe
     }
     bookmark = result.at_bookmark;
   }
-  throw new ChoreFailure(`Cloudflare had not finished the export after ${EXPORT_CALLS} calls.`);
+  throw new ChoreFailure(`Cloudflare had not finished the export after ${MAX_EXPORT_CALLS} calls.`);
 };
 
-/**
- * Asks Cloudflare for an export of the database, and opens the SQL file at the signed address
- * it hands back. The file is not read here. Whoever takes the stream reads it.
- */
+// Asks Cloudflare for an export of the database, and opens the SQL file at the signed address
+// it hands back. The file is not read here. Whoever takes the stream reads it.
 export const exportDatabase = async (
   access: ExportAccess,
   night: NightlyRun,
@@ -109,8 +108,8 @@ export const exportDatabase = async (
     if (part.length >= MIN_SECRET_LENGTH) night.keepOut(part);
   }
 
-  const download = await night.fetch(signedAddress);
-  if (!download.ok) throw await refusal("The signed address of the export", download);
+  const download = await night.ask(DOWNLOAD, signedAddress);
+  if (!download.ok) throw await refusal(DOWNLOAD, download);
   const length = download.headers.get("content-length");
   if (download.body === null || length === null || !/^\d+$/.test(length)) {
     await download.body?.cancel();

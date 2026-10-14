@@ -73,18 +73,21 @@ const timezone = optional("ATTIC_TIMEZONE").pipe(
 // blocks the database's other requests, as D1's docs say.
 const NIGHTLY_HOUR = 3;
 
-/**
- * When the nightly run is, as a Cron Trigger, which is in UTC: 3 in the morning by the
- * timezone's standard time. That is the time its clocks keep in winter, the one further
- * behind of the two. So a deploy plans the same trigger in any season, and where the clocks
- * change, the run is at 4 in the summer. The year says which year's clocks to go by.
- */
+const MINUTES_IN_DAY = 24 * 60;
+
+// When the nightly run is, as a Cron Trigger, which is in UTC: 3 in the morning by the
+// timezone's standard time. That is the time its clocks are furthest behind in the year, which
+// for most is the time they keep in winter. So a deploy plans the same trigger in any season,
+// and where the clocks change, the run is at 4 for the rest of the year. Every day of the year
+// is looked at, because not every timezone changes its clocks for a summer: Morocco's go back
+// for Ramadan, which moves from year to year. The year says which year's clocks to go by.
 export const nightlyCron = (timeZone: string, year = new Date().getUTCFullYear()) => {
-  const minutesAhead = (month: number) =>
-    DateTime.zonedOffset(DateTime.makeZonedUnsafe(Date.UTC(year, month, 1), { timeZone })) / 60_000;
-  const standard = Math.min(minutesAhead(0), minutesAhead(6));
-  const DAY = 24 * 60;
-  const inUtc = (((NIGHTLY_HOUR * 60 - standard) % DAY) + DAY) % DAY;
+  const minutesAhead = (day: number) =>
+    DateTime.zonedOffset(DateTime.makeZonedUnsafe(Date.UTC(year, 0, day, 12), { timeZone })) /
+    60_000;
+  const standard = Math.min(...Array.from({ length: 366 }, (_, index) => minutesAhead(index + 1)));
+  const inUtc =
+    (((NIGHTLY_HOUR * 60 - standard) % MINUTES_IN_DAY) + MINUTES_IN_DAY) % MINUTES_IN_DAY;
   return `${inUtc % 60} ${Math.floor(inUtc / 60)} * * *`;
 };
 
@@ -102,55 +105,61 @@ const currency = optional("ATTIC_CURRENCY").pipe(
   }),
 );
 
-/**
- * The backup's six settings: the backup bucket, which is any S3-compatible bucket at another
- * provider, a key to it, and the Cloudflare API token the Worker exports the database with.
- * That token is not the deploy token. It is made by hand, with only the permission an export
- * needs. The README says what each setting is.
- */
-export const BACKUP_SETTINGS = [
-  "BACKUP_ENDPOINT",
-  "BACKUP_REGION",
-  "BACKUP_BUCKET",
-  "BACKUP_ACCESS_KEY_ID",
-  "BACKUP_SECRET_ACCESS_KEY",
-  "CLOUDFLARE_EXPORT_TOKEN",
-] as const;
-type BackupSetting = (typeof BACKUP_SETTINGS)[number];
+// The backup's six settings: the backup bucket, which is any S3-compatible bucket at another
+// provider, a key to it, and the Cloudflare API token the Worker exports the database with.
+// That token is not the deploy token. It is made by hand, with only the permission an export
+// needs. The README says what each setting is.
+const backupSettings = {
+  BACKUP_ENDPOINT: optional("BACKUP_ENDPOINT"),
+  BACKUP_REGION: optional("BACKUP_REGION"),
+  BACKUP_BUCKET: optional("BACKUP_BUCKET"),
+  BACKUP_ACCESS_KEY_ID: optional("BACKUP_ACCESS_KEY_ID"),
+  BACKUP_SECRET_ACCESS_KEY: optional("BACKUP_SECRET_ACCESS_KEY"),
+  CLOUDFLARE_EXPORT_TOKEN: optional("CLOUDFLARE_EXPORT_TOKEN"),
+};
 
-// What the Worker is bound to when the backup is on. The two that are secrets bind as secrets.
-type BackupSecret = "BACKUP_SECRET_ACCESS_KEY" | "CLOUDFLARE_EXPORT_TOKEN";
-type BackupBindings = Record<Exclude<BackupSetting, BackupSecret>, string> &
-  Record<BackupSecret, Redacted.Redacted<string>>;
+// The names of the six. The tests leave every one of them unset.
+export const BACKUP_SETTINGS = Object.keys(backupSettings);
 
-// The backup is off unless it is configured. With none of the six, the Worker is bound to none
-// of them, and its nightly run says the backup is off.
-const backup: Effect.Effect<Partial<BackupBindings>, Config.ConfigError> = Effect.gen(function* () {
-  const given = {} as Record<BackupSetting, string>;
-  for (const name of BACKUP_SETTINGS) given[name] = yield* optional(name);
+// Plain http is only for an address on this machine, which is where the tests' stand-in for
+// the bucket is. An export is the whole database.
+const THIS_MACHINE = new Set(["localhost", "127.0.0.1", "[::1]"]);
+const httpsOrThisMachine = (address: string) => {
+  if (!URL.canParse(address)) return false;
+  const { protocol, hostname } = new URL(address);
+  return protocol === "https:" || (protocol === "http:" && THIS_MACHINE.has(hostname));
+};
 
-  const missing = BACKUP_SETTINGS.filter((name) => given[name] === "");
-  if (missing.length === BACKUP_SETTINGS.length) return {};
-  // A backup that is set up in part would fail every night, where only the log shows it.
-  if (missing.length > 0) {
-    return yield* notUsable(
-      `The backup is set up in part. Missing: ${missing.join(", ")}. Set all six, or none of them for no backup.`,
-    );
-  }
-  // The bucket's name and an object's key go after the endpoint, so it ends without a slash.
-  const endpoint = given.BACKUP_ENDPOINT.replace(/\/+$/, "");
-  if (!URL.canParse(endpoint) || !/^https?:$/.test(new URL(endpoint).protocol)) {
-    return yield* notUsable(
-      `BACKUP_ENDPOINT is "${endpoint}", which is not an address. Give the address of the provider's S3 API with https:// in front, such as https://s3.example.com.`,
-    );
-  }
-  return {
-    ...given,
-    BACKUP_ENDPOINT: endpoint,
-    BACKUP_SECRET_ACCESS_KEY: Redacted.make(given.BACKUP_SECRET_ACCESS_KEY),
-    CLOUDFLARE_EXPORT_TOKEN: Redacted.make(given.CLOUDFLARE_EXPORT_TOKEN),
-  } satisfies BackupBindings;
-});
+// What the Worker is bound to for the backup: all six, the two that are secrets as secrets, or
+// nothing at all. The backup is off unless it is configured. With none of the six, the nightly
+// run says the backup is off.
+const backup = Config.all(backupSettings).pipe(
+  Config.mapEffect((given) => {
+    const missing = Object.entries(given)
+      .filter(([, text]) => text === "")
+      .map(([name]) => name);
+    if (missing.length === BACKUP_SETTINGS.length) return Effect.succeed(undefined);
+    // A backup that is set up in part would fail every night, where only the log shows it.
+    if (missing.length > 0) {
+      return notUsable(
+        `The backup is set up in part. Missing: ${missing.join(", ")}. Set all six, or none of them for no backup.`,
+      );
+    }
+    // The bucket's name and an object's key go after the endpoint, so it ends without a slash.
+    const endpoint = given.BACKUP_ENDPOINT.replace(/\/+$/, "");
+    if (!httpsOrThisMachine(endpoint)) {
+      return notUsable(
+        `BACKUP_ENDPOINT is "${endpoint}", which is not an https address. Give the address of the provider's S3 API with https:// in front, such as https://s3.example.com.`,
+      );
+    }
+    return Effect.succeed({
+      ...given,
+      BACKUP_ENDPOINT: endpoint,
+      BACKUP_SECRET_ACCESS_KEY: Redacted.make(given.BACKUP_SECRET_ACCESS_KEY),
+      CLOUDFLARE_EXPORT_TOKEN: Redacted.make(given.CLOUDFLARE_EXPORT_TOKEN),
+    });
+  }),
+);
 
 export const Worker = Cloudflare.Worker(
   "Worker",
@@ -209,6 +218,7 @@ export const Worker = Cloudflare.Worker(
         CLOUDFLARE_API_URL: yield* addressOf("CLOUDFLARE_API_URL", CLOUDFLARE_API_URL),
         CLOUDFLARE_ACCOUNT_ID: db.accountId,
         DATABASE_ID: db.databaseId,
+        // All six of the backup's bindings, or none of them.
         ...(yield* backup),
         ...forTests,
       },

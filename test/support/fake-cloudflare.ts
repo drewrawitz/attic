@@ -2,22 +2,24 @@ import { randomUUID } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import { serve } from "./stand-in.ts";
 
-/** What the stand-in does with the exports it is asked for, until it is told otherwise. */
+// What the stand-in does with the exports it is asked for, until it is told otherwise.
 export interface ExportBehavior {
-  /** The SQL an export holds. */
+  // The SQL an export holds.
   readonly sql: string;
-  /** How many times it says an export is not done yet, before it is. Never done at Infinity. */
+  // How many times it says an export is not done yet, before it is. Never done at Infinity.
   readonly notYet?: number;
-  /** An answer that the export is not done leaves out the bookmark to ask again with. */
+  // An answer that the export is not done leaves out the bookmark to ask again with.
   readonly withoutBookmark?: boolean;
-  /** The export fails, and this is the reason Cloudflare gives. */
+  // The export fails, and this is the reason Cloudflare gives.
   readonly error?: string;
-  /** The token is turned away, as one without the permission is. */
+  // The token is turned away, as one without the permission is.
   readonly refusesToken?: boolean;
-  /** What the signed address answers with. It serves the SQL unless this is given. */
+  // What the signed address answers with. It serves the SQL unless this is given.
   readonly signedAddressAnswers?: number;
-  /** The signed address serves the SQL in chunks, and does not say how long it is. */
+  // The signed address serves the SQL in chunks, and does not say how long it is.
   readonly withoutLength?: boolean;
+  // The connection is dropped with no answer: on a call for an export, or on the download.
+  readonly hangsUpOn?: "call" | "download";
 }
 
 const MALFORMED = {
@@ -33,14 +35,12 @@ const bodyOf = async (request: IncomingMessage) => {
   return JSON.parse(text) as Record<string, unknown>;
 };
 
-/**
- * Stands in for Cloudflare at the one call the Worker makes to its API, the export of a D1
- * database, and at the signed address that call hands back. Alchemy's local simulators have
- * no such call: local D1 can dump itself, but only through its own binding. So the stand-in
- * holds the Worker to what Cloudflare would: the token, a body that asks to poll, and on every
- * call after the first the bookmark the first one was given. The answers are in the words of
- * Cloudflare's API reference for the call.
- */
+// Stands in for Cloudflare at the one call the Worker makes to its API, the export of a D1
+// database, and at the signed address that call hands back. Alchemy's local simulators have
+// no such call: local D1 can dump itself, but only through its own binding. So the stand-in
+// holds the Worker to what Cloudflare would: the token, a body that asks to poll, and on every
+// call after the first the bookmark the first one was given. The answers are in the words of
+// Cloudflare's API reference for the call.
 export const startFakeCloudflare = async (token: string) => {
   let behavior: ExportBehavior = { sql: "" };
   // The export that is running: its bookmark, and how many more times it is not done.
@@ -61,6 +61,7 @@ export const startFakeCloudflare = async (token: string) => {
         url.pathname,
       );
       if (request.method === "POST" && exportOf !== null) {
+        if (behavior.hangsUpOn === "call") return request.socket.destroy();
         const body = await bodyOf(request);
         calls.push({
           account: decodeURIComponent(exportOf[1]!),
@@ -115,6 +116,7 @@ export const startFakeCloudflare = async (token: string) => {
       }
 
       if (request.method === "GET" && `${origin}${request.url}` === signedAddress) {
+        if (behavior.hangsUpOn === "download") return request.socket.destroy();
         downloads += 1;
         if (behavior.signedAddressAnswers !== undefined) {
           // The address is in the answer for the same reason the token is in the one above,
@@ -140,7 +142,7 @@ export const startFakeCloudflare = async (token: string) => {
 
   return {
     apiUrl: `${origin}/client/v4`,
-    /** Sets what exports do from here on, and forgets the calls and the downloads so far. */
+    // Sets what exports do from here on, and forgets the calls and the downloads so far.
     exportsWill: (next: ExportBehavior) => {
       behavior = next;
       running = undefined;
@@ -148,11 +150,11 @@ export const startFakeCloudflare = async (token: string) => {
       calls.length = 0;
       downloads = 0;
     },
-    /** Every call for an export since `exportsWill`, in order. */
+    // Every call for an export since `exportsWill`, in order.
     calls: calls as ReadonlyArray<(typeof calls)[number]>,
-    /** How many times the signed address was read since `exportsWill`. */
+    // How many times the signed address was read since `exportsWill`.
     downloads: () => downloads,
-    /** The signed address the last finished export handed back. */
+    // The signed address the last finished export handed back.
     signedAddress: () => signedAddress,
     close,
   };

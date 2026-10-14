@@ -18,15 +18,13 @@ const logFiles = () =>
 
 const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-/**
- * Fires the Worker's `scheduled` handler, the way a Cron Trigger does, through the address
- * Alchemy's local runtime keeps for that. The answer comes once the handler has returned.
- * `outcome` is "ok" unless the handler threw. `log` is what the Worker logged for the run:
- * the log is written a moment after the handler returns, so this waits for a line of it.
- *
- * The local runtime also fires the Worker's Cron Trigger on its own clock, at 03:00 UTC under
- * the tests' settings. A test that is running at that very second sees a run it did not fire.
- */
+// Fires the Worker's `scheduled` handler, the way a Cron Trigger does, through the address
+// Alchemy's local runtime keeps for that. The answer comes once the handler has returned.
+// `outcome` is "ok" unless the handler threw. `log` is what the Worker logged for the run:
+// the log is written a moment after the handler returns, so this waits for a line of it.
+//
+// The local runtime also fires the Worker's Cron Trigger on its own clock, at 03:00 UTC under
+// the tests' settings. A test that is running at that very second sees a run it did not fire.
 export const runNightly = async (url: string) => {
   const before = logFiles();
   const fired = await fetch(`${url}/cdn-cgi/handler/scheduled?format=json`, { method: "POST" });

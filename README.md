@@ -15,7 +15,7 @@ Attic has no app. It is a remote MCP server on Cloudflare (Workers, D1, R2, KV) 
   The rules about what a save names are each in one place too. `src/property.ts` works out the Current property, with today's date in the configured timezone. `src/space.ts` and `src/vendor.ts` find a Space or a Vendor by its name, or create it on first use. `src/category.ts` finds a Category, or lists the closest matches. `src/project.ts` finds a Project by its id. `src/note.ts` writes the optional Note of a save. `src/money.ts` takes an amount in dollars, stores it as cents, and writes one out in the configured currency.
 - `alchemy.run.ts` declares the Cloudflare resources: the Worker and its Cron Trigger, the D1 database, the R2 bucket, and the KV namespace.
 - `migrations/` is the database schema. It is applied on every deploy, and to the local database on every start.
-- `test/` runs the stack in `alchemy.run.ts` on local simulators.
+- `test/` runs the stack in `alchemy.run.ts` on local simulators. One file there runs no stack, and calls the code that runs the nightly chores.
 - `household/` is a made-up household: one small set of records that the tests of the read tools share, and two commands that load it into a stage's database and remove it again.
 - `docs/adr/` records decisions and the reasons behind them.
 - `GLOSSARY.md` is the vocabulary used in code and docs.
@@ -57,7 +57,7 @@ Both suites apply the real files in `migrations/`. The tests in `packages/core` 
 
 The tests in `test/` also sign in, and they need no Google account and no `.env`. They bring their own settings, and a stand-in for Google on your machine answers the two calls the Worker makes to it. The Worker finds Google through `GOOGLE_TOKEN_URL` and `GOOGLE_USERINFO_URL`, which only dev mode reads. A deploy always uses Google's own addresses.
 
-The nightly run is tested the same way. Alchemy's local runtime fires the Worker's `scheduled` handler when a test asks it to, and a stand-in for Cloudflare's API and one for the backup bucket answer the calls the run makes. The one for the bucket checks the signature of a request as S3 does. The Worker finds Cloudflare's API through `CLOUDFLARE_API_URL`, which only dev mode reads, like the two addresses for Google. One file in `test/` runs no stack: `nightly-chores.test.ts` calls the code that runs the chores, with chores of its own, for the rules that one real chore cannot show through the Worker.
+The nightly run is tested the same way. Alchemy's local runtime fires the Worker's `scheduled` handler when a test asks it to, and a stand-in for Cloudflare's API and one for the backup bucket answer the calls the run makes. The one for the bucket checks the signature of a request as S3 does. The Worker finds Cloudflare's API through `CLOUDFLARE_API_URL`, which only dev mode reads, like the two addresses for Google. So is `EXPORT_WAIT_MS`, which the tests set so that the Worker does not wait a second between two calls about an export. One file in `test/` runs no stack: `nightly-chores.test.ts` calls the code that runs the chores, with chores of its own, for the rules that one real chore cannot show through the Worker.
 
 A test in `packages/core` starts on the first day of 1970, because Effect gives each test a clock that stands still. One that goes by today's date sets the day first, with `todayIs` in `test/call.ts`. The tests in `test/` run on the real clock, with the timezone left at UTC and the currency at USD.
 
@@ -164,7 +164,7 @@ It takes a bucket, a key to it, and a second Cloudflare token:
 3. **Set a lifecycle rule at the provider** that removes the objects under `database/` once they are, say, 90 days old. Without one, every night's export is kept for good. Put the rule on `database/` alone, so that nothing else in the bucket ever expires.
 4. **Create a Cloudflare API token that can export the database.** This is a second token, not the one that deploys. It sits in the Worker as a secret, so it should be able to do as little as possible: scope it to the one account, and give it a D1 permission and nothing else. Cloudflare's API reference does not say which D1 permission an export needs. **D1 Read** is the least there is, so start with that, and check it with the call below. If Cloudflare answers with an authentication error, give the token **D1 Edit** in its place. Both are permissions on the account, so the token reaches every D1 database in it.
 5. **Put the six settings in `.env`** and deploy again:
-   - `BACKUP_ENDPOINT`: the address of the provider's S3 API, with `https://` in front and without the bucket's name, such as `https://s3.example.com`. The Worker writes an export to `<endpoint>/<bucket>/database/<date>.sql`.
+   - `BACKUP_ENDPOINT`: the address of the provider's S3 API, with `https://` in front and without the bucket's name, such as `https://s3.example.com`. A deploy stops at an address that is not https. The Worker writes an export to `<endpoint>/<bucket>/database/<date>.sql`.
    - `BACKUP_REGION`: the region the provider gives for the bucket. It is part of how a request is signed.
    - `BACKUP_BUCKET`: the bucket's name.
    - `BACKUP_ACCESS_KEY_ID` and `BACKUP_SECRET_ACCESS_KEY`: the access key from step 2.

@@ -14,7 +14,7 @@ const BUCKET = { name: "attic-backup", region: "test-region-1" };
 
 export const bucket = await startFakeBucket({ ...BUCKET, accessKey: ACCESS_KEY });
 
-/** The backup's six settings, as the User would write them in .env. */
+// The backup's six settings, as the User would write them in .env.
 export const BACKUP_ON = {
   BACKUP_ENDPOINT: bucket.endpoint,
   BACKUP_REGION: BUCKET.region,

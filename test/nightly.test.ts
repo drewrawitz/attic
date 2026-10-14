@@ -36,6 +36,11 @@ test(
     expect(nightlyCron("Asia/Kathmandu", 2026)).toBe("15 21 * * *");
     expect(nightlyCron("America/St_Johns", 2026)).toBe("30 6 * * *");
     expect(nightlyCron("Pacific/Kiritimati", 2026)).toBe("0 13 * * *");
+    // Morocco's clocks go back for Ramadan, which is not in the same months from year to year.
+    // The run is by the time they keep then, in a year where Ramadan is over the new year and
+    // in a year where it is not.
+    expect(nightlyCron("Africa/Casablanca", 2026)).toBe("0 3 * * *");
+    expect(nightlyCron("Africa/Casablanca", 2030)).toBe("0 3 * * *");
   }),
 );
 
@@ -201,12 +206,15 @@ test(
 test(
   "an export that Cloudflare fails ends in a logged failure and no object",
   onBackedUpWorker(async (url) => {
-    cloudflare.exportsWill({ sql: EXPORT, error: "D1_ERROR: the cellar flooded" });
+    cloudflare.exportsWill({
+      sql: EXPORT,
+      error: "D1_ERROR: the cellar flooded,\n  up to the shelf",
+    });
     const { outcome, log } = await runNightly(url);
 
     expect(outcome).toBe("ok");
     expect(log).toBe(
-      "database backup: failed. Cloudflare could not make the export: D1_ERROR: the cellar flooded\n",
+      "database backup: failed. Cloudflare could not make the export: D1_ERROR: the cellar flooded, up to the shelf\n",
     );
     expect(cloudflare.calls).toHaveLength(1);
     expect(bucket.requests).toHaveLength(0);
@@ -222,7 +230,7 @@ test(
     expect(outcome).toBe("ok");
     // The stand-in sends the token back in its answer, which is logged with the token hidden.
     expect(log).toBe(
-      'database backup: failed. Cloudflare answered 403 to the call for an export: {"success":false,"errors":[{"code":10000,"message":"Authentication error for Bearer [hidden]"}],"messages":[],"result":null}\n',
+      'database backup: failed. The call to Cloudflare for an export was answered with 403: {"success":false,"errors":[{"code":10000,"message":"Authentication error for Bearer [hidden]"}],"messages":[],"result":null}\n',
     );
     expect(log).not.toContain(EXPORT_TOKEN);
     expect(bucket.requests).toHaveLength(0);
@@ -238,7 +246,7 @@ test(
     expect(outcome).toBe("ok");
     // The stand-in sends its own address back, as S3 does in an error.
     expect(log).toBe(
-      "database backup: failed. The signed address of the export answered 500: <Error><Code>InternalError</Code><Resource>[hidden]</Resource><SignatureProvided>[hidden]</SignatureProvided></Error>\n",
+      "database backup: failed. The read of the export's signed address was answered with 500: <Error><Code>InternalError</Code><Resource>[hidden]</Resource><SignatureProvided>[hidden]</SignatureProvided></Error>\n",
     );
     const signedAddress = new URL(cloudflare.signedAddress()!);
     expect(log).not.toContain(signedAddress.pathname);
@@ -262,7 +270,7 @@ test(
 );
 
 test(
-  "a bucket that refuses the key ends in a logged failure and no object",
+  "a bucket that refuses the key ends in a logged failure and no object, with the secret left out",
   onBackedUpWorker(async (url) => {
     cloudflare.exportsWill({ sql: EXPORT });
     // The provider has another secret for the key than the one the Worker signs with.
@@ -271,13 +279,49 @@ test(
       const { outcome, log } = await runNightly(url);
 
       expect(outcome).toBe("ok");
+      // The stand-in says the Worker's secret back, which is logged with the secret hidden.
       expect(log).toMatch(
-        /^database backup: failed\. The backup bucket answered 403 to the PUT of database\/\d{4}-\d{2}-\d{2}\.sql: <\?xml version="1\.0" encoding="UTF-8"\?> <Error><Code>SignatureDoesNotMatch<\/Code><Message>The request signature we calculated does not match the signature you provided\.<\/Message><\/Error>\n$/,
+        /^database backup: failed\. The PUT of database\/\d{4}-\d{2}-\d{2}\.sql to the backup bucket was answered with 403: <\?xml version="1\.0" encoding="UTF-8"\?> <Error><Code>SignatureDoesNotMatch<\/Code><Message>The request signature we calculated does not match the signature you provided\.<\/Message><Expected>\[hidden\]<\/Expected><\/Error>\n$/,
       );
+      expect(log).not.toContain(ACCESS_KEY.secretAccessKey);
       expect(bucket.requests).toHaveLength(1);
       expect(bucket.objects.size).toBe(0);
     } finally {
       bucket.knows(ACCESS_KEY);
+    }
+  }),
+);
+
+// A call that gets no answer at all says which call it was, as one that is refused does.
+test(
+  "a call that nobody answers ends in a logged failure that says which call it was",
+  onBackedUpWorker(async (url) => {
+    cloudflare.exportsWill({ sql: EXPORT, hangsUpOn: "call" });
+    const unreached = await runNightly(url);
+    expect(unreached.outcome).toBe("ok");
+    expect(unreached.log).toMatch(
+      /^database backup: failed\. The call to Cloudflare for an export got no answer: \S.*\n$/,
+    );
+
+    cloudflare.exportsWill({ sql: EXPORT, hangsUpOn: "download" });
+    const unread = await runNightly(url);
+    expect(unread.log).toMatch(
+      /^database backup: failed\. The read of the export's signed address got no answer: \S.*\n$/,
+    );
+    // The line holds no part of the address that nobody answered at.
+    expect(unread.log).not.toContain("/signed/");
+
+    cloudflare.exportsWill({ sql: EXPORT });
+    bucket.hangsUp(true);
+    try {
+      const unput = await runNightly(url);
+      expect(unput.outcome).toBe("ok");
+      expect(unput.log).toMatch(
+        /^database backup: failed\. The PUT of database\/\d{4}-\d{2}-\d{2}\.sql to the backup bucket got no answer: \S.*\n$/,
+      );
+      expect(bucket.objects.size).toBe(0);
+    } finally {
+      bucket.hangsUp(false);
     }
   }),
 );
@@ -348,15 +392,16 @@ test(
   }).pipe(Effect.ensuring(Effect.orDie(deployWith()))),
 );
 
-// A provider lists its endpoint as a bare name as often as not.
+// A provider lists its endpoint as a bare name as often as not. And an export is the whole
+// database, so it only goes over plain http to a stand-in on this machine.
 test(
-  "an endpoint that is not an address stops a deploy",
+  "an endpoint that is not an https address stops a deploy",
   Effect.gen(function* () {
-    const stopped = yield* Effect.flip(
-      deployWith({ ...BACKUP_ON, BACKUP_ENDPOINT: "s3.eu-central-9.example.com" }),
-    );
-    expect(String(stopped)).toContain(
-      'BACKUP_ENDPOINT is "s3.eu-central-9.example.com", which is not an address. Give the address of the provider\'s S3 API with https:// in front, such as https://s3.example.com.',
-    );
+    for (const given of ["s3.eu-central-9.example.com", "http://s3.eu-central-9.example.com"]) {
+      const stopped = yield* Effect.flip(deployWith({ ...BACKUP_ON, BACKUP_ENDPOINT: given }));
+      expect(String(stopped)).toContain(
+        `BACKUP_ENDPOINT is "${given}", which is not an https address. Give the address of the provider's S3 API with https:// in front, such as https://s3.example.com.`,
+      );
+    }
   }).pipe(Effect.ensuring(Effect.orDie(deployWith()))),
 );

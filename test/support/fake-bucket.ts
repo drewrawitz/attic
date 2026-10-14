@@ -2,13 +2,13 @@ import { createHash, createHmac } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import { serve } from "./stand-in.ts";
 
-/** An access key at the stand-in. */
+// An access key at the stand-in.
 export interface AccessKey {
   readonly accessKeyId: string;
   readonly secretAccessKey: string;
 }
 
-/** A request the stand-in was sent, whether or not it took it. */
+// A request the stand-in was sent, whether or not it took it.
 export interface BucketRequest {
   readonly method: string;
   readonly key: string;
@@ -53,18 +53,16 @@ const signatureFor = (
 const AUTHORIZATION =
   /^AWS4-HMAC-SHA256 Credential=([^/]+)\/(\d{8})\/([^/]+)\/s3\/aws4_request, ?SignedHeaders=([^,]+), ?Signature=([0-9a-f]{64})$/;
 
-/**
- * Stands in for the backup bucket: an S3-compatible bucket at another provider. It takes a
- * PUT of an object, and holds the Worker to what such a bucket would: the request is for this
- * bucket, it says how long its body is, and it is signed with an access key the bucket knows,
- * for the bucket's region, over the headers S3 asks for. A request that falls short gets the
- * error S3 would give, and nothing is kept.
- *
- * Alchemy's local runtime has an S3 endpoint of its own, for a local R2 bucket. It is not used
- * here. It serves only a bucket that is bound to the Worker, and the one bound bucket is
- * `FILES`, which the backup copies from. It also cannot show a test the request it was sent,
- * or be made to say no.
- */
+// Stands in for the backup bucket: an S3-compatible bucket at another provider. It takes a
+// PUT of an object, and holds the Worker to what such a bucket would: the request is for this
+// bucket, it says how long its body is, and it is signed with an access key the bucket knows,
+// for the bucket's region, over the headers S3 asks for. A request that falls short gets the
+// error S3 would give, and nothing is kept.
+//
+// Alchemy's local runtime has an S3 endpoint of its own, for a local R2 bucket. It is not used
+// here. It serves only a bucket that is bound to the Worker, and the one bound bucket is
+// `FILES`, which the backup copies from. It also cannot show a test the request it was sent,
+// or be made to say no.
 export const startFakeBucket = async (bucket: {
   name: string;
   region: string;
@@ -72,18 +70,20 @@ export const startFakeBucket = async (bucket: {
 }) => {
   // The access key the bucket knows. A test changes it, so that the Worker's no longer fits.
   let known = bucket.accessKey;
+  let hangingUp = false;
   const objects = new Map<string, { body: Buffer; contentType: string | undefined }>();
   const requests: BucketRequest[] = [];
 
   const { origin, close } = await serve((request, response) => {
-    const refuse = (status: number, code: string, message: string) => {
+    const refuse = (status: number, code: string, message: string, more = "") => {
       response.writeHead(status, { "content-type": "application/xml" });
       response.end(
-        `<?xml version="1.0" encoding="UTF-8"?>\n<Error><Code>${code}</Code><Message>${message}</Message></Error>`,
+        `<?xml version="1.0" encoding="UTF-8"?>\n<Error><Code>${code}</Code><Message>${message}</Message>${more}</Error>`,
       );
     };
 
     void (async () => {
+      if (hangingUp) return request.socket.destroy();
       const chunks: Buffer[] = [];
       for await (const chunk of request) chunks.push(chunk as Buffer);
       const body = Buffer.concat(chunks);
@@ -110,10 +110,14 @@ export const startFakeBucket = async (bucket: {
         !String(request.headers["x-amz-date"]).startsWith(date!) ||
         signature !== signatureFor(request, { headers, date: date!, region }, known.secretAccessKey)
       ) {
+        // No bucket knows the secret a request was signed with, when it is not its own. This
+        // one says back the secret it was started with, so that a test can tell whether the
+        // Worker logs an answer as it came.
         return refuse(
           403,
           "SignatureDoesNotMatch",
           "The request signature we calculated does not match the signature you provided.",
+          `<Expected>${bucket.accessKey.secretAccessKey}</Expected>`,
         );
       }
       if (request.method !== "PUT") {
@@ -130,20 +134,24 @@ export const startFakeBucket = async (bucket: {
   });
 
   return {
-    /** The address of the stand-in's S3 API, which the bucket's name goes after. */
+    // The address of the stand-in's S3 API, which the bucket's name goes after.
     endpoint: origin,
-    /** Every object the bucket holds, by its key. */
+    // Every object the bucket holds, by its key.
     objects: objects as ReadonlyMap<string, { body: Buffer; contentType: string | undefined }>,
-    /** Every request since the bucket was last emptied, in order. */
+    // Every request since the bucket was last emptied, in order.
     requests: requests as ReadonlyArray<BucketRequest>,
-    /** Takes every object out, and forgets the requests. */
+    // Takes every object out, and forgets the requests.
     empty: () => {
       objects.clear();
       requests.length = 0;
     },
-    /** The bucket knows only this access key from here on. */
+    // The bucket knows only this access key from here on.
     knows: (accessKey: AccessKey) => {
       known = accessKey;
+    },
+    // Whether the bucket drops every connection with no answer, from here on.
+    hangsUp: (on: boolean) => {
+      hangingUp = on;
     },
     close,
   };
