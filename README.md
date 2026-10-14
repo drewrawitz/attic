@@ -8,14 +8,14 @@ Attic has no app. It is a remote MCP server on Cloudflare (Workers, D1, R2, KV) 
 
 ## Layout
 
-- `apps/server` is the Worker.
+- `apps/server` is the Worker. Besides answering requests it has a nightly run, which a Cron Trigger fires: a list of chores in `src/nightly.ts`, run one after another. The first is the [backup](#backup) of the database.
 - `packages/core` is the domain logic, written with Effect. Nothing in it is specific to Workers, so its tests run in Node.
   Every tool is declared there with `defineTool`, one file each in `src/tools/`, and listed in `src/index.ts`. The Worker registers whatever is on that list. A prompt, which `src/prompt.ts` describes, is a fixed text for a client to follow. `src/index.ts` has a list of those too, and the Worker registers it the same way.
   A tool that writes does its reads, builds its statements, and hands them to `Write` in `src/write.ts`. That runs them as one atomic batch, together with the Change that records them. `src/records.ts` is the one place that says what a record of each type is and what it points at. A Change's snapshots are built from it, and `undo` works from it. `src/save.ts` holds the rules every save tool follows.
   The rules about what a save names are each in one place too. `src/property.ts` works out the Current property, with today's date in the configured timezone. `src/space.ts` and `src/vendor.ts` find a Space or a Vendor by its name, or create it on first use. `src/category.ts` finds a Category, or lists the closest matches. `src/project.ts` finds a Project by its id. `src/note.ts` writes the optional Note of a save. `src/money.ts` takes an amount in dollars, stores it as cents, and writes one out in the configured currency.
-- `alchemy.run.ts` declares the Cloudflare resources: the Worker, the D1 database, the R2 bucket, and the KV namespace.
+- `alchemy.run.ts` declares the Cloudflare resources: the Worker and its Cron Trigger, the D1 database, the R2 bucket, and the KV namespace.
 - `migrations/` is the database schema. It is applied on every deploy, and to the local database on every start.
-- `test/` runs the stack in `alchemy.run.ts` on local simulators.
+- `test/` runs the stack in `alchemy.run.ts` on local simulators. One file there runs no stack, and calls the code that runs the nightly chores.
 - `household/` is a made-up household: one small set of records that the tests of the read tools share, and two commands that load it into a stage's database and remove it again.
 - `docs/adr/` records decisions and the reasons behind them.
 - `GLOSSARY.md` is the vocabulary used in code and docs.
@@ -56,6 +56,8 @@ vp run -r test
 Both suites apply the real files in `migrations/`. The tests in `packages/core` run in Node and pin the rules the schema enforces, on an in-memory Node SQLite database. Node SQLite and D1 are not the same build (ADR 0006), so the tests in `test/` also run the real Worker and the real migration on local D1. They use [Alchemy's test harness](https://alchemy.run/testing/test-harness) in dev mode, which runs the same local simulators as `vp run dev`. Neither suite needs a Cloudflare account.
 
 The tests in `test/` also sign in, and they need no Google account and no `.env`. They bring their own settings, and a stand-in for Google on your machine answers the two calls the Worker makes to it. The Worker finds Google through `GOOGLE_TOKEN_URL` and `GOOGLE_USERINFO_URL`, which only dev mode reads. A deploy always uses Google's own addresses.
+
+The nightly run is tested the same way. Alchemy's local runtime fires the Worker's `scheduled` handler when a test asks it to, and a stand-in for Cloudflare's API and one for the backup bucket answer the calls the run makes. The one for the bucket checks the signature of a request as S3 does. The Worker finds Cloudflare's API through `CLOUDFLARE_API_URL`, which only dev mode reads, like the two addresses for Google. So is `EXPORT_WAIT_MS`, which the tests set so that the Worker does not wait a second between two calls about an export. One file in `test/` runs no stack: `nightly-chores.test.ts` calls the code that runs the chores, with chores of its own, for the rules that one real chore cannot show through the Worker.
 
 A test in `packages/core` starts on the first day of 1970, because Effect gives each test a clock that stands still. One that goes by today's date sets the day first, with `todayIs` in `test/call.ts`. The tests in `test/` run on the real clock, with the timezone left at UTC and the currency at USD.
 
@@ -126,13 +128,14 @@ Attic asks Google for the account's email and name and nothing else, and it does
    - Leave `ATTIC_DOMAIN` empty to use the workers.dev address.
    - Set `ATTIC_TIMEZONE` to the timezone you live in, as an IANA name such as `America/New_York`. It is where the tools read today's date, which decides whether a Property is still current on its last day. Left empty it is `UTC`, where the date is a day ahead or behind yours for part of every day.
    - Set `ATTIC_CURRENCY` to the currency your amounts are in, as an ISO code such as `EUR`. Attic stores an amount as a plain number, so the currency is only used to write one out in a Note, such as "Marked sold on 2026-09-20 for $450.00." Left empty it is `USD`.
+   - Leave the six settings of the backup empty for a first deploy. [Backup](#backup) says how to set them up afterwards.
 2. Deploy:
 
 ```bash
 vp run deploy
 ```
 
-This is `alchemy deploy --stage prod`. It shows a plan and asks before it changes anything. It creates a Worker named `attic`, a D1 database, an R2 bucket, and a KV namespace, applies any migration in `migrations/` that the database has not seen, and prints the address. It stops if one of the three Google values is empty, if `ATTIC_TIMEZONE` is not a timezone, or if `ATTIC_CURRENCY` is not a currency.
+This is `alchemy deploy --stage prod`. It shows a plan and asks before it changes anything. It creates a Worker named `attic` with one Cron Trigger, a D1 database, an R2 bucket, and a KV namespace, applies any migration in `migrations/` that the database has not seen, and prints the address and the database's id. It stops if one of the three Google values is empty, if `ATTIC_TIMEZONE` is not a timezone, if `ATTIC_CURRENCY` is not a currency, or if the backup is set up in part.
 
 The Worker also gets a secret that you do not set. It signs the cookie that remembers which clients a browser has already allowed. Alchemy makes it on the first deploy and keeps it in its state store, so later deploys bind the same value.
 
@@ -147,3 +150,47 @@ To deploy a second copy next to the first, pick another stage. Its Worker is nam
 ```bash
 vp exec alchemy deploy --stage staging
 ```
+
+### Backup
+
+A copy of the data can leave Cloudflare every night, so that it outlives the deployment and the account. It is off until its six settings are in `.env`. Until then the nightly run does nothing, and says so in the log.
+
+Every night at 3 in the morning in `ATTIC_TIMEZONE`, the Worker asks Cloudflare for an export of the database and streams it into the backup bucket as `database/<date>.sql`, such as `database/2026-10-14.sql`. Where the clocks change for the summer, the run is at 4 in those months. The database answers nothing else while an export is being made, which is why this happens at night. A second run on the same day replaces that day's export. Attic only writes to the bucket and never deletes from it (ADR 0016).
+
+It takes a bucket, a key to it, and a second Cloudflare token:
+
+1. **Create a bucket at another provider than Cloudflare.** Any provider with an S3-compatible API will do. This is the backup bucket, and it should hold nothing else.
+2. **Create an access key that is limited to that bucket** and can read and write objects in it. Where the provider allows it, make it a key that cannot delete, since Attic never does.
+3. **Set a lifecycle rule at the provider** that removes the objects under `database/` once they are, say, 90 days old. Without one, every night's export is kept for good. Put the rule on `database/` alone, so that nothing else in the bucket ever expires.
+4. **Create a Cloudflare API token that can export the database.** This is a second token, not the one that deploys. It sits in the Worker as a secret, so it should be able to do as little as possible: scope it to the one account, and give it a D1 permission and nothing else. Cloudflare's API reference does not say which D1 permission an export needs. **D1 Read** is the least there is, so start with that, and check it with the call below. If Cloudflare answers with an authentication error, give the token **D1 Edit** in its place. Both are permissions on the account, so the token reaches every D1 database in it.
+5. **Put the six settings in `.env`** and deploy again:
+   - `BACKUP_ENDPOINT`: the address of the provider's S3 API, with `https://` in front and without the bucket's name, such as `https://s3.example.com`. A deploy stops at an address that is not https. The Worker writes an export to `<endpoint>/<bucket>/database/<date>.sql`.
+   - `BACKUP_REGION`: the region the provider gives for the bucket. It is part of how a request is signed.
+   - `BACKUP_BUCKET`: the bucket's name.
+   - `BACKUP_ACCESS_KEY_ID` and `BACKUP_SECRET_ACCESS_KEY`: the access key from step 2.
+   - `CLOUDFLARE_EXPORT_TOKEN`: the token from step 4.
+
+   A deploy with some of the six and not all stops, and names the ones that are missing. The plan of this deploy should show the Worker as an update and nothing else.
+
+To check the token, ask for an export by hand. The account's id is `CLOUDFLARE_ACCOUNT_ID` in `.env`, and a deploy prints the database's id:
+
+```bash
+curl -X POST "https://api.cloudflare.com/client/v4/accounts/<account id>/d1/database/<database id>/export" \
+  -H "Authorization: Bearer <the export token>" \
+  -H "Content-Type: application/json" \
+  -d '{"output_format":"polling"}'
+```
+
+An answer with `"success": true` means the token can export. Cloudflare cancels the export this starts once nobody asks about it again.
+
+The morning after, the Worker's log has one line for the night. It is in the Cloudflare dashboard, under Workers & Pages, the Worker, Logs:
+
+- `database backup: exported database/2026-10-14.sql, 48213 bytes, in 3.2 s.`
+- or `database backup: failed.`, followed by what failed, with the status and the answer Cloudflare or the bucket gave.
+
+A night that fails shows nowhere else, and the next night tries again.
+
+Two more things to know:
+
+- The nightly run takes one of the five Cron Triggers an account gets on Workers Free.
+- `vp run dev` reads the same six settings. Its database is a local one that Cloudflare cannot export, so with the backup set up, a nightly run there fails and says so. Nothing is written to the bucket.

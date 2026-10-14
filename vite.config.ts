@@ -29,7 +29,8 @@ export default defineConfig({
       },
     },
   },
-  // The root tests run the stack in alchemy.run.ts on local simulators. Each package has its own.
+  // The root tests run the stack in alchemy.run.ts on local simulators, all but one file, which
+  // calls the code that runs the nightly chores. Each package has its own.
   // The files that run the Worker share one stage, one Worker, and one port, and one of them
   // changes the Worker's settings, so the files run one after another.
   test: {

@@ -18,6 +18,7 @@ import { search } from "./tools/search.ts";
 import { undo } from "./tools/undo.ts";
 import { walkTheHouse, walkTheHousePrompt } from "./tools/walk-the-house.ts";
 
+export { today } from "./dates.ts";
 export { Currency } from "./money.ts";
 export { callTool, type Tool, type ToolResult } from "./tool.ts";
 export { AtomicBatch, Ids } from "./write.ts";
