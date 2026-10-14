@@ -9,6 +9,7 @@
     "@effect/sql-d1": "4.0.2",
     "@modelcontextprotocol/server": "2.0.0",
     "agents": "0.28.0",
+    "aws4fetch": "1.0.20",
     "effect": "4.0.2"
   },
   "devDependencies": {

@@ -42,15 +42,24 @@ export const AUTHORIZE_LIMIT = Cloudflare.RateLimit("AUTHORIZE_LIMIT", {
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 const GOOGLE_USERINFO_URL = "https://openidconnect.googleapis.com/v1/userinfo";
 
+// Where the Worker reaches Cloudflare's own API, which it asks for an export of the database.
+const CLOUDFLARE_API_URL = "https://api.cloudflare.com/client/v4";
+
 // A setting that cannot be used stops here, so a deploy stops before it changes anything.
 const notUsable = (message: string) =>
   Effect.fail(new Config.ConfigError(new ConfigProvider.SourceError({ message })));
 
+// A setting that may be left out. Unset and empty mean the same.
+const optional = (name: string) =>
+  Config.String(name).pipe(
+    Config.withDefault(""),
+    Config.map((given) => given.trim()),
+  );
+
 // The timezone the User's day is in, which is what "today" means to a tool: an IANA name such
 // as America/New_York. Unset and empty both mean UTC.
-const timezone = Config.String("ATTIC_TIMEZONE").pipe(
-  Config.withDefault(""),
-  Config.map((given) => given.trim() || "UTC"),
+const timezone = optional("ATTIC_TIMEZONE").pipe(
+  Config.map((given) => given || "UTC"),
   Config.mapEffect((name) =>
     Option.isSome(DateTime.zoneMakeNamed(name))
       ? Effect.succeed(name)
@@ -60,11 +69,29 @@ const timezone = Config.String("ATTIC_TIMEZONE").pipe(
   ),
 );
 
+// The hour of the nightly run, on the User's clock. It is at night because a running export
+// blocks the database's other requests, as D1's docs say.
+const NIGHTLY_HOUR = 3;
+
+/**
+ * When the nightly run is, as a Cron Trigger, which is in UTC: 3 in the morning by the
+ * timezone's standard time. That is the time its clocks keep in winter, the one further
+ * behind of the two. So a deploy plans the same trigger in any season, and where the clocks
+ * change, the run is at 4 in the summer. The year says which year's clocks to go by.
+ */
+export const nightlyCron = (timeZone: string, year = new Date().getUTCFullYear()) => {
+  const minutesAhead = (month: number) =>
+    DateTime.zonedOffset(DateTime.makeZonedUnsafe(Date.UTC(year, month, 1), { timeZone })) / 60_000;
+  const standard = Math.min(minutesAhead(0), minutesAhead(6));
+  const DAY = 24 * 60;
+  const inUtc = (((NIGHTLY_HOUR * 60 - standard) % DAY) + DAY) % DAY;
+  return `${inUtc % 60} ${Math.floor(inUtc / 60)} * * *`;
+};
+
 // The one currency every amount is in: an ISO code such as USD. Unset and empty both mean USD.
 // Money is stored as a bare number of cents, so this is only used to write an amount in a Note.
-const currency = Config.String("ATTIC_CURRENCY").pipe(
-  Config.withDefault(""),
-  Config.map((given) => given.trim() || "USD"),
+const currency = optional("ATTIC_CURRENCY").pipe(
+  Config.map((given) => given || "USD"),
   Config.mapEffect((given) => {
     const code = given.toUpperCase();
     return Intl.supportedValuesOf("currency").includes(code)
@@ -75,24 +102,82 @@ const currency = Config.String("ATTIC_CURRENCY").pipe(
   }),
 );
 
+/**
+ * The backup's six settings: the backup bucket, which is any S3-compatible bucket at another
+ * provider, a key to it, and the Cloudflare API token the Worker exports the database with.
+ * That token is not the deploy token. It is made by hand, with only the permission an export
+ * needs. The README says what each setting is.
+ */
+export const BACKUP_SETTINGS = [
+  "BACKUP_ENDPOINT",
+  "BACKUP_REGION",
+  "BACKUP_BUCKET",
+  "BACKUP_ACCESS_KEY_ID",
+  "BACKUP_SECRET_ACCESS_KEY",
+  "CLOUDFLARE_EXPORT_TOKEN",
+] as const;
+type BackupSetting = (typeof BACKUP_SETTINGS)[number];
+
+// What the Worker is bound to when the backup is on. The two that are secrets bind as secrets.
+type BackupSecret = "BACKUP_SECRET_ACCESS_KEY" | "CLOUDFLARE_EXPORT_TOKEN";
+type BackupBindings = Record<Exclude<BackupSetting, BackupSecret>, string> &
+  Record<BackupSecret, Redacted.Redacted<string>>;
+
+// The backup is off unless it is configured. With none of the six, the Worker is bound to none
+// of them, and its nightly run says the backup is off.
+const backup: Effect.Effect<Partial<BackupBindings>, Config.ConfigError> = Effect.gen(function* () {
+  const given = {} as Record<BackupSetting, string>;
+  for (const name of BACKUP_SETTINGS) given[name] = yield* optional(name);
+
+  const missing = BACKUP_SETTINGS.filter((name) => given[name] === "");
+  if (missing.length === BACKUP_SETTINGS.length) return {};
+  // A backup that is set up in part would fail every night, where only the log shows it.
+  if (missing.length > 0) {
+    return yield* notUsable(
+      `The backup is set up in part. Missing: ${missing.join(", ")}. Set all six, or none of them for no backup.`,
+    );
+  }
+  // The bucket's name and an object's key go after the endpoint, so it ends without a slash.
+  const endpoint = given.BACKUP_ENDPOINT.replace(/\/+$/, "");
+  if (!URL.canParse(endpoint) || !/^https?:$/.test(new URL(endpoint).protocol)) {
+    return yield* notUsable(
+      `BACKUP_ENDPOINT is "${endpoint}", which is not an address. Give the address of the provider's S3 API with https:// in front, such as https://s3.example.com.`,
+    );
+  }
+  return {
+    ...given,
+    BACKUP_ENDPOINT: endpoint,
+    BACKUP_SECRET_ACCESS_KEY: Redacted.make(given.BACKUP_SECRET_ACCESS_KEY),
+    CLOUDFLARE_EXPORT_TOKEN: Redacted.make(given.CLOUDFLARE_EXPORT_TOKEN),
+  } satisfies BackupBindings;
+});
+
 export const Worker = Cloudflare.Worker(
   "Worker",
   Effect.gen(function* () {
     const { stage } = yield* Alchemy.Stack;
     const { dev } = yield* Alchemy.AlchemyContext;
     // Unset and empty mean the same: the Worker is served from its workers.dev address.
-    const domain = (yield* Config.String("ATTIC_DOMAIN").pipe(Config.withDefault(""))).trim();
+    const domain = yield* optional("ATTIC_DOMAIN");
 
     // A deploy fails without the sign-in settings, since nobody could get in. `alchemy dev`
     // and the tests start without them, and the sign-in page then says which one is missing.
     const setting = (name: string) =>
       dev ? Config.String(name).pipe(Config.withDefault("")) : Config.NonEmptyString(name);
     const secret = (name: string) => setting(name).pipe(Config.map(Redacted.make));
-    // Only dev mode reads another address for Google, which is how the tests stand in for
-    // it. A deploy always binds Google's own.
-    const googleUrl = (name: string, url: string) =>
+    // Only dev mode reads another address for Google or for Cloudflare's API, which is how
+    // the tests stand in for them. A deploy always binds their own.
+    const addressOf = (name: string, url: string) =>
       dev ? Config.String(name).pipe(Config.withDefault(url)) : Config.succeed(url);
+    // Only dev mode reads this one, and only the tests set it: how long the Worker waits
+    // between two calls about an export, in milliseconds, so that no test sits through the
+    // real wait. A deploy binds nothing, and the Worker waits as long as its own code says.
+    const exportWaitMs = dev ? yield* optional("EXPORT_WAIT_MS") : "";
+    const forTests: { readonly EXPORT_WAIT_MS?: string } =
+      exportWaitMs === "" ? {} : { EXPORT_WAIT_MS: exportWaitMs };
     const consentSecret = yield* ConsentSecret;
+    const db = yield* DB;
+    const timeZone = yield* timezone;
 
     return {
       // A stage name may hold underscores, which a workers.dev hostname cannot.
@@ -101,6 +186,9 @@ export const Worker = Cloudflare.Worker(
       // The newest date the workerd inside this Alchemy version accepts, so that
       // `alchemy dev` and a deploy run under the same date. Raise it when Alchemy is upgraded.
       compatibility: { flags: ["nodejs_compat"], date: "2026-09-25" },
+      // The one Cron Trigger. It fires the Worker's `scheduled` handler, which runs every
+      // nightly chore, so a new chore needs no trigger of its own.
+      crons: [nightlyCron(timeZone)],
       // A string binds as plain text and a redacted value as a secret.
       env: {
         DB,
@@ -110,12 +198,19 @@ export const Worker = Cloudflare.Worker(
         AUTHORIZE_LIMIT,
         GOOGLE_CLIENT_ID: yield* setting("GOOGLE_CLIENT_ID"),
         GOOGLE_CLIENT_SECRET: yield* secret("GOOGLE_CLIENT_SECRET"),
-        GOOGLE_TOKEN_URL: yield* googleUrl("GOOGLE_TOKEN_URL", GOOGLE_TOKEN_URL),
-        GOOGLE_USERINFO_URL: yield* googleUrl("GOOGLE_USERINFO_URL", GOOGLE_USERINFO_URL),
+        GOOGLE_TOKEN_URL: yield* addressOf("GOOGLE_TOKEN_URL", GOOGLE_TOKEN_URL),
+        GOOGLE_USERINFO_URL: yield* addressOf("GOOGLE_USERINFO_URL", GOOGLE_USERINFO_URL),
         ALLOWED_EMAILS: yield* secret("ALLOWED_EMAILS"),
         CONSENT_SECRET: consentSecret.text,
-        ATTIC_TIMEZONE: yield* timezone,
+        ATTIC_TIMEZONE: timeZone,
         ATTIC_CURRENCY: yield* currency,
+        // What the nightly run asks Cloudflare to export. Both ids come from the stack, so
+        // neither is a setting.
+        CLOUDFLARE_API_URL: yield* addressOf("CLOUDFLARE_API_URL", CLOUDFLARE_API_URL),
+        CLOUDFLARE_ACCOUNT_ID: db.accountId,
+        DATABASE_ID: db.databaseId,
+        ...(yield* backup),
+        ...forTests,
       },
       // Local dev has no use for a domain.
       ...(domain !== "" && !dev ? { domain } : {}),

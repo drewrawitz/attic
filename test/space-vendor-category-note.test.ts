@@ -10,6 +10,7 @@ import {
   type Fields,
 } from "./support/household.ts";
 import { mcp } from "./support/mcp-client.ts";
+import { dateIn, timeZoneOnAnotherDate } from "./support/timezones.ts";
 
 // What `save_space`, `save_vendor`, `save_category`, and `add_note` do is tested on Node
 // SQLite, in packages/core. In the Worker each save is one D1 batch (ADR 0006), a Change can
@@ -321,21 +322,13 @@ test(
   }).pipe(Effect.ensuring(Effect.orDie(deployWith()))),
 );
 
-// The date in a timezone, written the way a date is stored.
-const dateIn = (timeZone: string) => new Intl.DateTimeFormat("en-CA", { timeZone }).format();
-
-// The two timezones furthest from UTC, 14 hours ahead and 12 behind. At any moment the date in
-// at least one of them is not the date in UTC.
-const AHEAD = "Pacific/Kiritimati";
-const BEHIND = "Etc/GMT+12";
-
 test(
   "today is the date in the configured timezone, on the Worker's own clock",
   asClient((call) =>
     Effect.gen(function* () {
       // A timezone where it is another date than in UTC right now, and an end date that has
       // passed in one of the two and not in the other: the earlier date.
-      const elsewhere = dateIn(AHEAD) === dateIn("UTC") ? BEHIND : AHEAD;
+      const elsewhere = timeZoneOnAnotherDate();
       const lastDay = [dateIn("UTC"), dateIn(elsewhere)].sort()[0]!;
       const saved = yield* call("save_property", { name: CABIN, end_on: lastDay });
       expect(saved.refused).toBeUndefined();

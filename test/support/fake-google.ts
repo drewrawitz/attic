@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
-import { createServer, type IncomingMessage } from "node:http";
-import type { AddressInfo } from "node:net";
+import type { IncomingMessage } from "node:http";
+import { serve } from "./stand-in.ts";
 
 // An account at the stand-in, in the words Google's userinfo answer uses.
 export interface GoogleAccount {
@@ -27,7 +27,7 @@ export const startFakeGoogle = async (client: { id: string; secret: string }) =>
   >();
   const tokens = new Map<string, GoogleAccount>();
 
-  const server = createServer((request, response) => {
+  const { origin, close } = await serve((request, response) => {
     const json = (status: number, value: unknown) => {
       response.writeHead(status, { "content-type": "application/json" });
       response.end(JSON.stringify(value));
@@ -66,9 +66,6 @@ export const startFakeGoogle = async (client: { id: string; secret: string }) =>
     })();
   });
 
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-
   return {
     tokenUrl: `${origin}/token`,
     userinfoUrl: `${origin}/userinfo`,
@@ -83,6 +80,6 @@ export const startFakeGoogle = async (client: { id: string; secret: string }) =>
       });
       return code;
     },
-    close: () => new Promise((resolve) => server.close(resolve)),
+    close,
   };
 };

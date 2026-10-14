@@ -1,6 +1,7 @@
 import { OAuthProvider } from "@cloudflare/workers-oauth-provider";
 import type { WorkerEnv } from "../../../alchemy.run.ts";
 import { mcp } from "./mcp.ts";
+import { nightly } from "./nightly.ts";
 import { overLimit } from "./rate-limit.ts";
 import { AUTHORIZE_PATH, MCP_PATH, REGISTER_PATH, TOKEN_PATH } from "./routes.ts";
 import { signIn } from "./sign-in.ts";
@@ -54,5 +55,9 @@ export default {
     // The provider attaches its helpers to the env object it is given. A copy for each
     // request keeps two providers from sharing one set.
     return providerFor(url.origin).fetch(request, { ...env }, ctx);
+  },
+  // The nightly run, which the Cron Trigger in alchemy.run.ts fires.
+  async scheduled(_controller, env): Promise<void> {
+    await nightly(env);
   },
 } satisfies ExportedHandler<WorkerEnv>;

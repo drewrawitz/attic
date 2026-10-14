@@ -5,3 +5,4 @@ Alchemy 2 (a beta, pinned to an exact version) declares the Worker, D1, R2, KV, 
 ## Consequences
 
 - The made-up household is the one place where Alchemy runs something for Attic and does not only declare it. A second stack, in `household/`, holds an Action that loads the set into a stage's database or removes it, through Alchemy's own D1 client (issue 24). It runs when the maintainer runs it, never as part of a deploy, and it is no part of the Worker. A move to wrangler would replace it with `wrangler d1 execute`.
+- The nightly run is a `scheduled` handler exported beside `fetch`, in the same plain module (ADR 0016). Alchemy declares its Cron Trigger and runs none of it.

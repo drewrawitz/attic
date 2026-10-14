@@ -3,7 +3,8 @@ import * as Test from "alchemy/Test/Vitest";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as Schedule from "effect/Schedule";
-import Stack from "../../alchemy.run.ts";
+import Stack, { BACKUP_SETTINGS } from "../../alchemy.run.ts";
+import { startFakeCloudflare } from "./fake-cloudflare.ts";
 import { startFakeGoogle } from "./fake-google.ts";
 
 // What every test file that talks to the Worker starts from: the stack, and a stand-in for
@@ -18,16 +19,24 @@ import { startFakeGoogle } from "./fake-google.ts";
 export const GOOGLE_CLIENT = { id: "test-google-client", secret: "test-google-secret" };
 export const google = await startFakeGoogle(GOOGLE_CLIENT);
 
+// The Worker's one call to Cloudflare's API, for an export of the database, goes to a stand-in
+// too, which knows the token the tests pretend the User made for it. Every file has it,
+// though only the tests of the backup hand the Worker that token (test/support/backup.ts): no
+// Worker under test can reach Cloudflare itself, whatever it is given.
+export const EXPORT_TOKEN = "test-export-token";
+export const cloudflare = await startFakeCloudflare(EXPORT_TOKEN);
+
 const harness = Test.make({
   providers: Cloudflare.providers(),
   dev: true,
 });
-const { afterAll } = harness;
-export const { test, beforeAll, deploy } = harness;
+export const { test, beforeAll, afterAll, deploy } = harness;
 
 // The tests bring their own settings, so they pass on a fresh clone and are not changed by
 // whatever a local .env holds. The timezone is left unset, which is UTC, and so is the
-// currency, which is USD.
+// currency, which is USD. Every setting of the backup is left unset too, which is off, so a
+// .env that holds a real backup bucket and a real token never reaches a test. The wait between
+// two calls about an export is cut to nothing much, so no test sits through the real one.
 const SETTINGS: Record<string, string | undefined> = {
   ATTIC_TIMEZONE: undefined,
   ATTIC_CURRENCY: undefined,
@@ -36,6 +45,9 @@ const SETTINGS: Record<string, string | undefined> = {
   GOOGLE_TOKEN_URL: google.tokenUrl,
   GOOGLE_USERINFO_URL: google.userinfoUrl,
   ALLOWED_EMAILS: " Allowed@Example.com , second@example.com ",
+  ...Object.fromEntries(BACKUP_SETTINGS.map((name) => [name, undefined])),
+  CLOUDFLARE_API_URL: cloudflare.apiUrl,
+  EXPORT_WAIT_MS: "10",
 };
 
 // Deploys the stack with those settings, or with some of them changed or left unset, the
@@ -76,7 +88,7 @@ export const stack = beforeAll(
   }),
 );
 
-afterAll(Effect.promise(() => google.close()));
+afterAll(Effect.promise(() => Promise.all([google.close(), cloudflare.close()])));
 
 // A test body that talks to the Worker over HTTP, given its address.
 export const onWorker = (body: (url: string) => Promise<void>) =>
