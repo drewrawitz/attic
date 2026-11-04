@@ -149,16 +149,26 @@ const restoring = (type: RecordType, { table, columns }: RecordShape): Reversal 
      WHERE ${matching(type, ["restored"])} AND ${table}.id = touched.entity_id`),
 });
 
-// Fills a link set of each record the undo brings back, from the list of ids in `before`.
-const relinking = (type: RecordType, { name, table, from, to }: LinkSet): Reversal => ({
-  type,
-  outcomes: BROUGHT_BACK,
-  text: compact(`
-    INSERT INTO ${table} (${from}, ${to})
-    SELECT touched.entity_id, linked.value
-      FROM change_records AS touched, json_each(touched.before, '$.${name}') AS linked
-     WHERE ${matching(type, BROUGHT_BACK)}`),
-});
+// Fills a link set of each record the undo brings back, from the list in `before`: of ids, or
+// of a type and an id each, in a set of several types.
+const relinking = (type: RecordType, { name, table, from, to, typeColumn }: LinkSet): Reversal => {
+  const [columns, values] =
+    typeColumn === undefined
+      ? [to, "linked.value"]
+      : [
+          `${typeColumn}, ${to}`,
+          "json_extract(linked.value, '$.type'), json_extract(linked.value, '$.id')",
+        ];
+  return {
+    type,
+    outcomes: BROUGHT_BACK,
+    text: compact(`
+      INSERT INTO ${table} (${from}, ${columns})
+      SELECT touched.entity_id, ${values}
+        FROM change_records AS touched, json_each(touched.before, '$.${name}') AS linked
+       WHERE ${matching(type, BROUGHT_BACK)}`),
+  };
+};
 
 // Takes out the row of each record the Change created.
 const takingOut = (type: RecordType, { table }: RecordShape): Reversal => ({
@@ -326,11 +336,16 @@ const pointingSnapshots = (way: WayOfPointing): PointerSource => {
   switch (way.by) {
     case "column":
       return { from: snapshots, target: before(way.column) };
-    case "set":
-      return {
-        from: `${snapshots}, json_each(touched.before, '$.${way.set.name}') AS linked`,
-        target: "linked.value",
-      };
+    case "set": {
+      const from = `${snapshots}, json_each(touched.before, '$.${way.set.name}') AS linked`;
+      return way.set.typeColumn === undefined
+        ? { from, target: "linked.value" }
+        : {
+            from,
+            target: "json_extract(linked.value, '$.id')",
+            onlyIf: `json_extract(linked.value, '$.type') = '${way.targetType}'`,
+          };
+    }
     case "attachment": {
       const { typeColumn, idColumn } = way.attachedBy;
       return {

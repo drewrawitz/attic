@@ -1,5 +1,6 @@
 import { Effect } from "effect";
 import { SqlClient } from "effect/sql";
+import type { SqlError } from "effect/sql/SqlError";
 import { today } from "./dates.ts";
 import { term } from "./records.ts";
 import { askedOnce, nameKey } from "./save.ts";
@@ -115,6 +116,23 @@ export const currentProperty = Effect.gen(function* () {
  */
 export const propertyFor = (given: string | undefined) =>
   given === undefined ? currentProperty : propertyNamed(given);
+
+/**
+ * The Property a record is at, as `lookup` finds it, for a record that can be at no Property:
+ * Work on Items, or a Document attached to a record. When the caller named none and there is
+ * not exactly one Current property, such a record is at none, and the lookup's refusal is not
+ * passed on. `canBeAtNone` says whether this record is one of those.
+ */
+export const orAtNoProperty = <Found, Needs>(
+  lookup: Effect.Effect<Found, ToolError | SqlError, Needs>,
+  given: string | undefined,
+  canBeAtNone: boolean,
+) =>
+  lookup.pipe(
+    Effect.catchTag("ToolError", (refusal) =>
+      given === undefined && canBeAtNone ? Effect.succeed(null) : Effect.fail(refusal),
+    ),
+  );
 
 /**
  * `propertyFor` for a call that takes a list: each Property its entries name is read once,

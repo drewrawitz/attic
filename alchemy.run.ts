@@ -23,6 +23,10 @@ export const OAUTH_KV = Cloudflare.KV.Namespace("OAUTH_KV");
 // set one by hand.
 export const ConsentSecret = Alchemy.Random("ConsentSecret");
 
+// Signs the short-lived links the User opens outside MCP, such as the page that takes a
+// Document's file (ADR 0008). Made and kept the same way.
+export const SigningKey = Alchemy.Random("SigningKey");
+
 // Registration and the sign-in page are open to anyone, and each use writes to KV, which
 // Workers Free caps at 1,000 writes a day (ADR 0012). These slow down a caller that keeps
 // hitting them. Cloudflare counts loosely, so a burst gets a few dozen requests in before
@@ -185,6 +189,7 @@ export const Worker = Cloudflare.Worker(
     const forTests: { readonly EXPORT_WAIT_MS?: string } =
       exportWaitMs === "" ? {} : { EXPORT_WAIT_MS: exportWaitMs };
     const consentSecret = yield* ConsentSecret;
+    const signingKey = yield* SigningKey;
     const db = yield* DB;
     const timeZone = yield* timezone;
 
@@ -211,6 +216,7 @@ export const Worker = Cloudflare.Worker(
         GOOGLE_USERINFO_URL: yield* addressOf("GOOGLE_USERINFO_URL", GOOGLE_USERINFO_URL),
         ALLOWED_EMAILS: yield* secret("ALLOWED_EMAILS"),
         CONSENT_SECRET: consentSecret.text,
+        SIGNING_KEY: signingKey.text,
         ATTIC_TIMEZONE: timeZone,
         ATTIC_CURRENCY: yield* currency,
         // What the nightly run asks Cloudflare to export. Both ids come from the stack, so
@@ -242,8 +248,9 @@ export default Alchemy.Stack(
   { providers: Cloudflare.providers(), state },
   Effect.gen(function* () {
     const db = yield* DB;
+    const files = yield* FILES;
     const worker = yield* Worker;
 
-    return { url: worker.url, databaseId: db.databaseId };
+    return { url: worker.url, databaseId: db.databaseId, filesBucket: files.bucketName };
   }),
 );

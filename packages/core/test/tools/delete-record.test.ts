@@ -790,10 +790,11 @@ it.effect("a replacement that is not there is an error that names its id", () =>
   }).pipe(Effect.provide(TestDatabase)),
 );
 
-// No tool writes a Schedule or a Document yet, so a test puts them in as rows. A Document is
-// attached to a record by type and id, and can name a Vendor in a column of its own.
+// No tool writes a Schedule yet, and a test puts a Document in as rows, which is quicker than
+// sending a file. A Document is attached to a record by type and id, and can name a Vendor in
+// a column of its own.
 const NOT_YET =
-  "Nothing was deleted, because a record with a Schedule or a Document on it cannot be deleted yet. No tool writes those yet, so no Change would say what became of them:";
+  "Nothing was deleted, because a record with a Schedule or a Document on it cannot be deleted yet. Attic does not delete a Schedule or a Document yet, and the record would leave it behind or take it with no Change to say so:";
 
 const schedulingOn = Effect.fnUntraced(function* (item: Listed, title: string) {
   const sql = yield* SqlClient.SqlClient;

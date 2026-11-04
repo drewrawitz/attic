@@ -11,7 +11,7 @@ const ENTITIES: Record<string, string> = {
 
 export const escapeHtml = (value: string) => value.replace(/[&<>"']/g, (char) => ENTITIES[char]!);
 
-const page = (title: string, body: string) => `<!doctype html>
+export const page = (title: string, body: string) => `<!doctype html>
 <html lang="en">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">

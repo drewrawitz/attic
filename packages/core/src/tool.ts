@@ -15,6 +15,7 @@ import type { SqlClient } from "effect/sql";
 import type { SqlError } from "effect/sql/SqlError";
 import type { Currency } from "./money.ts";
 import { term } from "./records.ts";
+import type { SignedAddresses } from "./signed-address.ts";
 import { Write, type AtomicBatch, type Ids } from "./write.ts";
 
 /**
@@ -68,15 +69,16 @@ export const optional = <Field extends Schema.Constraint>(field: Field) =>
 /**
  * What a tool runs on, which whoever calls one brings: a database, that database's atomic
  * batch, a maker of ids for the records a tool creates, the configured timezone, which is
- * where a tool reads today's date, and the configured currency, which is how a tool writes an
- * amount out.
+ * where a tool reads today's date, the configured currency, which is how a tool writes an
+ * amount out, and a maker of the short-lived addresses the User opens outside MCP.
  */
 export type ToolServices =
   | SqlClient.SqlClient
   | AtomicBatch
   | Ids
   | DateTime.CurrentTimeZone
-  | Currency;
+  | Currency
+  | SignedAddresses;
 
 // What a tool does once its input has been checked: a program over the database. It has all
 // of the above but the atomic batch. In its place it has the one write its call makes.
@@ -210,12 +212,28 @@ export const callTool = (
   input: unknown,
   services: Layer.Layer<ToolServices, unknown>,
 ): Effect.Effect<ToolResult> =>
-  Effect.suspend(() => tool.run(input)).pipe(
+  callAs(
+    tool.name,
+    Effect.suspend(() => tool.run(input)),
+    services,
+  );
+
+/**
+ * Runs a program as a call of the tool with this name, and ends it as `callTool` does. It is
+ * for a write that a tool set going and that finishes later, outside MCP: the Change of a file
+ * that arrives on the link `request_upload_link` made is under that tool's name.
+ */
+export const callAs = (
+  name: string,
+  program: Program,
+  services: Layer.Layer<ToolServices, unknown>,
+): Effect.Effect<ToolResult> =>
+  program.pipe(
     Effect.map((returned) => ({ text: textOf(returned), isError: false })),
     Effect.catchTag("ToolError", ({ message }) => Effect.succeed({ text: message, isError: true })),
-    Effect.provide(Write.layer(tool.name).pipe(Layer.provideMerge(services))),
+    Effect.provide(Write.layer(name).pipe(Layer.provideMerge(services))),
     Effect.catchCause((cause) =>
-      Effect.logError(`The ${tool.name} tool failed.`, cause).pipe(
+      Effect.logError(`The ${name} tool failed.`, cause).pipe(
         Effect.as({ text: UNEXPECTED, isError: true }),
       ),
     ),

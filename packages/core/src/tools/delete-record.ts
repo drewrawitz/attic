@@ -2,6 +2,7 @@ import { Effect, Schema } from "effect";
 import { SqlClient } from "effect/sql";
 import { categoryAmong, DEFAULT_CATEGORY, everyCategory, isUnder } from "../category.ts";
 import {
+  andLinkedType,
   asListed,
   distinctRecords,
   EACH_TYPE,
@@ -16,7 +17,6 @@ import {
   someOf,
   term,
   WAYS_OF_POINTING,
-  type LinkSet,
   type Listed,
   type RecordShape,
   type RecordType,
@@ -43,10 +43,19 @@ What comes back is the id of the Change, what was \`removed\`, and what was \`up
 // undo, and a client is told all the same, so that it can ask first.
 const ANNOTATIONS: ToolAnnotations = { readOnlyHint: false, destructiveHint: true };
 
-// A Property is never deleted. Every other type of record is one this tool takes.
-type Deletable = Exclude<RecordType, "property">;
+// The types this tool takes as input. A Document is not one of them yet: deleting one, with
+// the sweep that removes its file 30 days later, is parked in step 6 of the `v1` route.
+type InputType = Exclude<RecordType, "document">;
 
-const isDeletable = (type: RecordType): type is Deletable => type !== "property";
+const isInputType = (type: RecordType): type is InputType => type !== "document";
+
+const INPUT_TYPES = RECORD_TYPES.filter(isInputType);
+
+// A Property is never deleted. Every other type this tool takes is one it deletes.
+type Deletable = Exclude<InputType, "property">;
+
+const isDeletable = (type: RecordType): type is Deletable =>
+  type !== "property" && isInputType(type);
 
 const NEVER_A_PROPERTY =
   "A Property is never deleted. One that is no longer the User's gets an end date instead: save it with save_property and give `end_on` the day it stopped being theirs. Its records stay as they are.";
@@ -75,6 +84,9 @@ const notDeleted = (because: string) =>
 // no use of it: it goes with its record.
 type WayOfUsing = Exclude<WayOfPointing, { readonly by: "attachment" }>;
 
+// A way of using a record by a link set.
+type SetWayOfUsing = Extract<WayOfUsing, { readonly by: "set" }>;
+
 const waysOfUsing = (used: RecordType) =>
   WAYS_OF_POINTING.filter(
     (way): way is WayOfUsing => way.targetType === used && way.by !== "attachment",
@@ -86,10 +98,10 @@ const LISTED_FIELDS = ["type", "id", "name"];
 // The records that use the record `?1` in one way, by id. `nameOf` is the SQL of what each is
 // named by.
 const usedIn = (way: WayOfUsing, nameOf: string) => {
-  const { from, target } = pointingRows(way);
+  const { from, target, onlyIf } = pointingRows(way);
   return `SELECT '${way.type}' AS type, record.id, ${nameOf} AS name
             FROM ${from}
-           WHERE ${target} = ?1
+           WHERE ${target} = ?1 ${onlyIf === undefined ? "" : `AND ${onlyIf}`}
            ORDER BY record.id`;
 };
 
@@ -179,12 +191,13 @@ interface WithScheduleOrDocument extends Listed {
   readonly documents: number;
 }
 
-// The records that go with a Schedule or a Document on them. Those are types no tool writes
-// yet, so no Change has one. An Item's Schedules would be deleted with it by a foreign key. A
-// Document is attached by type and id, with no key at all, and would stay attached to nothing.
-// And a Vendor that a Document names in a column of its own could not go at all, or would
-// have to be pointed at a replacement. So a delete of any of these is refused, until the tools
-// that write a Schedule and a Document are here.
+// The records that go with a Schedule or a Document on them. No tool writes a Schedule yet, so
+// no Change has one, and an Item's Schedules would be deleted with it by a foreign key. A
+// Document is in the log, but deleting one, with the sweep that removes its file 30 days later,
+// is still to come. It is attached by type and id, with no key at all, and would stay attached
+// to nothing. And a Vendor that a Document names in a column of its own could not go at all,
+// or would have to be pointed at a replacement. So a delete of any of these is refused, until
+// a Schedule and a Document can each be deleted.
 const SCHEDULES_AND_DOCUMENTS_ON_GOING = `
   SELECT * FROM (
     SELECT going.type, going.id, going.name,
@@ -247,16 +260,19 @@ const usedColumn = (way: WayOfUsing, at: number, nameOf: string) =>
 
 // The statement that marks the records that have the record `?1` in a link set as changed now,
 // in a table that keeps `updated_at`. It runs while they still have it.
-const markingChanged = (
-  shape: RecordShape,
-  { table, from, to }: LinkSet,
-): ReadonlyArray<StatementText> => {
+const markingChanged = ({
+  shape,
+  set,
+  targetType,
+}: SetWayOfUsing): ReadonlyArray<StatementText> => {
   const stamped = updatedNow(shape);
+  const { table, from, to } = set;
   return stamped.length === 0
     ? []
     : [
         `UPDATE ${shape.table} SET ${stamped.join(", ")}
-          WHERE id IN (SELECT ${from} FROM ${table} WHERE ${to} = ?1)`,
+          WHERE id IN (SELECT ${from} FROM ${table}
+                        WHERE ${to} = ?1${andLinkedType(set, targetType)})`,
       ];
 };
 
@@ -272,10 +288,11 @@ const comingOffTexts = (way: WayOfUsing): ReadonlyArray<StatementText> => {
       `${way.shape.table} points at a record in ${way.column}, and nothing says what it holds once that record is deleted.`,
     );
   }
-  const { table, to } = way.set;
-  return [...markingChanged(way.shape, way.set), `DELETE FROM ${table} WHERE ${to} = ?1`].map(
-    compact,
-  );
+  const { set, targetType } = way;
+  return [
+    ...markingChanged(way),
+    `DELETE FROM ${set.table} WHERE ${set.to} = ?1${andLinkedType(set, targetType)}`,
+  ].map(compact);
 };
 
 // The statements that point the records that use the record `?1` in one way at the
@@ -290,26 +307,29 @@ const repointingTexts = (way: WayOfUsing): ReadonlyArray<StatementText> => {
     const { column } = way;
     return [
       ...links
-        .filter((set) => set.of === way.targetType)
+        .filter((set) => set.of.includes(way.targetType))
         .map(
-          (set) => `DELETE FROM ${set.table} WHERE ${set.to} = ?2
+          (
+            set,
+          ) => `DELETE FROM ${set.table} WHERE ${set.to} = ?2${andLinkedType(set, way.targetType)}
                        AND ${set.from} IN (SELECT id FROM ${table} WHERE ${column} = ?1)`,
         ),
       `UPDATE ${table} SET ${[`${column} = ?2`, ...updatedNow(way.shape)].join(", ")}
         WHERE ${column} = ?1`,
     ].map(compact);
   }
-  const { set } = way;
+  const { set, targetType } = way;
+  const ofType = andLinkedType(set, targetType);
   return [
-    ...markingChanged(way.shape, set),
+    ...markingChanged(way),
     ...Object.entries(pointerColumns)
-      .filter(([, pointedAt]) => pointedAt === way.targetType)
+      .filter(([, pointedAt]) => pointedAt === targetType)
       .map(
-        ([column]) => `DELETE FROM ${set.table} WHERE ${set.to} = ?1
+        ([column]) => `DELETE FROM ${set.table} WHERE ${set.to} = ?1${ofType}
                           AND ${set.from} IN (SELECT id FROM ${table} WHERE ${column} = ?2)`,
       ),
-    `UPDATE OR IGNORE ${set.table} SET ${set.to} = ?2 WHERE ${set.to} = ?1`,
-    `DELETE FROM ${set.table} WHERE ${set.to} = ?1`,
+    `UPDATE OR IGNORE ${set.table} SET ${set.to} = ?2 WHERE ${set.to} = ?1${ofType}`,
+    `DELETE FROM ${set.table} WHERE ${set.to} = ?1${ofType}`,
   ].map(compact);
 };
 
@@ -485,7 +505,7 @@ const refuseScheduleOrDocument = (found: Found) => {
   });
   return Effect.fail(
     notDeleted(
-      `a record with a Schedule or a Document on it cannot be deleted yet. No tool writes those yet, so no Change would say what became of them:\n${lines.join("\n")}`,
+      `a record with a Schedule or a Document on it cannot be deleted yet. Attic does not delete a Schedule or a Document yet, and the record would leave it behind or take it with no Change to say so:\n${lines.join("\n")}`,
     ),
   );
 };
@@ -629,7 +649,7 @@ export const deleteRecord = defineTool({
   name: "delete_record",
   description: DESCRIPTION,
   input: Schema.Struct({
-    type: Schema.Literals(RECORD_TYPES).annotate({
+    type: Schema.Literals(INPUT_TYPES).annotate({
       description: "What kind of record it is. A Property is never deleted.",
     }),
     id: Schema.String.annotate({

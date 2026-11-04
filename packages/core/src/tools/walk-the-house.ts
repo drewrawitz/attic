@@ -19,8 +19,9 @@ const FILLED_IN = "its Spaces, their size and paint, and the Items in them, with
 // them to the list of tools, so that a tool that is renamed breaks the test and not the
 // interview.
 //
-// It tells the client not to ask for photos or Receipts, because no tool takes a Document yet.
-// They come with step 6 of the `v1` route.
+// It tells the client not to ask for photos or Receipts. Each one would stop the walk for a
+// trip through an upload link. Asking for them waits for the part of step 6 of the `v1` route
+// that is still parked.
 const SCRIPT = `This is the script for going through a Property with the User, one Space at a time, to put on record ${FILLED_IN}. Follow the steps in order. Ask a question or two at a time, and save as you go.
 
 1. Settle which Property this is. Ask the User for its name, unless that is already clear. Read it with \`get_record\`, which takes a Property by its name and returns its Spaces and the Items at it. If it is not on record, the error says which Properties are, and a new one is created with \`save_property\`. Give this Property in every call that takes one. Then read \`get_schema\` once, for the Category tree, the keys of \`data\` each Category expects, and the well-known keys of \`data\`.
@@ -44,7 +45,7 @@ const SCRIPT = `This is the script for going through a Property with the User, o
 Do not:
 - Guess a model, a serial number, a Price, or a date. Save what the User said or read out, and nothing else. What is left out stays missing, and \`gaps\` shows it the next time.
 - Make a new Category where one in the tree fits. \`save_category\` is for an Item that none fits.
-- Ask for photos or Receipts. Attic cannot take them yet.`;
+- Ask for photos or Receipts. Each one would stop the walk to be sent through a link of its own, so they are put in another time.`;
 
 const DESCRIPTION = `Returns the script for going through a Property with the User: an interview, one Space at a time, that puts on record ${FILLED_IN}. Call it when the User wants to set up a Property, or to go through one, and then follow what comes back. The script says which tools to call and in what order. This tool reads no record and writes none. It takes no input.`;
 

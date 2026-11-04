@@ -5,3 +5,7 @@ export const AUTHORIZE_PATH = "/authorize";
 export const CALLBACK_PATH = "/callback";
 export const TOKEN_PATH = "/token";
 export const REGISTER_PATH = "/register";
+
+// The link the User taps to put a file in Attic, then the id of its request. It is signed and
+// needs no token, so it is outside the OAuth provider. Core signs it, so core says where it is.
+export { UPLOAD_PATH } from "@attic/core";

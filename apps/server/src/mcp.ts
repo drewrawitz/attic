@@ -1,19 +1,10 @@
-import {
-  AtomicBatch,
-  callTool,
-  Currency,
-  Ids,
-  prompts,
-  tools,
-  type Tool,
-  type ToolResult,
-} from "@attic/core";
-import { D1Client } from "@effect/sql-d1";
+import { callTool, prompts, tools, type Tool, type ToolResult } from "@attic/core";
 import { McpServer, type CallToolResult, type GetPromptResult } from "@modelcontextprotocol/server";
 import { createMcpHandler, getMcpAuthContext } from "agents/mcp/server";
-import { DateTime, Effect, Layer } from "effect";
+import { Effect } from "effect";
 import type { WorkerEnv } from "../../../alchemy.run.ts";
 import { isAllowed } from "./allowlist.ts";
+import { toolServices } from "./tool-services.ts";
 
 // Every tool as the MCP SDK registers it. A new server is built for each request (ADR 0001),
 // so whatever is the same for every request is done here, once, when the module loads. A
@@ -52,41 +43,26 @@ const NOT_ALLOWED: ToolResult = {
   isError: true,
 };
 
-// D1 has no interactive transactions (ADR 0006). Its batch is the atomic write: every
-// statement in it happens, or none does.
-const D1Batch = Layer.effect(
-  AtomicBatch,
-  Effect.map(D1Client.D1Client, (d1) =>
-    AtomicBatch.of({ run: (statements) => Effect.asVoid(d1.batch(statements)) }),
-  ),
-);
-
-// What a tool runs on in the Worker: the D1 database, its batch, ULIDs for new records, the
-// configured timezone, which is where a tool reads today's date, and the configured currency,
-// which is how a tool writes an amount out. Effect keeps each timezone it has made, so only
-// the first call of an isolate pays for making it.
-const services = (env: WorkerEnv) =>
-  Layer.mergeAll(
-    D1Batch,
-    Ids.layer,
-    DateTime.layerCurrentZoneNamed(env.ATTIC_TIMEZONE),
-    Currency.layer(env.ATTIC_CURRENCY),
-  ).pipe(Layer.provideMerge(D1Client.layer({ db: env.DB })));
-
 // Runs a tool for the signed-in caller, on the Worker's database, and puts what it sends back
 // in the shape MCP expects. The caller is checked here, before anything starts, because the
 // MCP handler only keeps it within reach for the length of this call.
-const runTool = async (env: WorkerEnv, tool: Tool, input: unknown): Promise<CallToolResult> => {
+// A link a tool makes is to the address the client reached the Worker at.
+const runTool = async (
+  env: WorkerEnv,
+  origin: string,
+  tool: Tool,
+  input: unknown,
+): Promise<CallToolResult> => {
   const { text, isError } = callerIsAllowed(env)
-    ? await Effect.runPromise(callTool(tool, input, services(env)))
+    ? await Effect.runPromise(callTool(tool, input, toolServices(env, origin)))
     : NOT_ALLOWED;
   return { content: [{ type: "text", text }], isError };
 };
 
-const createServer = (env: WorkerEnv) => {
+const createServer = (env: WorkerEnv, origin: string) => {
   const server = new McpServer({ name: "attic", version: "0.0.0" });
   for (const { tool, config } of toolRegistrations) {
-    server.registerTool(tool.name, config, (input) => runTool(env, tool, input));
+    server.registerTool(tool.name, config, (input) => runTool(env, origin, tool, input));
   }
   // A prompt is not held to the allowlist as a call to a tool is. Its text is in the repo, with
   // nothing of the User's in it, and the tools it sends a client to are each checked.
@@ -99,5 +75,6 @@ const createServer = (env: WorkerEnv) => {
 // POST /mcp, reached only with a token the OAuth provider issued. A new MCP server is built
 // for each request and nothing is kept between them (ADR 0001).
 export const mcp = {
-  fetch: (request, env, ctx) => createMcpHandler(() => createServer(env))(request, env, ctx),
+  fetch: (request, env, ctx) =>
+    createMcpHandler(() => createServer(env, new URL(request.url).origin))(request, env, ctx),
 } satisfies ExportedHandler<WorkerEnv>;

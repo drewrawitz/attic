@@ -97,8 +97,8 @@ it.effect("the prompt is the same script under the same name, with a description
   }).pipe(Effect.provide(TestDatabase)),
 );
 
-// What a client does unless it is told not to. A photo and a Receipt are Documents, and no tool
-// takes one yet.
+// What a client does unless it is told not to. A photo and a Receipt are Documents, and each
+// goes in through a link of its own, which would stop the walk.
 it.effect("the script says what not to do", () =>
   Effect.gen(function* () {
     const text = yield* script;

@@ -247,6 +247,10 @@ export const replaceLinks = (
   const shape: RecordShape = SHAPES[step.type];
   const set = shape.links.find((link) => link.name === name);
   if (set === undefined) throw new Error(`${shape.table} has no link set named ${name}.`);
+  // A set of several types keeps a type beside each id, and these steps write ids alone.
+  if (set.typeColumn !== undefined) {
+    throw new Error(`${set.table} keeps a type beside each id, and is not replaced from ids.`);
+  }
 
   const emptying = sql.unsafe(`DELETE FROM ${set.table} WHERE ${set.from} = ?`, [step.id]);
   const filling = sql.unsafe(
