@@ -691,16 +691,33 @@ const refuseMissing = (missing: ReadonlyArray<Pointer>) => {
   );
 };
 
-// Refuses an undo that would give a record back a name another record has now. The unique
-// index would turn it away, with no word on which record has the name.
+// Refuses an undo that would give a record back a name another record has now, or what else
+// no two records can share, such as a Document's file. The unique index would turn it away,
+// with no word on which record has it.
 const refuseNameHeld = Effect.fnUntraced(function* (toUndo: string, held: ReadonlyArray<NameHeld>) {
+  const holdsOf = (type: RecordType) => {
+    const shape: RecordShape = SHAPES[type];
+    return shape.uniqueHolds;
+  };
   const holder = ({ type, holder_id, holder_name }: NameHeld) =>
     named({ type, id: holder_id, name: holder_name });
+  // A Document's file is not its name, and nothing changes it. So the other Document was made
+  // after this one was taken out, by a Change that can be undone first.
+  yield* refuseFor(
+    held.flatMap((record) => {
+      const holds = holdsOf(record.type);
+      return holds === undefined
+        ? []
+        : [`The ${named(record)} would have the same ${holds} as the ${holder(record)}.`];
+    }),
+    "a record would come back with what another record has now, and no two records can have the same. Undo the Change that made the other record first:",
+  );
+  const byName = held.filter(({ type }) => holdsOf(type) === undefined);
   // The record that has the name can be one this Change wrote: the Change took the name from
   // one record and gave it to another. Rows come back before rows go out, so the name cannot
   // go back, and there is no Change to undo first: it is this one.
   yield* refuseFor(
-    held
+    byName
       .filter(({ same_change }) => same_change === 1)
       .map(
         (record) =>
@@ -709,7 +726,7 @@ const refuseNameHeld = Effect.fnUntraced(function* (toUndo: string, held: Readon
     `the Change "${toUndo}" gave one record a name it took from another, and an undo cannot give the name back while the other record still has it. This Change cannot be undone. Put the records right with the other tools instead:`,
   );
   yield* refuseFor(
-    held.map(
+    byName.map(
       (record) =>
         `The ${named(record)} would be called that again, and the ${holder(record)} has the name now.`,
     ),

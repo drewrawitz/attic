@@ -2,12 +2,12 @@ import { expect, it } from "@effect/vitest";
 import { Effect, Layer } from "effect";
 import { SqlClient } from "effect/sql";
 import { TestClock } from "effect/testing";
-import { receiveFile, uploadPath, type ArrivedFile } from "../../src/document.ts";
+import { uploadPath, type ArrivedFile } from "../../src/document.ts";
 import { checkSignature } from "../../src/signed-address.ts";
 import { ToolError, type ToolServices } from "../../src/tool.ts";
 import { deleteRecord } from "../../src/tools/delete-record.ts";
 import { getRecord } from "../../src/tools/get-record.ts";
-import { requestUploadLink } from "../../src/tools/request-upload-link.ts";
+import { receiveFile, requestUploadLink } from "../../src/tools/request-upload-link.ts";
 import { saveItem } from "../../src/tools/save-item.ts";
 import { saveProperty } from "../../src/tools/save-property.ts";
 import { search } from "../../src/tools/search.ts";
@@ -253,6 +253,72 @@ it.effect("the same file twice is stored once, and its Document is attached to b
       { type: "vendor", id: "seed-vendor-hearth", name: "Hearth Heating and Air" },
     ]);
     expect((yield* counting).documents).toBe(before.documents + 1);
+  }).pipe(Effect.provide(TestDatabase)),
+);
+
+it.effect("the same file again fills in what its Document does not say yet, and nothing else", () =>
+  Effect.gen(function* () {
+    yield* loadHousehold;
+    yield* todayIs(TODAY);
+    const bare = { title: RECEIPT.title, kind: RECEIPT.kind, attach_to: RECEIPT.attach_to };
+    const { arrival } = yield* arriving((yield* requesting(bare)).link as string);
+    if (!arrival.ok) return expect.unreachable();
+    const { document_id: documentId } = arrival;
+
+    // Nothing new to attach, but a text, a date, a total, and a Vendor to fill in.
+    const filling = yield* arriving((yield* requesting(RECEIPT)).link as string);
+    if (!filling.arrival.ok) return expect.unreachable();
+    // What the Document says now stays, whatever a later call says.
+    const later = yield* arriving(
+      (yield* requesting({ ...RECEIPT, title: "Other", total: 1, text: "Other words." }))
+        .link as string,
+    );
+
+    expect(filling.stored).toEqual([]);
+    expect(filling.arrival.change_id).toEqual(expect.any(String));
+    expect(later.arrival).toEqual({ ok: true, document_id: documentId, change_id: null });
+    const filled = expect.objectContaining({
+      title: "Fridge water filter order",
+      doc_date: "2026-10-04",
+      total: 49.99,
+      vendor: "Corner Hardware",
+      text: "Order 1182. Water filter, part DA29-00020B.",
+    });
+    expect(yield* getting("document", documentId)).toEqual(filled);
+    const found = yield* call(search, { words: "DA29-00020B" }).pipe(Effect.map(answer));
+    expect(JSON.stringify(found)).toContain(documentId);
+
+    // The Change that filled it in is undone like any other, with the Vendor it made.
+    const undone = yield* undoing(filling.arrival.change_id!);
+    expect(undone.taken_out).toEqual([
+      { type: "vendor", id: expect.any(String), name: "Corner Hardware" },
+    ]);
+    expect(yield* getting("document", documentId)).toEqual(
+      expect.objectContaining({ doc_date: null, total: null, vendor: null, text: null }),
+    );
+  }).pipe(Effect.provide(TestDatabase)),
+);
+
+it.effect("undo refuses to put a Document back while another Document has its file", () =>
+  Effect.gen(function* () {
+    yield* loadHousehold;
+    yield* todayIs(TODAY);
+    const receipt = { ...RECEIPT, vendor: null };
+    const first = (yield* arriving((yield* requesting(receipt)).link as string)).arrival;
+    if (!first.ok) return expect.unreachable();
+    const takenOut = yield* undoing(first.change_id!);
+    const second = (yield* arriving((yield* requesting(receipt)).link as string)).arrival;
+    if (!second.ok) return expect.unreachable();
+
+    const refused = yield* undoing(takenOut.change_id as string);
+
+    expect(refused.refused).toBe(
+      `Nothing was undone, because a record would come back with what another record has now, and no two records can have the same. Undo the Change that made the other record first:
+The Document "Fridge water filter order" (${first.document_id}) would have the same file as the Document "Fridge water filter order" (${second.document_id}).`,
+    );
+    yield* undoing(second.change_id!);
+    yield* undoing(takenOut.change_id as string);
+    expect((yield* getting("document", first.document_id)).id).toBe(first.document_id);
   }).pipe(Effect.provide(TestDatabase)),
 );
 

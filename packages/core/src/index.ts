@@ -25,12 +25,11 @@ export {
   LINK_RAN_OUT,
   MOST_FILE_BYTES,
   MOST_FILE_MEGABYTES,
-  receiveFile,
   shownRequest,
   UPLOAD_PATH,
   type ArrivedFile,
-  type Arrival,
 } from "./document.ts";
+export { receiveFile, type Arrival } from "./tools/request-upload-link.ts";
 export { Currency } from "./money.ts";
 export { checkSignature, SignedAddresses } from "./signed-address.ts";
 export { callTool, ToolError, type Tool, type ToolResult, type ToolServices } from "./tool.ts";

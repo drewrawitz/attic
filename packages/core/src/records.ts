@@ -115,6 +115,12 @@ export interface RecordShape {
    * of a Quote. The database ignores case in a name.
    */
   readonly unique?: ReadonlyArray<string>;
+  /**
+   * What those columns hold, in a word, when it is not the record's name: a Document's file.
+   * Two Documents can have one title, so an error that says one would have the other's name
+   * would be wrong.
+   */
+  readonly uniqueHolds?: string;
 }
 
 /**
@@ -326,6 +332,7 @@ export const SHAPES = {
     pointerColumns: { property_id: "property", vendor_id: "vendor" },
     // The same file is never stored twice.
     unique: ["sha256"],
+    uniqueHolds: "file",
   },
 } as const satisfies Readonly<Record<RecordType, RecordShape>>;
 

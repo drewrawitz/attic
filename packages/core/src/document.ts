@@ -1,9 +1,9 @@
-import { Clock, Effect, Layer } from "effect";
+import { Clock, Effect } from "effect";
 import { SqlClient } from "effect/sql";
 import { nameInTable, SHAPES, term, type Listed } from "./records.ts";
 import { insertRow, runSave, updatedNow, type SaveStep } from "./save.ts";
 import { SIGNED_FOR_MINUTES } from "./signed-address.ts";
-import { callAs, ToolError, type ToolServices } from "./tool.ts";
+import { ToolError } from "./tool.ts";
 import { vendorOrNew } from "./vendor.ts";
 import { Ids } from "./write.ts";
 
@@ -34,8 +34,12 @@ export const FILE_TYPES: Readonly<Record<string, ReadonlyArray<string>>> = {
 export const MOST_FILE_MEGABYTES = 25;
 export const MOST_FILE_BYTES = MOST_FILE_MEGABYTES * 1024 * 1024;
 
-// The one set of a Document: the records it is attached to.
-const ATTACHED = SHAPES.document.links[0];
+// The set of a Document that holds the records it is attached to.
+const ATTACHED = (() => {
+  const set = SHAPES.document.links.find(({ name }) => name === "attached_to");
+  if (set === undefined) throw new Error("records.ts gives a Document no attached_to set.");
+  return set;
+})();
 
 /** The types of record a Document can be attached to. */
 export const ATTACHABLE = ATTACHED.of;
@@ -146,6 +150,10 @@ const ATTACHING = `
   INSERT OR IGNORE INTO ${ATTACHED.table} (${ATTACHED.from}, ${ATTACHED.typeColumn}, ${ATTACHED.to})
   SELECT ?, json_extract(value, '$.type'), json_extract(value, '$.id') FROM json_each(?)`;
 
+// What a request can say of a file that the Document of the same file may not say yet. A
+// Vendor is said by name, and is filled in apart.
+const FILLED_IN = ["doc_date", "total_cents", "text"] as const;
+
 // What a request names that is not there now: each record it is to be attached to that was
 // deleted, and its Property, which an undo can take out. Each is said as an error says it.
 const goneSince = Effect.fnUntraced(function* (request: UploadRequest) {
@@ -165,11 +173,12 @@ const goneSince = Effect.fnUntraced(function* (request: UploadRequest) {
  * Makes the Document a file that arrived is, from the request it arrived for. Reads come
  * first. Then `store` puts the bytes in the bucket under the key it is given, and only then is
  * the Document written, as one Change: a file that could not be stored leaves no Document. A
- * file Attic has already, by its hash, is not stored again: its Document is attached to the
- * request's records too. What comes back is the Document's id, and the id of the Change, which
- * is null when the file was there already with all of those.
+ * file Attic has already, by its hash, is not stored again. Its Document is attached to the
+ * request's records too, and gets what the request says that it does not say yet. What it
+ * says already stays, since it was read from the same file. What comes back is the Document's
+ * id, and the id of the Change, which is null when the Document had all of that already.
  */
-const receiving = Effect.fnUntraced(function* (
+export const documentFrom = Effect.fnUntraced(function* (
   requestId: string,
   file: ArrivedFile,
   store: (key: string) => Effect.Effect<void, ToolError>,
@@ -187,8 +196,17 @@ const receiving = Effect.fnUntraced(function* (
   }
   const records = request.attach_to;
 
-  const [had] = yield* sql<{ id: string; title: string; attached_to: string }>`
-    SELECT document.id, document.title,
+  const [had] = yield* sql<{
+    id: string;
+    title: string;
+    doc_date: string | null;
+    total_cents: number | null;
+    vendor_id: string | null;
+    text: string | null;
+    attached_to: string;
+  }>`
+    SELECT document.id, document.title, document.doc_date, document.total_cents,
+           document.vendor_id, document.text,
            (SELECT json_group_array(json_object('type', entity_type, 'id', entity_id))
               FROM document_links WHERE document_id = document.id) AS attached_to
       FROM documents AS document
@@ -199,19 +217,38 @@ const receiving = Effect.fnUntraced(function* (
       (JSON.parse(had.attached_to) as AttachedTo[]).map(({ type, id }) => `${type} ${id}`),
     );
     const more = records.filter(({ type, id }) => !known.has(`${type} ${id}`));
-    if (more.length === 0) return { document_id: had.id, change_id: null };
+    const empty = FILLED_IN.filter(
+      (column) => had[column] === null && request[column] !== undefined,
+    );
+    const vendor =
+      had.vendor_id === null && request.vendor !== undefined
+        ? yield* vendorOrNew(request.vendor)
+        : undefined;
+    if (more.length === 0 && empty.length === 0 && vendor === undefined) {
+      return { document_id: had.id, change_id: null };
+    }
+
+    const filled = [
+      ...empty.map((column) => [column, request[column]] as const),
+      ...(vendor === undefined ? [] : [["vendor_id", vendor.id] as const]),
+    ];
+    const set = [
+      ...filled.map(([column]) => `${column} = ?`),
+      // A Document is `filed` once it is attached to a record.
+      ...(more.length === 0
+        ? []
+        : ["status = CASE status WHEN 'pending' THEN 'filed' ELSE status END"]),
+      ...updatedNow(SHAPES.document),
+    ];
     const document: Listed = { type: "document", id: had.id, name: had.title };
     const steps: ReadonlyArray<SaveStep> = [
-      sql.unsafe(ATTACHING, [had.id, JSON.stringify(more)]),
-      // A Document is `filed` once it is attached to a record.
-      sql.unsafe(
-        `UPDATE documents
-            SET ${["status = CASE status WHEN 'pending' THEN 'filed' ELSE status END", ...updatedNow(SHAPES.document)].join(", ")}
-          WHERE id = ?`,
-        [had.id],
-      ),
+      ...(more.length === 0 ? [] : [sql.unsafe(ATTACHING, [had.id, JSON.stringify(more)])]),
+      sql.unsafe(`UPDATE documents SET ${set.join(", ")} WHERE id = ?`, [
+        ...filled.map(([, value]) => value),
+        had.id,
+      ]),
     ].map((statement) => ({ ...document, created: false, statement }));
-    const saved = yield* runSave(steps);
+    const saved = yield* runSave([...(vendor?.steps ?? []), ...steps]);
     return { document_id: had.id, change_id: saved.change_id };
   }
 
@@ -244,28 +281,3 @@ const receiving = Effect.fnUntraced(function* (
   const saved = yield* runSave([...(vendor?.steps ?? []), row, ...attaching]);
   return { document_id: id, change_id: saved.change_id };
 });
-
-/** How a file that arrived ended: the Document it is, or why nothing was stored. */
-export type Arrival =
-  | { readonly ok: true; readonly document_id: string; readonly change_id: string | null }
-  | { readonly ok: false; readonly refused: string };
-
-// The tool whose Change a file that arrives is. It is the tool that asked for the link.
-const REQUESTED_BY = "request_upload_link";
-
-/**
- * Makes a Document of a file that arrived, on what a tool runs on, and says how it ended. A
- * refusal is the message the sender is shown. Anything nobody planned for is logged, and the
- * sender is told only that there was a failure, as a client is by `callTool`.
- */
-export const receiveFile = (
-  requestId: string,
-  file: ArrivedFile,
-  store: (key: string) => Effect.Effect<void, ToolError>,
-  services: Layer.Layer<ToolServices, unknown>,
-): Effect.Effect<Arrival> =>
-  Effect.map(
-    callAs(REQUESTED_BY, receiving(requestId, file, store), services),
-    ({ text, isError }): Arrival =>
-      isError ? { ok: false, refused: text } : { ok: true, ...JSON.parse(text) },
-  );
