@@ -32,6 +32,10 @@ const TOO_BIG = `A file can be up to ${MOST_FILE_MEGABYTES} MB.`;
 // hashes a file (ADR 0012). R2 checks the bytes against it.
 const SHA256_HEADER = "x-content-sha256";
 
+// What the Worker says when the bytes that arrived are not the ones the SHA-256 was worked out
+// from. Sending the file again can work, so the page knows these words and offers to.
+const NOT_THE_HASHED_BYTES = `The file that arrived does not match the SHA-256 in ${SHA256_HEADER}, so nothing was stored. Send it again.`;
+
 // The paths this answers: the upload path, then a request id.
 const UPLOAD_PATHS = linkPaths(UPLOAD_PATH);
 
@@ -86,7 +90,7 @@ const uploadPage = (shown: { title: string; kind: string; attach_to: ReadonlyArr
   <p class="title">${escapeHtml(shown.title)}</p>
   <p class="onto">${onto === "" ? "Attached to nothing yet." : `Goes on ${onto}.`}</p>
 </section>
-<div id="done" class="panel done" hidden><strong>Done.</strong> <span id="done-what"></span>${onto === "" ? "" : ` It is on ${onto}.`} You can close this page and go back to the chat.</div>
+<div id="done" class="panel done" hidden><strong>Done.</strong> <span id="done-what"></span>${onto === "" ? "" : ` <span id="done-on">It is</span> on ${onto}.`} You can close this page and go back to the chat.</div>
 <div id="not-all" class="panel not-all" hidden><strong>Not everything went in.</strong> What went wrong is under each file.</div>
 <label class="pick" id="pick"><input type="file" id="files" multiple accept="${TYPES.join(",")}"><span id="pick-text">Choose a photo or file</span></label>
 <p class="note">Each file becomes a Document of its own. Images and PDFs, up to ${MOST_FILE_MEGABYTES} MB each. <span id="until"></span></p>
@@ -95,6 +99,7 @@ const uploadPage = (shown: { title: string; kind: string; attach_to: ReadonlyArr
 <script>
 const MOST_BYTES = ${MOST_FILE_BYTES};
 const BY_ENDING = ${JSON.stringify(BY_ENDING)};
+const NOT_THE_HASHED_BYTES = ${JSON.stringify(NOT_THE_HASHED_BYTES)};
 const hex = (bytes) => [...new Uint8Array(bytes)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 const byId = (id) => document.getElementById(id);
 const files = byId("files");
@@ -131,13 +136,15 @@ const post = (file, type, sha256, sending) =>
 
 // Every file picked on this page, with how far it got.
 const rows = [];
-// Whether the Worker said the link no longer works, so that no more files can be sent with it.
-let linkWorks = true;
+// Why the Worker said the link no longer works, in its words, or nothing while it works. A
+// link that stopped takes no more files.
+let stopped = "";
 
 // Sets the button and the panels from the files: the button waits while any file is on its
 // way, and a panel says so once none is. Gives back what that panel says, or nothing.
 const showAll = () => {
-  const busy = rows.some((row) => row.state === "waiting" || row.state === "sending");
+  const linkWorks = stopped === "";
+  const busy = rows.some((row) => ["waiting", "sending", "saving"].includes(row.state));
   const settled = rows.length > 0 && !busy;
   const allIn = settled && rows.every((row) => row.state === "in");
   files.disabled = busy || !linkWorks;
@@ -155,6 +162,9 @@ const showAll = () => {
   const count = rows.length;
   byId("done-what").textContent =
     count === 1 ? "The file is in Attic." : (count === 2 ? "Both" : "All " + count) + " files are in Attic.";
+  // Only there when the files go on something.
+  const doneOn = byId("done-on");
+  if (doneOn) doneOn.textContent = count === 1 ? "It is" : "They are";
   return allIn ? byId("done").textContent : settled ? byId("not-all").textContent : "";
 };
 
@@ -195,6 +205,7 @@ const rowFor = (file) => {
 
   row.send = async () => {
     if (file.size > MOST_BYTES) return set("failed", "Too big. ${TOO_BIG}");
+    if (stopped !== "") return set("failed", stopped);
     set("sending", "Getting it ready", { going: true });
     bar.removeAttribute("value");
     try {
@@ -202,16 +213,26 @@ const rowFor = (file) => {
       const sha256 = hex(await crypto.subtle.digest("SHA-256", await file.arrayBuffer()));
       set("sending", "Sending", { going: true });
       bar.value = 0;
+      // How much has gone is only shown. Once all of it has, Attic is saving it, and that is
+      // read out, once.
       const answer = await post(file, type, sha256, (part) => {
         bar.value = part;
-        state.textContent = part < 1 ? "Sending, " + Math.round(part * 100) + "%" : "Saving";
+        if (part < 1) state.textContent = "Sending, " + Math.round(part * 100) + "%";
+        else if (row.state === "sending") set("saving", "Saving", { going: true });
       });
       if (answer.status === 200) return set("in", "In Attic");
       if (answer.status === 0) {
         return set("failed", "It did not reach Attic. Check the connection, then try again.", { retry: true });
       }
-      // A link that has run out, or was changed, takes no other file either.
-      if (answer.status === 403 || answer.status === 410) linkWorks = false;
+      // A link that has run out, or was changed, takes no other file either. The files still
+      // waiting are turned away in its words, without being sent.
+      if (answer.status === 403 || answer.status === 410) {
+        stopped = answer.error || "This link no longer works. Ask for a new one.";
+      }
+      // The bytes that arrived were not the ones that were hashed, which a second try can fix.
+      if (answer.error === NOT_THE_HASHED_BYTES) {
+        return set("failed", "The file changed on its way to Attic, so it was not saved. Try again.", { retry: true });
+      }
       // An error in Attic may pass. Anything else is the same on a second try.
       const broke = answer.status >= 500;
       const why = answer.error || (broke ? "Attic hit an error. Try again in a moment." : "Attic did not take it.");
@@ -249,11 +270,7 @@ const storing = (env: WorkerEnv, request: Request, file: ArrivedFile) => (key: s
     Effect.asVoid,
     Effect.catch((cause) =>
       /did not match|10037/.test(String(cause))
-        ? Effect.fail(
-            new ToolError({
-              message: `The file that arrived does not match the SHA-256 in ${SHA256_HEADER}, so nothing was stored. Send it again.`,
-            }),
-          )
+        ? Effect.fail(new ToolError({ message: NOT_THE_HASHED_BYTES }))
         : Effect.die(cause),
     ),
   );
