@@ -15,11 +15,21 @@ export const isDocumentPath = DOCUMENT_PATHS.is;
 // What a file is called when its Document has no title.
 const UNTITLED = "Document";
 
+// A HEIF file is a HEIC photo under the name some systems give it, so either ending will do for
+// either type.
+const SAME_FORMAT: Readonly<Record<string, ReadonlyArray<string>>> = {
+  "image/heic": ["heif"],
+  "image/heif": ["heic"],
+};
+
+// The endings a file of this type can have, its own first.
+const endingsOf = (type: string) => [...(FILE_TYPES[type] ?? []), ...(SAME_FORMAT[type] ?? [])];
+
 // The name a browser saves a Document's file under: its title, then an ending of its type when
 // the title has none of them.
 const fileName = ({ title, mime_type }: DocumentToOpen) => {
   const name = (title ?? "").trim() || UNTITLED;
-  const endings = mime_type === null ? [] : (FILE_TYPES[mime_type] ?? []);
+  const endings = mime_type === null ? [] : endingsOf(mime_type);
   const [ending] = endings;
   const hasOne = endings.some((each) => name.toLowerCase().endsWith(`.${each}`));
   return ending === undefined || hasOne ? name : `${name}.${ending}`;
@@ -98,7 +108,11 @@ export const openDocument = {
     // An undo can take a Document out after its link was made.
     if (document === undefined) return notFound("This Document is not in Attic now.");
 
-    const file = await env.FILES.get(document.r2_key);
+    const file = await env.FILES.get(document.r2_key).catch((error: unknown) => {
+      console.error(`The file of the Document ${documentId} could not be read from FILES.`, error);
+      return undefined;
+    });
+    if (file === undefined) return unexpectedPage();
     if (file === null) {
       console.error(
         `The file of the Document ${documentId} is not in FILES, under ${document.r2_key}.`,

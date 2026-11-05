@@ -420,6 +420,18 @@ test(
           "content-disposition": `inline; filename="Upload test manual.PDF"; filename*=UTF-8''Upload%20test%20manual.PDF`,
         }),
       );
+
+      // Some systems call a HEIC photo HEIF, so its HEIC ending is kept, and no other is added.
+      const photo = yield* stored(
+        call,
+        aFile(`photo ${Date.now()}`),
+        { title: "Upload test IMG_1234.HEIC", kind: "photo" },
+        "image/heif",
+      );
+      const photoFile = yield* opened(yield* opening(call, photo));
+      expect(photoFile.headers["content-disposition"]).toBe(
+        `inline; filename="Upload test IMG_1234.HEIC"; filename*=UTF-8''Upload%20test%20IMG_1234.HEIC`,
+      );
     }),
   ),
 );
