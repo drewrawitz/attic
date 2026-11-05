@@ -1,13 +1,25 @@
-// D1's limits page allows a function 32 arguments, which is 16 fields. Local D1 took more on
-// 2026-10-10, so no test would catch a longer object, and this does.
-const MOST_FIELDS = 16;
+// D1's limits page allows a function 32 arguments. Local D1 took more on 2026-10-10, so no test
+// would catch a call with more, and `jsonObject` never makes one.
+const MOST_ARGUMENTS = 32;
 
-/** The SQL of one JSON object: each field's name, and the SQL of its value. */
+// A field is two arguments: its name, and its value. So `json_object` takes 16, and
+// `json_set`, whose first argument is the object it adds to, takes 15 more at a time.
+const FIELDS_IN_OBJECT = MOST_ARGUMENTS / 2;
+const FIELDS_SET_AT_ONCE = Math.floor((MOST_ARGUMENTS - 1) / 2);
+
+/**
+ * The SQL of one JSON object: each field's name, and the SQL of its value. Past 16 fields the
+ * rest are added with `json_set`, which keeps a field whose value is null, as `json_object`
+ * does, and takes a value that is JSON as JSON.
+ */
 export const jsonObject = (fields: ReadonlyArray<readonly [name: string, value: string]>) => {
-  if (fields.length > MOST_FIELDS) {
-    throw new Error(`A JSON object has ${fields.length} fields. D1 takes ${MOST_FIELDS}.`);
+  const first = fields.slice(0, FIELDS_IN_OBJECT);
+  let object = `json_object(${first.map(([name, value]) => `'${name}', ${value}`).join(", ")})`;
+  for (let at = FIELDS_IN_OBJECT; at < fields.length; at += FIELDS_SET_AT_ONCE) {
+    const more = fields.slice(at, at + FIELDS_SET_AT_ONCE);
+    object = `json_set(${object}, ${more.map(([name, value]) => `'$.${name}', ${value}`).join(", ")})`;
   }
-  return `json_object(${fields.map(([name, value]) => `'${name}', ${value}`).join(", ")})`;
+  return object;
 };
 
 /**

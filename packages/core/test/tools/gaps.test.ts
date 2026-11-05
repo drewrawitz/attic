@@ -775,9 +775,8 @@ it.effect("the gaps of the made-up household come back, grouped by Space", () =>
   }).pipe(Effect.provide(TestDatabase)),
 );
 
-// No tool stores a Document yet, so every Item would be missing a photo and a Receipt, and all
-// Work a Receipt. Until one does, gaps says nothing of either. The made-up household has
-// Documents on some records and none on others.
+// Asking for a photo and a Receipt is parked in step 6 of the `v1` route, so gaps says nothing
+// of either yet. The made-up household has Documents on some records and none on others.
 it.effect("nothing about a photo or a Receipt is in the reply or in the description", () =>
   Effect.gen(function* () {
     yield* loadHousehold;

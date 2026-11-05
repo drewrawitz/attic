@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { AtomicBatch, Ids } from "../src/write.ts";
-import { InUsd, InUtc } from "./call.ts";
+import { InUsd, InUtc, TestAddresses } from "./call.ts";
 
 const migrationsDir = new URL("../../../migrations/", import.meta.url);
 
@@ -68,6 +68,7 @@ export const TestDatabase = Layer.unwrap(
       KnownIds,
       InUtc,
       InUsd,
+      TestAddresses,
     ).pipe(Layer.provideMerge(SqliteClient.layer({ filename })));
   }),
 );

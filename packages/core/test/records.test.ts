@@ -47,15 +47,24 @@ const pointing = Effect.fnUntraced(function* (table: string) {
 // `undo` asks what points at a record before it takes one out, and goes by the pointer columns
 // and the link sets each type lists. A foreign key nobody lists here would let a record go
 // while a row still points at it, or let the database empty that row with no Change to say so.
+// A set of several types has no foreign key to the records in it. Its table says which types
+// by a CHECK list, as a Note's does.
 it.effect("each type lists its pointer columns and link sets, as its foreign keys have them", () =>
   Effect.gen(function* () {
     for (const [type, shape] of Object.entries<RecordShape>(SHAPES)) {
       expect(yield* pointing(shape.table), type).toEqual(shape.pointerColumns);
       for (const set of shape.links) {
-        expect(yield* pointing(set.table), set.name).toEqual({
-          [set.from]: type,
-          [set.to]: set.of,
-        });
+        if (set.typeColumn === undefined) {
+          expect(set.of, set.name).toHaveLength(1);
+          expect(yield* pointing(set.table), set.name).toEqual({
+            [set.from]: type,
+            [set.to]: set.of[0],
+          });
+        } else {
+          expect(yield* pointing(set.table), set.name).toEqual({ [set.from]: type });
+          const allowed = yield* checkList(set.table, set.typeColumn);
+          expect([...set.of].sort(), set.name).toEqual(allowed.sort());
+        }
       }
     }
   }).pipe(Effect.provide(TestDatabase)),
@@ -99,9 +108,8 @@ it.effect("a column a type follows what it is attached to in points at one type 
 // The tables that point at a record of some type and are not a type's own table or a link
 // set's. `undo` does not ask about these, so a row in one would be deleted or emptied with the
 // record it points at, and no Change would say so. No tool writes them yet. A tool that does
-// adds its type to `SHAPES`, which takes its table off this list. `document_links` points by
-// type and id, as a Note does, with no foreign key to find it by: it joins with its Documents.
-const NOT_WRITTEN_YET = ["documents", "schedules"];
+// adds its type to `SHAPES`, which takes its table off this list.
+const NOT_WRITTEN_YET = ["schedules"];
 
 it.effect("a table undo does not ask about is one no tool writes yet", () =>
   Effect.gen(function* () {
@@ -155,6 +163,45 @@ it("each type comes after the types it points at, whichever way it points", () =
     }
   }
 });
+
+// A Document has a set of several types, the records it is attached to, and more fields than
+// one call to json_object takes on D1. A column that is empty is in the snapshot all the same,
+// so a record is put back with it empty.
+it.effect(
+  "a snapshot has a set of several types as a list of types and ids, and every column",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO vendors (id, name) VALUES ('vendor-store', 'Corner Store')`;
+      yield* sql`
+      INSERT INTO items (id, name, category_id) VALUES ('item-kettle', 'Kettle', 'other')`;
+      yield* sql`
+      INSERT INTO documents (id, kind, title, r2_key, mime_type, sha256, data)
+      VALUES ('doc-receipt', 'receipt', 'Kettle receipt', 'key', 'image/png', 'abc', '{"page":1}')`;
+      yield* sql`
+      INSERT INTO document_links (document_id, entity_type, entity_id) VALUES
+        ('doc-receipt', 'vendor', 'vendor-store'), ('doc-receipt', 'item', 'item-kettle')`;
+
+      const [row] = yield* sql.unsafe<{ snapshot: string }>(
+        `SELECT ${snapshot(SHAPES.document)} AS snapshot FROM documents AS record`,
+      );
+      const taken = JSON.parse(row!.snapshot);
+      expect(Object.keys(taken).sort()).toEqual([...SHAPES.document.columns, "attached_to"].sort());
+      expect(taken).toEqual(
+        expect.objectContaining({
+          id: "doc-receipt",
+          title: "Kettle receipt",
+          vendor_id: null,
+          text: null,
+          data: { page: 1 },
+          attached_to: [
+            { type: "item", id: "item-kettle" },
+            { type: "vendor", id: "vendor-store" },
+          ],
+        }),
+      );
+    }).pipe(Effect.provide(TestDatabase)),
+);
 
 // An Item has a link set: its extra Categories.
 it.effect("a snapshot has each link set as a list of ids, in a fixed order", () =>

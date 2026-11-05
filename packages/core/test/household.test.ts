@@ -26,9 +26,10 @@ it.effect("loading the made-up household and then removing it leaves every table
     yield* removeHousehold;
 
     expect(yield* everyTable).toEqual(before);
-    // It has a row for every table but the change log, which only a write tool fills.
+    // It has a row for every table but the change log, which only a write tool fills, and the
+    // requests that wait for a file, which only request_upload_link does.
     const untouched = Object.keys(before).filter((name) => loaded[name] === before[name]!.length);
-    expect(untouched).toEqual(["change_records", "changes"]);
+    expect(untouched).toEqual(["change_records", "changes", "upload_requests"]);
   }).pipe(Effect.provide(TestDatabase)),
 );
 

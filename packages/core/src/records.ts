@@ -15,15 +15,16 @@ export const RECORD_TYPES = [
   "quote",
   "work",
   "note",
+  "document",
 ] as const;
 
 export type RecordType = (typeof RECORD_TYPES)[number];
 
 /**
- * A type as the glossary writes it: Item, Space. A Document and a Schedule are types no tool
- * writes yet, and an error can name one all the same.
+ * A type as the glossary writes it: Item, Space. A Schedule is a type no tool writes yet, and
+ * an error can name one all the same.
  */
-export const term = (type: RecordType | "document" | "schedule") =>
+export const term = (type: RecordType | "schedule") =>
   `${type.charAt(0).toUpperCase()}${type.slice(1)}`;
 
 /** A set of other records that a record is linked to, kept in a table of its own. */
@@ -35,9 +36,22 @@ export interface LinkSet {
   readonly from: string;
   /** The column that holds the id of each record it is linked to. */
   readonly to: string;
-  /** The type of the records it is linked to. */
-  readonly of: RecordType;
+  /** The types of the records it is linked to. Most sets are linked to records of one. */
+  readonly of: ReadonlyArray<RecordType>;
+  /**
+   * The column that holds the type of each record it is linked to, in a set that is linked to
+   * records of several types: a Document is attached to Items, Work, Spaces, and more. A set
+   * of one type has none. No foreign key holds a link of such a set to its record.
+   */
+  readonly typeColumn?: string;
 }
+
+/**
+ * What else a row of a link set has to hold to be a link to a record of this type, as the end
+ * of a WHERE on the set's table: that type in its type column, in a set that has one.
+ */
+export const andLinkedType = (set: LinkSet, type: RecordType) =>
+  set.typeColumn === undefined ? "" : ` AND ${set.typeColumn} = '${type}'`;
 
 /**
  * How a record is named when no column of its row names it: by the records it points at in
@@ -101,6 +115,12 @@ export interface RecordShape {
    * of a Quote. The database ignores case in a name.
    */
   readonly unique?: ReadonlyArray<string>;
+  /**
+   * What those columns hold, in a word, when it is not the record's name: a Document's file.
+   * Two Documents can have one title, so an error that says one would have the other's name
+   * would be wrong.
+   */
+  readonly uniqueHolds?: string;
 }
 
 /**
@@ -169,15 +189,14 @@ export const SHAPES = {
       "created_at",
       "updated_at",
     ],
-    // The Categories it is in beside its primary one. With the 15 columns this makes a snapshot
-    // of 16 fields, which is the most D1 takes in one JSON object (see `jsonObject`).
+    // The Categories it is in beside its primary one.
     links: [
       {
         name: "extra_categories",
         table: "item_categories",
         from: "item_id",
         to: "category_id",
-        of: "category",
+        of: ["category"],
       },
     ],
     namedBy: "name",
@@ -203,7 +222,13 @@ export const SHAPES = {
     ],
     // The Spaces it covers.
     links: [
-      { name: "spaces", table: "project_spaces", from: "project_id", to: "space_id", of: "space" },
+      {
+        name: "spaces",
+        table: "project_spaces",
+        from: "project_id",
+        to: "space_id",
+        of: ["space"],
+      },
     ],
     namedBy: "title",
     pointerColumns: { property_id: "property" },
@@ -245,11 +270,10 @@ export const SHAPES = {
       "created_at",
       "updated_at",
     ],
-    // The Items it was done to, and the Spaces it was done in. With the 14 columns these make
-    // a snapshot of 16 fields, which is the most D1 takes in one JSON object, as an Item's is.
+    // The Items it was done to, and the Spaces it was done in.
     links: [
-      { name: "items", table: "work_items", from: "work_id", to: "item_id", of: "item" },
-      { name: "spaces", table: "work_spaces", from: "work_id", to: "space_id", of: "space" },
+      { name: "items", table: "work_items", from: "work_id", to: "item_id", of: ["item"] },
+      { name: "spaces", table: "work_spaces", from: "work_id", to: "space_id", of: ["space"] },
     ],
     namedBy: "title",
     // Its Schedule is a type no tool writes yet.
@@ -269,6 +293,46 @@ export const SHAPES = {
       // A Vendor is at no Property, and neither is a Note on one.
       follows: "property_id",
     },
+  },
+  document: {
+    table: "documents",
+    columns: [
+      "id",
+      "property_id",
+      "status",
+      "kind",
+      "title",
+      "doc_date",
+      "total_cents",
+      "vendor_id",
+      "source",
+      "r2_key",
+      "mime_type",
+      "size_bytes",
+      "sha256",
+      "text",
+      "data",
+      "received_at",
+      "updated_at",
+    ],
+    // The records it is about, which can be of several types. With the 17 columns this makes a
+    // snapshot of 18 fields, more than one call to json_object takes on D1. `jsonObject` adds
+    // the rest with json_set.
+    links: [
+      {
+        name: "attached_to",
+        table: "document_links",
+        from: "document_id",
+        to: "entity_id",
+        typeColumn: "entity_type",
+        of: ["property", "space", "vendor", "item", "project", "work"],
+      },
+    ],
+    namedBy: "title",
+    pointerColumns: { property_id: "property", vendor_id: "vendor" },
+    // The same file is never stored twice.
+    unique: ["sha256"],
+    uniqueHolds: "file",
   },
 } as const satisfies Readonly<Record<RecordType, RecordShape>>;
 
@@ -309,7 +373,10 @@ export const WAYS_OF_POINTING: ReadonlyArray<WayOfPointing> = EACH_TYPE.flatMap(
       by: "column",
       column,
     })),
-    ...links.map((set): WayOfPointing => ({ type, shape, targetType: set.of, by: "set", set })),
+    // A record that has a set of several types points by it at one of each.
+    ...links.flatMap((set) =>
+      set.of.map((targetType): WayOfPointing => ({ type, shape, targetType, by: "set", set })),
+    ),
     // A record that is attached by type and id points at one of each type it can be on.
     ...(attachedBy === undefined
       ? []
@@ -341,10 +408,11 @@ export const pointingRows = (way: WayOfPointing): PointerSource => {
     case "column":
       return { from: rows, target: `record.${way.column}` };
     case "set": {
-      const { table, from, to } = way.set;
+      const { table, from, to, typeColumn } = way.set;
       return {
         from: `${rows} JOIN ${table} AS link ON link.${from} = record.id`,
         target: `link.${to}`,
+        ...(typeColumn === undefined ? {} : { onlyIf: `link.${typeColumn} = '${way.targetType}'` }),
       };
     }
     case "attachment": {
@@ -478,21 +546,26 @@ export const someOf = (records: ReadonlyArray<Listed>) => {
 export const typesPointedAt = ({ pointerColumns, links, attachedBy }: RecordShape) => [
   ...new Set([
     ...Object.values(pointerColumns),
-    ...links.map((set) => set.of),
+    ...links.flatMap((set) => set.of),
     ...(attachedBy?.of ?? []),
   ]),
 ];
 
-// The ids of one link set, as a JSON list in a fixed order. The list is read as JSON again on
-// its way out, because a JSON value that passes through a subquery comes out as plain text.
-const linked = ({ table, from, to }: LinkSet) =>
-  `json((SELECT json_group_array(${to})
-           FROM (SELECT ${to} FROM ${table} WHERE ${from} = record.id ORDER BY ${to})))`;
+// The records in one link set, as a JSON list in a fixed order: their ids, or in a set of
+// several types, each as its type and its id. The list is read as JSON again on its way out,
+// because a JSON value that passes through a subquery comes out as plain text.
+const linked = ({ table, from, to, typeColumn }: LinkSet) =>
+  typeColumn === undefined
+    ? `json((SELECT json_group_array(${to})
+               FROM (SELECT ${to} FROM ${table} WHERE ${from} = record.id ORDER BY ${to})))`
+    : `json((SELECT json_group_array(json_object('type', ${typeColumn}, 'id', ${to}))
+               FROM (SELECT ${typeColumn}, ${to} FROM ${table} WHERE ${from} = record.id
+                      ORDER BY ${typeColumn}, ${to})))`;
 
 /**
  * The SQL of a snapshot: the whole record as one JSON object, with every column of its row
- * that can be written, `data` as an object, and each link set as a list of ids. It reads the
- * row a statement names `record`.
+ * that can be written, `data` as an object, and each link set as a list of ids, or of
+ * `{ type, id }` in a set of several types. It reads the row a statement names `record`.
  */
 export const snapshot = ({ columns, links }: RecordShape) =>
   jsonObject([

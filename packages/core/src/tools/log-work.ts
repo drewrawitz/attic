@@ -4,7 +4,7 @@ import { partialDate } from "../dates.ts";
 import { amount, inCents } from "../money.ts";
 import { noteOn, notesMovedTo } from "../note.ts";
 import { projectAmong, projectsById, type Project } from "../project.ts";
-import { propertyForOnce } from "../property.ts";
+import { orAtNoProperty, propertyForOnce } from "../property.ts";
 import {
   dataPatch,
   definedColumns,
@@ -254,14 +254,8 @@ const stepsFor = Effect.fnUntraced(function* (
     ? null
     : was !== undefined && entry.property === undefined
       ? was.property_id
-      : yield* once.property(entry.property).pipe(
-          Effect.map((property): string | null => property.id),
-          Effect.catchTag("ToolError", (refusal) =>
-            entry.property === undefined && onItemsAlone
-              ? Effect.succeed(null)
-              : Effect.fail(refusal),
-          ),
-        );
+      : ((yield* orAtNoProperty(once.property(entry.property), entry.property, onItemsAlone))?.id ??
+        null);
   const moved = was !== undefined && propertyId !== was.property_id;
   // A Project is at one Property, and so is a Schedule that is not an Item's. Work that stays
   // in the one, or was logged against the other, is at that Property and does not move. It

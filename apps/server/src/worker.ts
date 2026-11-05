@@ -5,6 +5,7 @@ import { nightly } from "./nightly.ts";
 import { overLimit } from "./rate-limit.ts";
 import { AUTHORIZE_PATH, MCP_PATH, REGISTER_PATH, TOKEN_PATH } from "./routes.ts";
 import { signIn } from "./sign-in.ts";
+import { isUploadPath, upload } from "./upload.ts";
 
 // Every request goes through Cloudflare's OAuth provider. It answers the OAuth endpoints
 // itself, lets a request for /mcp through only with a token it issued, and hands everything
@@ -46,6 +47,8 @@ export default {
     if (url.protocol !== "https:" && !THIS_MACHINE.has(url.hostname)) {
       return new Response("Attic only answers over https.", { status: 400 });
     }
+    // The link the User taps to put a file in Attic is signed, and needs no token.
+    if (isUploadPath(url.pathname)) return upload.fetch(request, env);
     if (await overLimit(request, env, url.pathname)) {
       return new Response("Too many requests. Try again in a minute.", {
         status: 429,
