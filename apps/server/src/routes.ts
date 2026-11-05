@@ -6,6 +6,7 @@ export const CALLBACK_PATH = "/callback";
 export const TOKEN_PATH = "/token";
 export const REGISTER_PATH = "/register";
 
-// The link the User taps to put a file in Attic, then the id of its request. It is signed and
-// needs no token, so it is outside the OAuth provider. Core signs it, so core says where it is.
-export { UPLOAD_PATH } from "@attic/core";
+// The links the User taps to put a file in Attic, then the id of its request, and to open a
+// Document's file, then the Document's id. Each is signed and needs no token, so each is
+// outside the OAuth provider. Core signs them, so core says where they are.
+export { DOCUMENT_PATH, UPLOAD_PATH } from "@attic/core";

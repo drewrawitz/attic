@@ -2,7 +2,7 @@ import { Clock, Effect } from "effect";
 import { SqlClient } from "effect/sql";
 import { nameInTable, SHAPES, term, type Listed } from "./records.ts";
 import { insertRow, runSave, updatedNow, type SaveStep } from "./save.ts";
-import { SIGNED_FOR_MINUTES } from "./signed-address.ts";
+import { LINK_RAN_OUT } from "./signed-address.ts";
 import { ToolError } from "./tool.ts";
 import { vendorOrNew } from "./vendor.ts";
 import { Ids } from "./write.ts";
@@ -58,8 +58,35 @@ export const UPLOAD_PATH = "/upload";
 /** The path of the page and the address a file is posted to, for one request. */
 export const uploadPath = (requestId: string) => `${UPLOAD_PATH}/${requestId}`;
 
-/** What a link that has run out says, to the User on the page and to a client that posts. */
-export const LINK_RAN_OUT = `This link has run out. Links last ${SIGNED_FOR_MINUTES} minutes. Ask for a new one, and pick the file again.`;
+/** What an upload link that has run out says: the file has to be picked again on a new one. */
+export const UPLOAD_LINK_RAN_OUT = `${LINK_RAN_OUT} Then pick the file again.`;
+
+/** Where the Worker serves a Document's file: this, then the Document's id. */
+export const DOCUMENT_PATH = "/document";
+
+/** The path a Document's file is opened at. */
+export const documentPath = (documentId: string) => `${DOCUMENT_PATH}/${documentId}`;
+
+/**
+ * A Document as a link to its file needs it: what to say of it, and the key its file is under
+ * in the bucket. Only an upload makes a Document today, and it sets each of these. A Document
+ * from before may lack its title, its type, or its size.
+ */
+export interface DocumentToOpen {
+  readonly title: string | null;
+  readonly kind: Kind;
+  readonly mime_type: string | null;
+  readonly size_bytes: number | null;
+  readonly r2_key: string;
+}
+
+/** The Document with this id, as a link to its file needs it, or undefined when there is none. */
+export const documentToOpen = Effect.fnUntraced(function* (documentId: string) {
+  const sql = yield* SqlClient.SqlClient;
+  const [found] = yield* sql<DocumentToOpen>`
+    SELECT title, kind, mime_type, size_bytes, r2_key FROM documents WHERE id = ${documentId}`;
+  return found;
+});
 
 /**
  * What a request holds until its link runs out: what the Document will say, and where it will
@@ -185,7 +212,7 @@ export const documentFrom = Effect.fnUntraced(function* (
 ) {
   const sql = yield* SqlClient.SqlClient;
   const request = yield* uploadRequest(requestId);
-  if (request === undefined) return yield* new ToolError({ message: LINK_RAN_OUT });
+  if (request === undefined) return yield* new ToolError({ message: UPLOAD_LINK_RAN_OUT });
 
   // A record can be deleted in the minutes the link lasts.
   const gone = yield* goneSince(request);

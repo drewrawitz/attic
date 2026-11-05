@@ -1,24 +1,23 @@
 import {
   checkSignature,
   FILE_TYPES,
-  LINK_RAN_OUT,
   MOST_FILE_BYTES,
   MOST_FILE_MEGABYTES,
   receiveFile,
   shownRequest,
   ToolError,
+  UPLOAD_LINK_RAN_OUT,
   type ArrivedFile,
-  type ToolServices,
 } from "@attic/core";
 import { Effect } from "effect";
 import type { WorkerEnv } from "../../../alchemy.run.ts";
-import { escapeHtml, messagePage, page } from "./consent-page.ts";
+import { escapeHtml, page } from "./consent-page.ts";
 import { UPLOAD_PATH } from "./routes.ts";
+import { html, json, linkPaths, readForPage, turnedAway, unexpectedPage } from "./signed-link.ts";
 import { toolServices } from "./tool-services.ts";
 
 // The link `request_upload_link` makes, which the User taps to put a file in Attic (ADR 0008).
-// GET is the page, and POST takes one file. A phone that taps it has no token, so it is outside
-// the OAuth provider, and its signature is the one check.
+// GET is the page, and POST takes one file.
 
 // The types a Document's file can be, and each type by the ending of a file name, for a file
 // the browser gives no type.
@@ -33,28 +32,11 @@ const TOO_BIG = `A file can be up to ${MOST_FILE_MEGABYTES} MB.`;
 // hashes a file (ADR 0012). R2 checks the bytes against it.
 const SHA256_HEADER = "x-content-sha256";
 
-/** Whether a path is one this answers: the upload path, then a request id. */
-export const isUploadPath = (pathname: string) =>
-  pathname.startsWith(`${UPLOAD_PATH}/`) && !pathname.slice(UPLOAD_PATH.length + 1).includes("/");
+// The paths this answers: the upload path, then a request id.
+const UPLOAD_PATHS = linkPaths(UPLOAD_PATH);
 
-const requestIdIn = (pathname: string) => pathname.slice(UPLOAD_PATH.length + 1);
-
-const html = (body: string, status = 200) =>
-  new Response(body, { status, headers: { "content-type": "text/html; charset=utf-8" } });
-
-const json = (body: unknown, status = 200) => Response.json(body, { status });
-
-const UNEXPECTED = "Attic hit an error it did not expect. The details are in the Worker's log.";
-
-const NOT_SIGNED = "This is not a link Attic made, or part of it was changed. Ask for a new one.";
-
-// What a link that does not work gets, as a page or as JSON.
-const turnedAway = (checked: "ran out" | "not signed", asPage: boolean) => {
-  const [status, message] = checked === "ran out" ? [410, LINK_RAN_OUT] : [403, NOT_SIGNED];
-  return asPage
-    ? html(messagePage("This link does not work", message), status)
-    : json({ error: message }, status);
-};
+/** Whether a path is one this answers. */
+export const isUploadPath = UPLOAD_PATHS.is;
 
 // The page that takes the files. The page sends each one on its own, with its SHA-256, to the
 // address it was opened at, which has the signature in it. File names are put on the page as
@@ -102,13 +84,6 @@ files.addEventListener("change", async () => {
 </script>`,
   );
 };
-
-// Runs a program on what a tool runs on.
-const withToolServices = <A, E>(
-  env: WorkerEnv,
-  origin: string,
-  program: Effect.Effect<A, E, ToolServices>,
-) => Effect.runPromise(Effect.provide(program, toolServices(env, origin)));
 
 // Stores the body of a request under a key, with R2 checking it against its SHA-256. R2 refuses
 // one that does not match with its error 10037, which is the sender's to fix. Any other
@@ -174,18 +149,20 @@ export const upload = {
       return new Response("Only GET and POST.", { status: 405, headers: { allow: "GET, POST" } });
     }
     const checked = await checkSignature(env.SIGNING_KEY, url, Date.now());
-    if (checked !== "signed") return turnedAway(checked, asPage);
-    const requestId = requestIdIn(url.pathname);
+    if (checked !== "signed") return turnedAway(checked, asPage, UPLOAD_LINK_RAN_OUT);
+    const requestId = UPLOAD_PATHS.idIn(url.pathname);
 
     if (asPage) {
-      const shown = await withToolServices(env, url.origin, shownRequest(requestId)).catch(
-        (error: unknown) => {
-          console.error("The upload page could not read its request.", error);
-          return null;
-        },
+      const shown = await readForPage(
+        env,
+        url.origin,
+        shownRequest(requestId),
+        "The upload page could not read its request.",
       );
-      if (shown === null) return html(messagePage("Attic hit an error", UNEXPECTED), 500);
-      return shown === undefined ? turnedAway("ran out", true) : html(uploadPage(shown));
+      if (shown === null) return unexpectedPage();
+      return shown === undefined
+        ? turnedAway("ran out", true, UPLOAD_LINK_RAN_OUT)
+        : html(uploadPage(shown));
     }
 
     const file = fileOf(request);

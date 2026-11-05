@@ -26,6 +26,9 @@ export const google = await startFakeGoogle(GOOGLE_CLIENT);
 export const EXPORT_TOKEN = "test-export-token";
 export const cloudflare = await startFakeCloudflare(EXPORT_TOKEN);
 
+// The key the Worker signs links with in the tests, so that a test can sign one of its own.
+export const SIGNING_KEY = "test-signing-key";
+
 const harness = Test.make({
   providers: Cloudflare.providers(),
   dev: true,
@@ -48,6 +51,7 @@ const SETTINGS: Record<string, string | undefined> = {
   ...Object.fromEntries(BACKUP_SETTINGS.map((name) => [name, undefined])),
   CLOUDFLARE_API_URL: cloudflare.apiUrl,
   EXPORT_WAIT_MS: "10",
+  SIGNING_KEY,
 };
 
 // Deploys the stack with those settings, or with some of them changed or left unset, the

@@ -7,6 +7,9 @@ import { Clock, Context, Effect, Layer } from "effect";
 export const SIGNED_FOR_MINUTES = 15;
 export const SIGNED_FOR = SIGNED_FOR_MINUTES * 60 * 1000;
 
+/** What a link that has run out says, to the User on a page and to a client that sends to it. */
+export const LINK_RAN_OUT = `This link has run out. Links last ${SIGNED_FOR_MINUTES} minutes. Ask for a new one.`;
+
 // The two parts of the query that a signature adds to an address.
 const UNTIL = "until";
 const SIGNATURE = "signature";
