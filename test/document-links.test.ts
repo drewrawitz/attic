@@ -189,9 +189,10 @@ test(
       expect(page.headers.get("content-type")).toContain("text/html");
       expect(body).toContain("Upload test &lt;script&gt;alert(1)&lt;/script&gt;");
       expect(body).not.toContain("<script>alert(1)");
-      expect(body).toContain("Item &quot;Fridge&quot;");
-      expect(body).toContain("the receipt");
+      expect(body).toContain("Goes on Item &quot;Fridge&quot;.");
+      expect(body).toContain(">Receipt<");
       expect(body).toContain('type="file"');
+      expect(body).toContain("Choose a photo or file");
     }),
   ),
 );
