@@ -464,7 +464,7 @@ Every record comes back with its own fields, with \`data\` as an object and mone
 - Work has its Items, its Spaces, its Documents, and its Notes.
 - A Property has its Spaces, its Projects, its own Schedules, the Items at it now, the Work done at it, its Documents, and the Notes that stand alone at it.
 - A Schedule has the Work logged against it.
-- A Document has its text and what it is attached to. A Note has what it is attached to.
+- A Document has its text and what it is attached to. Its file is opened with get_document_link, which gives the User a link to it. A Note has what it is attached to.
 
 A list with dates comes newest first. Newest is by the date as text, so Work dated only 2023 comes after Work dated 2023-06-12, and Work with no date comes last. A list has at most ${MOST_ENTRIES} entries, and \`lists_cut\` names the ones that were cut. A Document in a list comes without its text. \`diy\` and \`active\` are 1 or 0. Pass the type and id of anything in a list back to get_record for the whole of it.`;
 

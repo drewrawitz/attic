@@ -1,4 +1,4 @@
-import { AtomicBatch, Currency, Ids, SignedAddresses } from "@attic/core";
+import { AtomicBatch, Currency, Ids, SignedAddresses, type ToolServices } from "@attic/core";
 import { D1Client } from "@effect/sql-d1";
 import { DateTime, Effect, Layer } from "effect";
 import type { WorkerEnv } from "../../../alchemy.run.ts";
@@ -27,3 +27,10 @@ export const toolServices = (env: WorkerEnv, origin: string) =>
     Currency.layer(env.ATTIC_CURRENCY),
     SignedAddresses.layer(origin, env.SIGNING_KEY),
   ).pipe(Layer.provideMerge(D1Client.layer({ db: env.DB })));
+
+/** Runs a program on what a tool runs on, for a route outside MCP. */
+export const withToolServices = <A, E>(
+  env: WorkerEnv,
+  origin: string,
+  program: Effect.Effect<A, E, ToolServices>,
+) => Effect.runPromise(Effect.provide(program, toolServices(env, origin)));

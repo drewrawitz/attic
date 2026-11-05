@@ -188,6 +188,10 @@ export const Worker = Cloudflare.Worker(
     const exportWaitMs = dev ? yield* optional("EXPORT_WAIT_MS") : "";
     const forTests: { readonly EXPORT_WAIT_MS?: string } =
       exportWaitMs === "" ? {} : { EXPORT_WAIT_MS: exportWaitMs };
+    // Only dev mode reads this one too, and only the tests set it: the key links are signed
+    // with, so that a test can sign a link that has run out. A deploy always binds the key
+    // Alchemy made.
+    const testSigningKey = dev ? yield* optional("SIGNING_KEY") : "";
     const consentSecret = yield* ConsentSecret;
     const signingKey = yield* SigningKey;
     const db = yield* DB;
@@ -216,7 +220,7 @@ export const Worker = Cloudflare.Worker(
         GOOGLE_USERINFO_URL: yield* addressOf("GOOGLE_USERINFO_URL", GOOGLE_USERINFO_URL),
         ALLOWED_EMAILS: yield* secret("ALLOWED_EMAILS"),
         CONSENT_SECRET: consentSecret.text,
-        SIGNING_KEY: signingKey.text,
+        SIGNING_KEY: testSigningKey === "" ? signingKey.text : Redacted.make(testSigningKey),
         ATTIC_TIMEZONE: timeZone,
         ATTIC_CURRENCY: yield* currency,
         // What the nightly run asks Cloudflare to export. Both ids come from the stack, so

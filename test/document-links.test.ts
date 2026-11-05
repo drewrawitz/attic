@@ -1,16 +1,17 @@
 import { expect } from "@effect/vitest";
 import { AwsClient } from "aws4fetch";
-import { createHash } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import { request as httpRequest } from "node:http";
 import * as Effect from "effect/Effect";
 import { onDatabase } from "./support/database.ts";
-import { stack, test } from "./support/harness.ts";
+import { SIGNING_KEY, stack, test } from "./support/harness.ts";
 import { asClientWith, type Call, type Fields } from "./support/household.ts";
 
-// The link request_upload_link makes, tried through the real Worker: its page, a file posted to
-// it, and what local R2 holds then. What a Document is and how it is undone are tested on Node
-// SQLite, in packages/core. These hold what only the Worker does: the signature, the limits,
-// the stream into R2 and R2's check of its hash, and the Change on D1.
+// The links request_upload_link and get_document_link make, tried through the real Worker: the
+// upload page, a file posted to it, what local R2 holds then, and the file opened again. What a
+// Document is and how it is undone are tested on Node SQLite, in packages/core. These hold what
+// only the Worker does: the signature, the limits, the stream into R2 and R2's check of its
+// hash, the Change on D1, and the stream back out with its headers.
 
 // Takes out what these tests wrote. The database is kept between runs, and so is R2, which no
 // test empties. A file whose Document is gone is stored again under a new key, so a run is
@@ -133,6 +134,44 @@ const documentNamed = (call: Call, title: string) =>
     }),
     (answer) => answer.rows as Fields[],
   );
+
+// A link to a Document's file, from get_document_link.
+const opening = (call: Call, id: string) =>
+  Effect.map(call("get_document_link", { id }), (answer) => {
+    expect(answer.refused).toBeUndefined();
+    return answer.link as string;
+  });
+
+// A link the test signs itself, with the key the Worker signs with in the tests, so that it can
+// make one that has run out without waiting 15 minutes. It signs the way SignedAddresses in
+// packages/core/src/signed-address.ts does, so a change there shows up here.
+const signedLink = (path: string, until: number) =>
+  Effect.map(stack, ({ url }) => {
+    const signature = createHmac("sha256", SIGNING_KEY)
+      .update(`${path}\n${until}`)
+      .digest("base64url");
+    return `${url}${path}?until=${until}&signature=${signature}`;
+  });
+
+// What a link opens: its status, its headers, and its body.
+const opened = (link: string) =>
+  Effect.promise(async () => {
+    const response = await fetch(link);
+    return {
+      status: response.status,
+      headers: Object.fromEntries(response.headers),
+      body: Buffer.from(await response.arrayBuffer()),
+    };
+  });
+
+// A file of a Document posted to a new link, and the Document's id.
+const stored = (call: Call, bytes: Buffer, input: Fields, type = "image/png") =>
+  Effect.gen(function* () {
+    const link = yield* asking(call, input);
+    const posted = yield* Effect.promise(() => posting(link, bytes, { "content-type": type }));
+    expect(posted.status).toBe(200);
+    return posted.body.document_id as string;
+  });
 
 test(
   "the link opens a page that shows the request, with what the model gave it shown as text",
@@ -340,6 +379,110 @@ test(
                WHERE json_extract(request, '$.title') LIKE 'Upload test%'`,
       });
       expect(left.rows).toEqual([{ title: "Upload test after" }]);
+    }),
+  ),
+);
+
+test(
+  "a link from get_document_link opens the file that was stored, shown under its title",
+  asClient((call) =>
+    Effect.gen(function* () {
+      const bytes = aFile(`opened ${Date.now()}`);
+      const id = yield* stored(call, bytes, { title: 'Upload test Café "receipt" \\ 50%' });
+
+      const file = yield* opened(yield* opening(call, id));
+
+      expect(file.status).toBe(200);
+      expect(file.body).toEqual(bytes);
+      expect(file.headers).toEqual(
+        expect.objectContaining({
+          "content-type": "image/png",
+          "content-disposition": `inline; filename="Upload test Cafe _receipt_ _ 50_.png"; filename*=UTF-8''Upload%20test%20Caf%C3%A9%20%22receipt%22%20%5C%2050%25.png`,
+          "x-content-type-options": "nosniff",
+          "cache-control": "private",
+          "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; sandbox",
+        }),
+      );
+
+      const pdf = Buffer.from(`%PDF-1.4\n% Upload test ${Date.now()}\n%%EOF\n`);
+      const manual = yield* stored(
+        call,
+        pdf,
+        { title: "Upload test manual.PDF", kind: "manual" },
+        "application/pdf",
+      );
+      const manualFile = yield* opened(yield* opening(call, manual));
+      expect(manualFile.body).toEqual(pdf);
+      expect(manualFile.headers).toEqual(
+        expect.objectContaining({
+          "content-type": "application/pdf",
+          "content-security-policy": "sandbox",
+          "content-disposition": `inline; filename="Upload test manual.PDF"; filename*=UTF-8''Upload%20test%20manual.PDF`,
+        }),
+      );
+
+      // Some systems call a HEIC photo HEIF, so its HEIC ending is kept, and no other is added.
+      const photo = yield* stored(
+        call,
+        aFile(`photo ${Date.now()}`),
+        { title: "Upload test IMG_1234.HEIC", kind: "photo" },
+        "image/heif",
+      );
+      const photoFile = yield* opened(yield* opening(call, photo));
+      expect(photoFile.headers["content-disposition"]).toBe(
+        `inline; filename="Upload test IMG_1234.HEIC"; filename*=UTF-8''Upload%20test%20IMG_1234.HEIC`,
+      );
+    }),
+  ),
+);
+
+test(
+  "a link to a file that was changed, has run out, or was made for an upload is turned away",
+  asClient((call) =>
+    Effect.gen(function* () {
+      const id = yield* stored(call, aFile(`turned away ${Date.now()}`), {
+        title: "Upload test turned away",
+      });
+      const path = `/document/${id}`;
+
+      // The key and the path are right, so only the time turns the second one away.
+      expect((yield* opened(yield* signedLink(path, Date.now() + 60_000))).status).toBe(200);
+      const ranOut = yield* opened(yield* signedLink(path, Date.now() - 1));
+      expect(ranOut.status).toBe(410);
+      expect(ranOut.body.toString()).toContain("run out");
+      expect(ranOut.body.toString()).not.toContain("pick the file");
+
+      const changed = new URL(yield* opening(call, id));
+      changed.searchParams.set("until", String(Date.now() + 60 * 60 * 1000));
+      const tampered = yield* opened(changed.toString());
+      expect(tampered.status).toBe(403);
+      expect(tampered.body.toString()).toContain("not a link Attic made");
+
+      // An upload link's signature holds for its own path only.
+      const upload = new URL(yield* asking(call, { title: "Upload test not a file" }));
+      upload.pathname = `/document/${upload.pathname.split("/").at(-1)}`;
+      expect((yield* opened(upload.toString())).status).toBe(403);
+    }),
+  ),
+);
+
+test(
+  "a Document with no file in the bucket, or no longer in Attic, gets a 404 that says so",
+  asClient((call) =>
+    Effect.gen(function* () {
+      // No file sits behind the made-up household's Documents.
+      const missing = yield* opened(yield* opening(call, "seed-doc-faucet-receipt"));
+      expect(missing.status).toBe(404);
+      expect(missing.body.toString()).toBe("The file of this Document is not in Attic's bucket.");
+
+      const gone = yield* opened(
+        yield* signedLink("/document/no-such-document", Date.now() + 60_000),
+      );
+      expect(gone.status).toBe(404);
+      expect(gone.body.toString()).toBe("This Document is not in Attic now.");
+
+      const refused = yield* call("get_document_link", { id: "no-such-document" });
+      expect(refused.refused).toContain('There is no Document with the id "no-such-document".');
     }),
   ),
 );

@@ -2,6 +2,7 @@ import { OAuthProvider } from "@cloudflare/workers-oauth-provider";
 import type { WorkerEnv } from "../../../alchemy.run.ts";
 import { mcp } from "./mcp.ts";
 import { nightly } from "./nightly.ts";
+import { isDocumentPath, openDocument } from "./open-document.ts";
 import { overLimit } from "./rate-limit.ts";
 import { AUTHORIZE_PATH, MCP_PATH, REGISTER_PATH, TOKEN_PATH } from "./routes.ts";
 import { signIn } from "./sign-in.ts";
@@ -47,8 +48,10 @@ export default {
     if (url.protocol !== "https:" && !THIS_MACHINE.has(url.hostname)) {
       return new Response("Attic only answers over https.", { status: 400 });
     }
-    // The link the User taps to put a file in Attic is signed, and needs no token.
+    // The links the User taps to put a file in Attic and to open one are signed, and need no
+    // token.
     if (isUploadPath(url.pathname)) return upload.fetch(request, env);
+    if (isDocumentPath(url.pathname)) return openDocument.fetch(request, env);
     if (await overLimit(request, env, url.pathname)) {
       return new Response("Too many requests. Try again in a minute.", {
         status: 429,

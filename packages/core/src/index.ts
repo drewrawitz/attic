@@ -3,6 +3,7 @@ import type { Tool } from "./tool.ts";
 import { addNote } from "./tools/add-note.ts";
 import { deleteRecord } from "./tools/delete-record.ts";
 import { gaps } from "./tools/gaps.ts";
+import { getDocumentLink } from "./tools/get-document-link.ts";
 import { getRecord } from "./tools/get-record.ts";
 import { getSchema } from "./tools/get-schema.ts";
 import { logWork } from "./tools/log-work.ts";
@@ -21,17 +22,20 @@ import { walkTheHouse, walkTheHousePrompt } from "./tools/walk-the-house.ts";
 
 export { today } from "./dates.ts";
 export {
+  DOCUMENT_PATH,
+  documentToOpen,
   FILE_TYPES,
-  LINK_RAN_OUT,
   MOST_FILE_BYTES,
   MOST_FILE_MEGABYTES,
   shownRequest,
+  UPLOAD_LINK_RAN_OUT,
   UPLOAD_PATH,
   type ArrivedFile,
+  type DocumentToOpen,
 } from "./document.ts";
 export { receiveFile, type Arrival } from "./tools/request-upload-link.ts";
 export { Currency } from "./money.ts";
-export { checkSignature, SignedAddresses } from "./signed-address.ts";
+export { checkSignature, LINK_RAN_OUT, SignedAddresses } from "./signed-address.ts";
 export { callTool, ToolError, type Tool, type ToolResult, type ToolServices } from "./tool.ts";
 export { AtomicBatch, Ids } from "./write.ts";
 
@@ -53,6 +57,7 @@ export const tools: ReadonlyArray<Tool> = [
   saveQuote,
   addNote,
   requestUploadLink,
+  getDocumentLink,
   deleteRecord,
   undo,
 ];
