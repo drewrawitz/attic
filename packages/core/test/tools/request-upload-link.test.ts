@@ -450,20 +450,33 @@ it.effect(
 );
 
 it.effect(
-  "delete_record still refuses a record a Document is attached to, and takes no Document",
+  "the same file after its Document was deleted makes a new Document, and the delete stays",
   () =>
     Effect.gen(function* () {
       yield* loadHousehold;
       yield* todayIs(TODAY);
-      const { arrival } = yield* arriving((yield* requesting(RECEIPT)).link as string);
-      if (!arrival.ok) return expect.unreachable();
-
-      const fridge = yield* callAsClient(deleteRecord, FRIDGE).pipe(Effect.map(answer));
-      expect(fridge.refused).toContain("Document");
-      const document = yield* callAsClient(deleteRecord, {
+      const receipt = { ...RECEIPT, vendor: null };
+      const first = (yield* arriving((yield* requesting(receipt)).link as string)).arrival;
+      if (!first.ok) return expect.unreachable();
+      const removal = yield* callAsClient(deleteRecord, {
         type: "document",
-        id: arrival.document_id,
+        id: first.document_id,
       }).pipe(Effect.map(answer));
-      expect(document.refused).toContain("type");
+      expect(removal.removed).toEqual([
+        { type: "document", id: first.document_id, name: "Fridge water filter order" },
+      ]);
+
+      // No Document has the file now, so it is stored again, under the new Document's id.
+      const again = yield* arriving((yield* requesting(receipt)).link as string);
+      if (!again.arrival.ok) return expect.unreachable();
+      const second = again.arrival.document_id;
+      expect(second).not.toBe(first.document_id);
+      expect(again.stored).toEqual([second]);
+
+      const refused = yield* undoing(removal.change_id as string);
+      expect(refused.refused).toBe(
+        `Nothing was undone, because a record would come back with what another record has now, and no two records can have the same. Undo the Change that made the other record first:
+The Document "Fridge water filter order" (${first.document_id}) would have the same file as the Document "Fridge water filter order" (${second}).`,
+      );
     }).pipe(Effect.provide(TestDatabase)),
 );

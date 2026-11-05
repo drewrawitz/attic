@@ -1,6 +1,7 @@
 import { Effect, Schema } from "effect";
 import { SqlClient } from "effect/sql";
 import { categoryAmong, DEFAULT_CATEGORY, everyCategory, isUnder } from "../category.ts";
+import { ATTACHABLE, ATTACHED, DAYS_A_FILE_IS_KEPT } from "../document.ts";
 import {
   andLinkedType,
   asListed,
@@ -27,15 +28,17 @@ import { compact, jsonRows, rowsIn } from "../sql.ts";
 import { defineTool, noRecord, optional, ToolError, type ToolAnnotations } from "../tool.ts";
 import { stepsAbout, Write, type Step } from "../write.ts";
 
-const DESCRIPTION = `Deletes one record, by its type and its id: an Item, Work, a Vendor, a Note, a Category, a Space, a Project, or a Quote. Deleting is an ordinary part of keeping the record right. Every delete is a Change, and undo puts back what a Change took out, so a delete made by mistake is undone with the \`change_id\` this returns.
+const DESCRIPTION = `Deletes one record, by its type and its id: an Item, Work, a Vendor, a Note, a Category, a Space, a Project, a Quote, or a Document. Deleting is an ordinary part of keeping the record right. Every delete is a Change, and undo puts back what a Change took out, so a delete made by mistake is undone with the \`change_id\` this returns.
 
 Delete a record that should not be there: one made by mistake, a duplicate, or an Item that was returned or thrown away. An Item that was sold, given away, lost, stolen, or destroyed is not deleted. It is kept for its money trail, so give it that \`status\` with save_item instead. An Item that was replaced, such as the old dishwasher, is deleted, and the Work done on it stays as the history of the Property.
 
-A record's Notes go with it. A deleted Item comes off every piece of Work that named it, and that Work stays. Work needs a Property or at least one Item, so Work at no Property that named only that Item is deleted with it, and so are the Notes on that Work.
+A record's Notes go with it. A deleted Item comes off every piece of Work that named it, and that Work stays. Work needs a Property or at least one Item, so Work at no Property that named only that Item is deleted with it, and so are the Notes on that Work. A deleted Item or piece of Work comes off every Document on it. A Document that is then on nothing else goes with it, such as the Receipt of an Item that was thrown away. One that is on another record too stays there.
 
-A Vendor, a Space, a Category, or a Project that other records use is refused, and the error lists what uses it. Its own Notes do not count. To delete it all the same, give \`replacement\` the id of another record of the same type. Everything that used the one is then pointed at the other, its Notes are put on the other too, and then it is deleted, all in one Change. That is how two records of one Vendor, or of one Space, are merged: delete the duplicate, with the one to keep as its \`replacement\`. Nothing the deleted record held itself is copied to the other: not its \`data\`, not a Vendor's role, and not a Project's Spaces. So save what is worth keeping onto the other first. A replacement for a Space or a Project is one at the same Property. A replacement for a Category is not one under it. An Item that would then have a Category twice keeps it once. A merge that would leave a Project with two Quotes from one Vendor is refused, and the error names both: delete one of the two first.
+A Document's file is kept for ${DAYS_A_FILE_IS_KEPT} days after the Document is deleted, and then removed for good. Undoing the delete inside those ${DAYS_A_FILE_IS_KEPT} days brings back the Document and its file. After them, the undo is refused.
 
-A Property is never deleted. One that is no longer the User's gets an end date with save_property. The Category \`other\` is never deleted either: an Item is in it when a save names no Category. \`replacement\` is only for a Vendor, a Space, a Category, or a Project. A record with a Schedule or a Document on it cannot be deleted yet.
+A Vendor, a Space, a Category, or a Project that other records use is refused, and the error lists what uses it, Documents among them. Its own Notes do not count. To delete it all the same, give \`replacement\` the id of another record of the same type. Everything that used the one is then pointed at the other, its Notes are put on the other too, and then it is deleted, all in one Change. That is how two records of one Vendor, or of one Space, are merged: delete the duplicate, with the one to keep as its \`replacement\`. Nothing the deleted record held itself is copied to the other: not its \`data\`, not a Vendor's role, and not a Project's Spaces. So save what is worth keeping onto the other first. A replacement for a Space or a Project is one at the same Property. A replacement for a Category is not one under it. An Item that would then have a Category twice keeps it once. A merge that would leave a Project with two Quotes from one Vendor is refused, and the error names both: delete one of the two first.
+
+A Property is never deleted. One that is no longer the User's gets an end date with save_property. The Category \`other\` is never deleted either: an Item is in it when a save names no Category. \`replacement\` is only for a Vendor, a Space, a Category, or a Project. An Item with a Schedule on it cannot be deleted yet.
 
 What comes back is the id of the Change, what was \`removed\`, and what was \`updated\`, each by type, id, and name. \`removed\` has the record first, and then what went with it. \`updated\` has every record that was pointed at the replacement, or that lost the record, such as Work that named a deleted Item.`;
 
@@ -43,19 +46,10 @@ What comes back is the id of the Change, what was \`removed\`, and what was \`up
 // undo, and a client is told all the same, so that it can ask first.
 const ANNOTATIONS: ToolAnnotations = { readOnlyHint: false, destructiveHint: true };
 
-// The types this tool takes as input. A Document is not one of them yet: deleting one, with
-// the sweep that removes its file 30 days later, is parked in step 6 of the `v1` route.
-type InputType = Exclude<RecordType, "document">;
-
-const isInputType = (type: RecordType): type is InputType => type !== "document";
-
-const INPUT_TYPES = RECORD_TYPES.filter(isInputType);
-
 // A Property is never deleted. Every other type this tool takes is one it deletes.
-type Deletable = Exclude<InputType, "property">;
+type Deletable = Exclude<RecordType, "property">;
 
-const isDeletable = (type: RecordType): type is Deletable =>
-  type !== "property" && isInputType(type);
+const isDeletable = (type: RecordType): type is Deletable => type !== "property";
 
 const NEVER_A_PROPERTY =
   "A Property is never deleted. One that is no longer the User's gets an end date instead: save it with save_property and give `end_on` the day it stopped being theirs. Its records stay as they are.";
@@ -95,15 +89,23 @@ const waysOfUsing = (used: RecordType) =>
 // What a read finds of a record: its type, its id, and its name.
 const LISTED_FIELDS = ["type", "id", "name"];
 
-// The records that use the record `?1` in one way, by id. `nameOf` is the SQL of what each is
-// named by.
-const usedIn = (way: WayOfUsing, nameOf: string) => {
+// The records that use a record in one way, by id. `which` is the SQL that finishes a test of
+// what they point at: `= ?1` for the record `?1`. `nameOf` is the SQL of what each is named by.
+const usedIn = (way: WayOfUsing, which: string, nameOf: string) => {
   const { from, target, onlyIf } = pointingRows(way);
   return `SELECT '${way.type}' AS type, record.id, ${nameOf} AS name
             FROM ${from}
-           WHERE ${target} = ?1 ${onlyIf === undefined ? "" : `AND ${onlyIf}`}
+           WHERE ${target} ${which} ${onlyIf === undefined ? "" : `AND ${onlyIf}`}
            ORDER BY record.id`;
 };
+
+// The records of a type among the records a delete's read finds going, as the end of a test
+// of what is pointed at.
+const amongGoing = (type: RecordType) => `IN (SELECT id FROM going WHERE type = '${type}')`;
+
+// The ids in the JSON list `?1`, as the end of a test of what is pointed at. A statement of a
+// delete is about every record of a type that goes, and is given their ids.
+const IN_IDS = "IN (SELECT value FROM json_each(?1))";
 
 // What a record that uses the record `?1` is named by once it is pointed at the replacement
 // `?2`. Most are named by a column of their row, which a merge leaves alone. A Quote is named
@@ -160,17 +162,72 @@ const AT_PROPERTY = "property_id";
 const isAtProperty = ({ pointerColumns }: RecordShape) =>
   Object.hasOwn(pointerColumns, AT_PROPERTY);
 
-// The SELECT of what else goes when a record of a type does: the type, the id, and the name
-// of each. Work needs a Property or at least one Item, which code keeps because the Items are
-// in a table of their own. So Work at no Property that named only the Item `?1` would be left
-// with neither, and goes with the Item.
-const SELECT_GOING_TOO: Readonly<Partial<Record<Deletable, string>>> = {
-  item: `SELECT 'work' AS type, work.id, ${nameOfRow(SHAPES.work, "work")} AS name
-           FROM work
-          WHERE work.property_id IS NULL
-            AND work.id IN (SELECT work_id FROM work_items WHERE item_id = ?1)
-            AND NOT EXISTS (SELECT 1 FROM work_items AS other
-                             WHERE other.work_id = work.id AND other.item_id <> ?1)`,
+// What else goes when a record of a type does, beside Documents: its type, and the SELECT of
+// the type, the id, and the name of each. Work needs a Property or at least one Item, which
+// code keeps because the Items are in a table of their own. So Work at no Property that named
+// only the Item `?1` would be left with neither, and goes with the Item.
+const GOING_TOO: Readonly<
+  Partial<Record<Deletable, { readonly type: RecordType; readonly select: string }>>
+> = {
+  item: {
+    type: "work",
+    select: `SELECT 'work' AS type, work.id, ${nameOfRow(SHAPES.work, "work")} AS name
+               FROM work
+              WHERE work.property_id IS NULL
+                AND work.id IN (SELECT work_id FROM work_items WHERE item_id = ?1)
+                AND NOT EXISTS (SELECT 1 FROM work_items AS other
+                                 WHERE other.work_id = work.id AND other.item_id <> ?1)`,
+  },
+};
+
+// A Document is `filed` while it is attached to a record. One that would be left attached to
+// nothing goes with the record instead, in the same Change: what it was about is gone. That
+// can happen with a record of a type that takes no replacement. One of the others that has a
+// Document on it is refused, or the Document is pointed at the replacement, and a Property is
+// never deleted.
+const takesDocumentsAlong = (type: Deletable) =>
+  ATTACHABLE.some((attachable) => attachable === type) && !takesReplacement(type);
+
+// The Documents that are attached to records in `first_going`, a list of records by type and
+// id, and to nothing else.
+const DOCUMENTS_ON_NOTHING_ELSE = (() => {
+  const { table, from, to, typeColumn } = ATTACHED;
+  const isGoing = (link: string) =>
+    `SELECT 1 FROM first_going
+      WHERE first_going.type = ${link}.${typeColumn} AND first_going.id = ${link}.${to}`;
+  return `SELECT 'document' AS type, document.id, ${nameOfRow(SHAPES.document, "document")} AS name
+            FROM ${SHAPES.document.table} AS document
+           WHERE EXISTS (SELECT 1 FROM ${table} AS link
+                          WHERE link.${from} = document.id AND EXISTS (${isGoing("link")}))
+             AND NOT EXISTS (SELECT 1 FROM ${table} AS link
+                              WHERE link.${from} = document.id AND NOT EXISTS (${isGoing("link")}))`;
+})();
+
+// The types of the records that go when a record of a type does, its own first, and not its
+// Notes: Work and Documents with an Item, and Documents with Work.
+const goingTypes = (type: Deletable): ReadonlyArray<RecordType> => {
+  const goingToo = GOING_TOO[type];
+  return [
+    type,
+    ...(goingToo === undefined ? [] : [goingToo.type]),
+    ...(takesDocumentsAlong(type) ? (["document"] as const) : []),
+  ];
+};
+
+// The WITH of a read of the record `?1` of a type, which names the records that go `going`:
+// the record itself, what goes with it, and then the Documents that are left on nothing else.
+// The first two are `first_going` on the way.
+const withGoing = (type: Deletable, shape: RecordShape) => {
+  const itself = `SELECT '${type}' AS type, record.id, ${nameOfRow(shape, "record")} AS name
+                    FROM ${shape.table} AS record
+                   WHERE record.id = ?1`;
+  const goingToo = GOING_TOO[type];
+  const first = goingToo === undefined ? itself : `${itself} UNION ALL ${goingToo.select}`;
+  return takesDocumentsAlong(type)
+    ? `WITH first_going (type, id, name) AS (${first}),
+            going (type, id, name) AS (
+              SELECT type, id, name FROM first_going UNION ALL ${DOCUMENTS_ON_NOTHING_ELSE})`
+    : `WITH going (type, id, name) AS (${first})`;
 };
 
 // How a Note is on a record: by the record's type and its id, in these two columns.
@@ -185,31 +242,21 @@ const NOTES_ON_GOING = `
               AND going.id = record.${NOTE_ON.idColumn}
    ORDER BY record.id`;
 
-// A record that goes, with how many Schedules and Documents are on it.
-interface WithScheduleOrDocument extends Listed {
+// A record that goes, with how many Schedules are on it.
+interface WithSchedule extends Listed {
   readonly schedules: number;
-  readonly documents: number;
 }
 
-// The records that go with a Schedule or a Document on them. No tool writes a Schedule yet, so
-// no Change has one, and an Item's Schedules would be deleted with it by a foreign key. A
-// Document is in the log, but deleting one, with the sweep that removes its file 30 days later,
-// is still to come. It is attached by type and id, with no key at all, and would stay attached
-// to nothing. And a Vendor that a Document names in a column of its own could not go at all,
-// or would have to be pointed at a replacement. So a delete of any of these is refused, until
-// a Schedule and a Document can each be deleted.
-const SCHEDULES_AND_DOCUMENTS_ON_GOING = `
+// The records that go with a Schedule on them. No tool writes a Schedule yet, so no Change has
+// one, and an Item's Schedules would be deleted with it by a foreign key. So a delete of one is
+// refused, until a Schedule can be deleted.
+const SCHEDULES_ON_GOING = `
   SELECT * FROM (
     SELECT going.type, going.id, going.name,
            (SELECT count(*) FROM schedules AS schedule
-             WHERE going.type = 'item' AND schedule.item_id = going.id) AS schedules,
-           (SELECT count(*) FROM documents AS document
-             WHERE (going.type = 'vendor' AND document.vendor_id = going.id)
-                OR document.id IN (SELECT link.document_id FROM document_links AS link
-                                    WHERE link.entity_type = going.type
-                                      AND link.entity_id = going.id)) AS documents
+             WHERE going.type = 'item' AND schedule.item_id = going.id) AS schedules
       FROM going)
-   WHERE schedules > 0 OR documents > 0
+   WHERE schedules > 0
    ORDER BY type, id`;
 
 // One statement of a delete, as SQL on one line.
@@ -217,9 +264,9 @@ type StatementText = string;
 
 // The one read a delete makes of the record `?1` of a type: one row, or none when there is no
 // such record. Every delete reads the record's name, the records that go, the Notes on any of
-// those, and the ones among them with a Schedule or a Document on them, each list as a JSON
-// column. `used` has a column for each way the record is used, with the records that use it
-// that way. `more` is what a merge reads beside those, and the join it reads it from.
+// those, and the ones among them with a Schedule on them, each list as a JSON column. `used`
+// has a column for each way a record that goes is used, with the records that use it that
+// way. `more` is what a merge reads beside those, and the join it reads it from.
 const readOf = (
   type: Deletable,
   shape: RecordShape,
@@ -229,42 +276,33 @@ const readOf = (
     join: "",
   },
 ): StatementText => {
-  const itself = `SELECT '${type}' AS type, record.id, ${nameOfRow(shape, "record")} AS name
-                    FROM ${shape.table} AS record
-                   WHERE record.id = ?1`;
-  const selectGoingToo = SELECT_GOING_TOO[type];
   const columns = [
     `${nameOfRow(shape, "record")} AS name`,
     `${jsonRows(LISTED_FIELDS, "SELECT type, id, name FROM going ORDER BY type, id")} AS going`,
     `${jsonRows(LISTED_FIELDS, NOTES_ON_GOING)} AS notes`,
-    `${jsonRows(
-      [...LISTED_FIELDS, "schedules", "documents"],
-      SCHEDULES_AND_DOCUMENTS_ON_GOING,
-    )} AS schedules_and_documents`,
+    `${jsonRows([...LISTED_FIELDS, "schedules"], SCHEDULES_ON_GOING)} AS schedules`,
     ...used,
     ...more.columns,
   ];
   return compact(`
-    WITH going (type, id, name) AS (
-      ${itself} ${selectGoingToo === undefined ? "" : `UNION ALL ${selectGoingToo}`}
-    )
+    ${withGoing(type, shape)}
     SELECT ${columns.join(", ")}
       FROM ${shape.table} AS record ${more.join}
      WHERE record.id = ?1`);
 };
 
-// The column of a read that has the records that use the record in one way: the way at this
-// place among the ways.
-const usedColumn = (way: WayOfUsing, at: number, nameOf: string) =>
-  `${jsonRows(LISTED_FIELDS, usedIn(way, nameOf))} AS used_${at}`;
+// The column of a read that has the records that use a record in one way: the way at this
+// place among the ways. `which` is what they point at, as `usedIn` takes it.
+const usedColumn = (way: WayOfUsing, at: number, which: string, nameOf: string) =>
+  `${jsonRows(LISTED_FIELDS, usedIn(way, which, nameOf))} AS used_${at}`;
 
-// The statement that marks the records that have the record `?1` in a link set as changed now,
-// in a table that keeps `updated_at`. It runs while they still have it.
-const markingChanged = ({
-  shape,
-  set,
-  targetType,
-}: SetWayOfUsing): ReadonlyArray<StatementText> => {
+// The statement that marks the records that have a record in a link set as changed now, in a
+// table that keeps `updated_at`. `which` is what they have, as `usedIn` takes it. It runs while
+// they still have it.
+const markingChanged = (
+  { shape, set, targetType }: SetWayOfUsing,
+  which: string,
+): ReadonlyArray<StatementText> => {
   const stamped = updatedNow(shape);
   const { table, from, to } = set;
   return stamped.length === 0
@@ -272,16 +310,16 @@ const markingChanged = ({
     : [
         `UPDATE ${shape.table} SET ${stamped.join(", ")}
           WHERE id IN (SELECT ${from} FROM ${table}
-                        WHERE ${to} = ?1${andLinkedType(set, targetType)})`,
+                        WHERE ${to} ${which}${andLinkedType(set, targetType)})`,
       ];
 };
 
-// The statements by which the record `?1` comes off the records that have it in a link set:
-// the links go. A foreign key would drop them on its own when the record went, with no Change
-// to say that those records lost it. So these run first, each as a step about those records.
-// Nothing here says what a column holds once the record it points at is deleted. So a type
-// that joins `records.ts` with a column that points at a record of a type that takes no
-// replacement stops the module from loading, until this does.
+// The statements by which the records whose ids are in the JSON list `?1` come off the records
+// that have them in a link set: the links go. A foreign key would drop them on its own when the
+// records went, with no Change to say that those records lost them. So these run first, each
+// as a step about those records. Nothing here says what a column holds once the record it
+// points at is deleted. So a type that joins `records.ts` with a column that points at a
+// record of a type that takes no replacement stops the module from loading, until this does.
 const comingOffTexts = (way: WayOfUsing): ReadonlyArray<StatementText> => {
   if (way.by === "column") {
     throw new Error(
@@ -290,8 +328,8 @@ const comingOffTexts = (way: WayOfUsing): ReadonlyArray<StatementText> => {
   }
   const { set, targetType } = way;
   return [
-    ...markingChanged(way),
-    `DELETE FROM ${set.table} WHERE ${set.to} = ?1${andLinkedType(set, targetType)}`,
+    ...markingChanged(way, IN_IDS),
+    `DELETE FROM ${set.table} WHERE ${set.to} ${IN_IDS}${andLinkedType(set, targetType)}`,
   ].map(compact);
 };
 
@@ -299,15 +337,17 @@ const comingOffTexts = (way: WayOfUsing): ReadonlyArray<StatementText> => {
 // replacement `?2` instead. A record keeps the replacement once, however many times it would
 // then have it. One that has both in a link set keeps its link to the replacement, and the
 // other link goes. And a record that has one in a column of its row never has the same one
-// in a link set as well: an Item's primary Category is never an extra one. So where the
-// column and a link would come to say the same, the link goes first.
+// in a link set that is `besides` that column: an Item's primary Category is never an extra
+// one. So where that column and a link would come to say the same, the link goes first. A set
+// that is besides no column can say the same as a column: a Document can name a Vendor and be
+// attached to it too, and keeps both.
 const repointingTexts = (way: WayOfUsing): ReadonlyArray<StatementText> => {
-  const { table, pointerColumns, links } = way.shape;
+  const { table, links } = way.shape;
   if (way.by === "column") {
     const { column } = way;
     return [
       ...links
-        .filter((set) => set.of.includes(way.targetType))
+        .filter((set) => set.besides === column)
         .map(
           (
             set,
@@ -321,13 +361,13 @@ const repointingTexts = (way: WayOfUsing): ReadonlyArray<StatementText> => {
   const { set, targetType } = way;
   const ofType = andLinkedType(set, targetType);
   return [
-    ...markingChanged(way),
-    ...Object.entries(pointerColumns)
-      .filter(([, pointedAt]) => pointedAt === targetType)
-      .map(
-        ([column]) => `DELETE FROM ${set.table} WHERE ${set.to} = ?1${ofType}
-                          AND ${set.from} IN (SELECT id FROM ${table} WHERE ${column} = ?2)`,
-      ),
+    ...markingChanged(way, "= ?1"),
+    ...(set.besides === undefined
+      ? []
+      : [
+          `DELETE FROM ${set.table} WHERE ${set.to} = ?1${ofType}
+              AND ${set.from} IN (SELECT id FROM ${table} WHERE ${set.besides} = ?2)`,
+        ]),
     `UPDATE OR IGNORE ${set.table} SET ${set.to} = ?2 WHERE ${set.to} = ?1${ofType}`,
     `DELETE FROM ${set.table} WHERE ${set.to} = ?1${ofType}`,
   ].map(compact);
@@ -358,25 +398,27 @@ const REMOVING_ROWS = Object.fromEntries(
 
 // What a delete with no replacement is made of, for a record of one type, built once.
 interface Deletion {
-  /** Every way a record of the type is used. */
+  /** Every way a record that goes is used: the record itself, and what goes with it. */
   readonly ways: ReadonlyArray<WayOfUsing>;
   /** The one read it makes of the record `?1`, as `readOf` builds it. */
   readonly read: StatementText;
   /**
-   * For each way, the statements by which the record comes off what uses it. There are none
-   * for a type that takes a replacement: one of those that is in use is refused.
+   * For each way, the statements by which the records that go come off what uses them. There
+   * are none for a type that takes a replacement: one of those that is in use is refused.
    */
   readonly comingOff: ReadonlyArray<ReadonlyArray<StatementText>>;
 }
 
 const deletionOf = (type: Deletable, shape: RecordShape): Deletion => {
-  const ways = waysOfUsing(type);
+  const ways = goingTypes(type).flatMap(waysOfUsing);
   return {
     ways,
     read: readOf(
       type,
       shape,
-      ways.map((way, at) => usedColumn(way, at, nameOfRow(way.shape, "record"))),
+      ways.map((way, at) =>
+        usedColumn(way, at, amongGoing(way.targetType), nameOfRow(way.shape, "record")),
+      ),
     ),
     comingOff: takesReplacement(type) ? [] : ways.map(comingOffTexts),
   };
@@ -425,7 +467,7 @@ const mergeOf = (type: Replaceable, shape: RecordShape): Merge => {
     read: readOf(
       type,
       shape,
-      ways.map((way, at) => usedColumn(way, at, nameOnceMerged(way))),
+      ways.map((way, at) => usedColumn(way, at, "= ?1", nameOnceMerged(way))),
       {
         columns: [
           `${nameOfRow(shape, "replacement")} AS replacement_name`,
@@ -470,7 +512,7 @@ const whatWasFound = (
   };
 };
 
-// How many there are of something, as an error says it: 1 Schedule, 2 Documents.
+// How many there are of something, as an error says it: 1 Schedule, 2 Schedules.
 const counted = (count: number, one: string) => `${count} ${one}${count === 1 ? "" : "s"}`;
 
 // What only a delete of a Category is refused for, before anything else is read of it. The
@@ -492,20 +534,17 @@ const refuseCategory = Effect.fnUntraced(function* (id: string, replacement?: st
   );
 });
 
-// Refuses a delete that would take out a record with a Schedule or a Document on it.
-const refuseScheduleOrDocument = (found: Found) => {
-  const having = rowsIn<WithScheduleOrDocument>(found.schedules_and_documents);
+// Refuses a delete that would take out a record with a Schedule on it.
+const refuseSchedule = (found: Found) => {
+  const having = rowsIn<WithSchedule>(found.schedules);
   if (having.length === 0) return Effect.void;
-  const lines = having.map(({ schedules, documents, ...record }) => {
-    const has = [
-      ...(schedules > 0 ? [counted(schedules, term("schedule"))] : []),
-      ...(documents > 0 ? [counted(documents, term("document"))] : []),
-    ];
-    return `The ${named(record)} has ${has.join(" and ")}.`;
-  });
+  const lines = having.map(
+    ({ schedules, ...record }) =>
+      `The ${named(record)} has ${counted(schedules, term("schedule"))}.`,
+  );
   return Effect.fail(
     notDeleted(
-      `a record with a Schedule or a Document on it cannot be deleted yet. Attic does not delete a Schedule or a Document yet, and the record would leave it behind or take it with no Change to say so:\n${lines.join("\n")}`,
+      `a record with a Schedule on it cannot be deleted yet. Attic does not delete a Schedule yet, and the record would take it with no Change to say so:\n${lines.join("\n")}`,
     ),
   );
 };
@@ -597,18 +636,25 @@ const deletingAlone = Effect.fnUntraced(function* (type: Deletable, id: string) 
   if (found === undefined) return yield* noRecord(type, id);
   const { record, goesToo, notes, usedPerWay, usedBy } = whatWasFound(type, id, found, ways);
 
-  yield* refuseScheduleOrDocument(found);
+  yield* refuseSchedule(found);
   if (takesReplacement(type)) yield* refuseWhileUsed(record, usedBy);
 
-  const removed = [record, ...goesToo, ...notes];
+  // The ids of the records of a type that go, as the JSON list a statement is given.
+  const going = [record, ...goesToo];
+  const idsGoing = (of: RecordType) =>
+    JSON.stringify(going.filter((each) => each.type === of).map((each) => each.id));
+  const removed = [...going, ...notes];
   const removedKeys = new Set(removed.map(recordKey));
   return {
     steps: [
-      ...comingOff.flatMap((texts, at) => stepsAboutEach(sql, usedPerWay[at] ?? [], texts, [id])),
+      ...ways.flatMap((way, at) =>
+        stepsAboutEach(sql, usedPerWay[at] ?? [], comingOff[at] ?? [], [idsGoing(way.targetType)]),
+      ),
       ...stepsRemoving(sql, removed),
     ],
     removed,
-    // Work that goes with its Item lost the Item first. It is listed once, as removed.
+    // Work that goes with its Item lost the Item first, and so did a Document that goes with
+    // it. Each is listed once, as removed.
     updated: usedBy.filter((each) => !removedKeys.has(recordKey(each))),
   } satisfies Removal;
 });
@@ -628,7 +674,7 @@ const mergingInto = Effect.fnUntraced(function* (
   if (found === undefined) return yield* noRecord(type, id);
   const { record, notes, usedPerWay, usedBy } = whatWasFound(type, id, found, ways);
 
-  yield* refuseScheduleOrDocument(found);
+  // Only an Item has a Schedule on it, and an Item takes no replacement.
   if (found.replacement_name == null) return yield* noRecord(type, replacement);
   const other: Listed = { type, id: replacement, name: found.replacement_name };
   yield* refuseElsewhere(record, other, found);
@@ -649,7 +695,7 @@ export const deleteRecord = defineTool({
   name: "delete_record",
   description: DESCRIPTION,
   input: Schema.Struct({
-    type: Schema.Literals(INPUT_TYPES).annotate({
+    type: Schema.Literals(RECORD_TYPES).annotate({
       description: "What kind of record it is. A Property is never deleted.",
     }),
     id: Schema.String.annotate({

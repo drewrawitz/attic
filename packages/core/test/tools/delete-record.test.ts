@@ -1,7 +1,7 @@
 import { expect, it } from "@effect/vitest";
 import { Effect } from "effect";
 import { SqlClient } from "effect/sql";
-import type { Listed } from "../../src/records.ts";
+import { term, type Listed } from "../../src/records.ts";
 import { addNote } from "../../src/tools/add-note.ts";
 import { deleteRecord } from "../../src/tools/delete-record.ts";
 import { getRecord } from "../../src/tools/get-record.ts";
@@ -790,11 +790,9 @@ it.effect("a replacement that is not there is an error that names its id", () =>
   }).pipe(Effect.provide(TestDatabase)),
 );
 
-// No tool writes a Schedule yet, and a test puts a Document in as rows, which is quicker than
-// sending a file. A Document is attached to a record by type and id, and can name a Vendor in
-// a column of its own.
-const NOT_YET =
-  "Nothing was deleted, because a record with a Schedule or a Document on it cannot be deleted yet. Attic does not delete a Schedule or a Document yet, and the record would leave it behind or take it with no Change to say so:";
+// No tool writes a Schedule yet, so a test puts one in as rows.
+const NO_SCHEDULE_YET =
+  "Nothing was deleted, because a record with a Schedule on it cannot be deleted yet. Attic does not delete a Schedule yet, and the record would take it with no Change to say so:";
 
 const schedulingOn = Effect.fnUntraced(function* (item: Listed, title: string) {
   const sql = yield* SqlClient.SqlClient;
@@ -802,96 +800,15 @@ const schedulingOn = Effect.fnUntraced(function* (item: Listed, title: string) {
              VALUES (${`schedule-${title}`}, ${item.id}, ${title}, 90, '2026-12-01')`;
 });
 
-const filing = Effect.fnUntraced(function* (title: string, vendor?: Listed) {
-  const sql = yield* SqlClient.SqlClient;
-  const id = `document-${title}`;
-  yield* sql`INSERT INTO documents (id, title, r2_key, mime_type, sha256, vendor_id)
-             VALUES (${id}, ${title}, ${`files/${title}`}, 'application/pdf', ${`hash-${title}`},
-                     ${vendor?.id ?? null})`;
-  return id;
-});
-
-const attaching = Effect.fnUntraced(function* (title: string, to: Listed) {
-  const sql = yield* SqlClient.SqlClient;
-  yield* sql`INSERT INTO document_links (document_id, entity_type, entity_id)
-             VALUES (${yield* filing(title)}, ${to.type}, ${to.id})`;
-});
-
-it.effect("an Item with a Schedule or a Document on it is refused, and the error says which", () =>
+it.effect("an Item with a Schedule on it is refused, and the error says how many", () =>
   Effect.gen(function* () {
-    const { dishwasher, pump } = yield* savingTheDishwasher;
+    const { dishwasher } = yield* savingTheDishwasher;
     yield* schedulingOn(dishwasher, "Clean the filter");
-    const before = yield* counting;
-    const named = `The Item "Dishwasher" (${dishwasher.id})`;
-
-    expect(yield* deleting({ type: "item", id: dishwasher.id })).toEqual({
-      refused: `${NOT_YET}\n${named} has 1 Schedule.`,
-    });
-    yield* attaching("Manual", dishwasher);
-    yield* attaching("Receipt", dishwasher);
-    expect(yield* deleting({ type: "item", id: dishwasher.id })).toEqual({
-      refused: `${NOT_YET}\n${named} has 1 Schedule and 2 Documents.`,
-    });
-    // Work that only names the Item stays, so what is on the Work is not in the way.
-    yield* attaching("Pump receipt", pump);
-    yield* (yield* SqlClient.SqlClient)`DELETE FROM schedules`;
-    expect(yield* deleting({ type: "item", id: dishwasher.id })).toEqual({
-      refused: `${NOT_YET}\n${named} has 2 Documents.`,
-    });
-    expect(yield* counting).toEqual(before);
-  }).pipe(Effect.provide(TestDatabase)),
-);
-
-it.effect("Work, a Space, a Project, and a Vendor with a Document are each refused", () =>
-  Effect.gen(function* () {
-    const { pantry, painted, remodel } = yield* savingThePantry;
-    const [ace] = created(yield* calling(saveVendor)({ name: "Ace Hardware" })) as [Listed];
-    const [other] = created(yield* calling(saveVendor)({ name: "Best Hardware" })) as [Listed];
-    yield* attaching("Paint receipt", painted);
-    yield* attaching("Pantry photo", pantry);
-    yield* attaching("Remodel quote", remodel);
-    // One Document is attached to the Vendor and names it too, and another only names it.
-    yield* (yield* SqlClient.SqlClient)`
-      INSERT INTO document_links (document_id, entity_type, entity_id)
-      VALUES (${yield* filing("Ace warranty", ace)}, 'vendor', ${ace.id})`;
-    yield* filing("Ace receipt", ace);
+    yield* schedulingOn(dishwasher, "Check the seal");
     const before = yield* counting;
 
-    for (const [record, has] of [
-      [painted, `The Work "Painted the pantry" (${painted.id}) has 1 Document.`],
-      [pantry, `The Space "Pantry" (${pantry.id}) has 1 Document.`],
-      [remodel, `The Project "Kitchen remodel" (${remodel.id}) has 1 Document.`],
-      [ace, `The Vendor "Ace Hardware" (${ace.id}) has 2 Documents.`],
-    ] as const) {
-      expect(yield* deleting({ type: record.type, id: record.id })).toEqual({
-        refused: `${NOT_YET}\n${has}`,
-      });
-    }
-    // A replacement does not clear the way: a Document would have to be pointed at it too.
-    expect(yield* deleting({ type: "vendor", id: ace.id, replacement: other.id })).toEqual({
-      refused: `${NOT_YET}\nThe Vendor "Ace Hardware" (${ace.id}) has 2 Documents.`,
-    });
-    expect(yield* counting).toEqual(before);
-  }).pipe(Effect.provide(TestDatabase)),
-);
-
-it.effect("an Item is refused when Work that would go with it has a Document", () =>
-  Effect.gen(function* () {
-    yield* calling(saveProperty)({ name: "Maple Street house" });
-    const [bike] = created(yield* calling(saveItem)({ name: "Road bike" })) as [Listed];
-    const [tuneUp] = created(
-      yield* calling(logWork)({
-        kind: "maintenance",
-        title: "Tuned the bike at the shop",
-        item_ids: [bike.id],
-        clear: ["property"],
-      }),
-    ) as [Listed];
-    yield* attaching("Shop receipt", tuneUp);
-    const before = yield* counting;
-
-    expect(yield* deleting({ type: "item", id: bike.id })).toEqual({
-      refused: `${NOT_YET}\nThe Work "Tuned the bike at the shop" (${tuneUp.id}) has 1 Document.`,
+    expect(yield* deleting({ type: "item", id: dishwasher.id })).toEqual({
+      refused: `${NO_SCHEDULE_YET}\nThe Item "Dishwasher" (${dishwasher.id}) has 2 Schedules.`,
     });
     expect(yield* counting).toEqual(before);
   }).pipe(Effect.provide(TestDatabase)),
@@ -919,6 +836,8 @@ const everyRow = Effect.gen(function* () {
     "project_spaces",
     "quotes",
     "notes",
+    "documents",
+    "document_links",
   ];
   return yield* Effect.forEach(tables, (table) =>
     Effect.map(sql.unsafe(`SELECT * FROM ${table} ORDER BY 1, 2`), (rows) => ({ table, rows })),
@@ -1244,5 +1163,235 @@ it.effect("a delete writes every row itself, and leans on no foreign key that ac
     expect(yield* counting).toMatchObject({ work_spaces: 2 });
     yield* deleting({ type: "project", id: remodel.id });
     expect(yield* counting).toMatchObject({ project_spaces: 0 });
+  }).pipe(Effect.provide(TestDatabase)),
+);
+
+// Deleting a Document, and a record a Document is on. A test puts a Document in as rows, which
+// is quicker than sending a file. A Document is attached to records by type and id, and can name
+// a Vendor in a column of its own.
+
+const filing = Effect.fnUntraced(function* (title: string, vendor?: Listed) {
+  const sql = yield* SqlClient.SqlClient;
+  const document: Listed = { type: "document", id: `document-${title}`, name: title };
+  yield* sql`INSERT INTO documents (id, status, title, r2_key, mime_type, sha256, vendor_id)
+             VALUES (${document.id}, 'filed', ${title}, ${document.id}, 'application/pdf',
+                     ${`hash-${title}`}, ${vendor?.id ?? null})`;
+  return document;
+});
+
+const attaching = Effect.fnUntraced(function* (document: Listed, to: Listed) {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`INSERT INTO document_links (document_id, entity_type, entity_id)
+             VALUES (${document.id}, ${to.type}, ${to.id})`;
+});
+
+// A Document attached to each of these records.
+const filedOn = Effect.fnUntraced(function* (title: string, ...records: ReadonlyArray<Listed>) {
+  const document = yield* filing(title);
+  for (const record of records) yield* attaching(document, record);
+  return document;
+});
+
+// Each Document there is now, with its status, the Vendor it names, and what it is attached to.
+const documentsNow = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{ id: string; status: string; vendor_id: string | null; on: string }>`
+    SELECT document.id, document.status, document.vendor_id,
+           (SELECT json_group_array(link.entity_type || ' ' || link.entity_id)
+              FROM (SELECT * FROM document_links WHERE document_id = document.id
+                     ORDER BY entity_type, entity_id) AS link) AS "on"
+      FROM documents AS document
+     ORDER BY document.id`;
+  return rows.map(({ on, ...row }) => ({ ...row, on: JSON.parse(on) as string[] }));
+});
+
+it.effect("a Document is deleted with its links, in one Change, and undo puts both back", () =>
+  Effect.gen(function* () {
+    const { dishwasher, pump } = yield* savingTheDishwasher;
+    const manual = yield* filedOn("Manual", dishwasher, pump);
+    const [records, rows] = [[dishwasher, pump], yield* everyRow];
+    const was = yield* reading(records);
+
+    const removal = yield* deleting({ type: "document", id: manual.id });
+    expect(removal).toEqual({ change_id: expect.any(String), removed: [manual], updated: [] });
+    expect(yield* recordedIn(removal.change_id)).toEqual([deleted(manual)]);
+    expect(yield* documentsNow).toEqual([]);
+    // The records it was on are as they were, without it.
+    expect(yield* getting("item", dishwasher.id)).toMatchObject({ documents: [] });
+
+    const back = yield* undoing(removal.change_id);
+    expect(back).toEqual({
+      change_id: expect.any(String),
+      taken_out: [],
+      restored: [],
+      put_back: [manual],
+    });
+    expect(yield* everyRow).toEqual(rows);
+    expect(yield* reading(records)).toEqual(was);
+  }).pipe(Effect.provide(TestDatabase)),
+);
+
+it.effect("an Item takes a Document on nothing else with it, and one on its Work stays there", () =>
+  Effect.gen(function* () {
+    const { dishwasher, notes, pump } = yield* savingTheDishwasher;
+    const receipt = yield* filedOn("Receipt", dishwasher);
+    const manual = yield* filedOn("Manual", dishwasher, pump);
+    const rows = yield* everyRow;
+
+    const removal = yield* deleting({ type: "item", id: dishwasher.id });
+    expect(removal).toEqual({
+      change_id: expect.any(String),
+      removed: [dishwasher, receipt, ...notes],
+      updated: [pump, manual],
+    });
+    expect(yield* recordedIn(removal.change_id)).toEqual(
+      [
+        changed(manual),
+        deleted(receipt),
+        deleted(dishwasher),
+        ...notes.map(deleted),
+        changed(pump),
+      ].toSorted((a, b) => `${a.type} ${a.id}`.localeCompare(`${b.type} ${b.id}`)),
+    );
+    // The manual is still on the Work, and still filed.
+    expect(yield* documentsNow).toEqual([
+      { id: manual.id, status: "filed", vendor_id: null, on: [`work ${pump.id}`] },
+    ]);
+
+    expect(yield* undoing(removal.change_id)).toMatchObject({
+      taken_out: [],
+      restored: [manual, pump],
+      put_back: [receipt, dishwasher, ...notes],
+    });
+    expect(yield* everyRow).toEqual(rows);
+  }).pipe(Effect.provide(TestDatabase)),
+);
+
+it.effect(
+  "Work that goes with its Item takes its Documents on nothing else, and others come off it",
+  () =>
+    Effect.gen(function* () {
+      const [maple] = created(yield* calling(saveProperty)({ name: "Maple Street house" })) as [
+        Listed,
+      ];
+      const [bike] = created(yield* calling(saveItem)({ name: "Road bike" })) as [Listed];
+      const [tuneUp] = created(
+        yield* calling(logWork)({
+          kind: "maintenance",
+          title: "Tuned the bike at the shop",
+          item_ids: [bike.id],
+          clear: ["property"],
+        }),
+      ) as [Listed];
+      const receipt = yield* filedOn("Shop receipt", tuneUp);
+      const photo = yield* filedOn("Bike photo", tuneUp, bike, maple);
+      const rows = yield* everyRow;
+
+      const removal = yield* deleting({ type: "item", id: bike.id });
+      expect(removal).toEqual({
+        change_id: expect.any(String),
+        removed: [bike, receipt, tuneUp],
+        updated: [photo],
+      });
+      // The photo was on the Property too, and stays there alone.
+      expect(yield* documentsNow).toEqual([
+        { id: photo.id, status: "filed", vendor_id: null, on: [`property ${maple.id}`] },
+      ]);
+
+      yield* undoing(removal.change_id);
+      expect(yield* everyRow).toEqual(rows);
+    }).pipe(Effect.provide(TestDatabase)),
+);
+
+it.effect("Work is deleted with a Document that is on it alone", () =>
+  Effect.gen(function* () {
+    const { pump } = yield* savingTheDishwasher;
+    const receipt = yield* filedOn("Pump receipt", pump);
+
+    expect(yield* deleting({ type: "work", id: pump.id })).toEqual({
+      change_id: expect.any(String),
+      removed: [pump, receipt],
+      updated: [],
+    });
+    expect(yield* documentsNow).toEqual([]);
+  }).pipe(Effect.provide(TestDatabase)),
+);
+
+it.effect(
+  "a Vendor, a Space, or a Project a Document uses is refused, and merged takes it along",
+  () =>
+    Effect.gen(function* () {
+      const { kitchen, pantry, painted, tiled, remodel, shelf } = yield* savingThePantry;
+      const [ace] = created(yield* calling(saveVendor)({ name: "Ace Hardware" })) as [Listed];
+      const [best] = created(yield* calling(saveVendor)({ name: "Best Hardware" })) as [Listed];
+      const [refit] = created(yield* calling(saveProject)({ title: "Pantry refit" })) as [Listed];
+      const photo = yield* filedOn("Pantry photo", pantry);
+      const quote = yield* filedOn("Remodel quote", remodel);
+      // One Document names the Vendor and is attached to it too, one only names it, and one is
+      // only attached to it.
+      const warranty = yield* filing("Ace warranty", ace);
+      yield* attaching(warranty, ace);
+      const receipt = yield* filing("Ace receipt", ace);
+      const manual = yield* filedOn("Ace manual", ace);
+      const before = yield* counting;
+      const usedBy = (record: Listed, users: string) =>
+        `Nothing was deleted, because the ${term(record.type)} "${record.name}" (${record.id}) is used by ${users}. To delete it all the same, give \`replacement\` the id of the ${term(record.type)} they should use instead. They are then pointed at that one, and this one is deleted, in one Change.`;
+      const the = ({ type, id, name }: Listed) => `the ${term(type)} "${name}" (${id})`;
+
+      expect(yield* deleting({ type: "vendor", id: ace.id })).toEqual({
+        refused: usedBy(ace, `${the(receipt)}, ${the(warranty)}, ${the(manual)}`),
+      });
+      expect(yield* deleting({ type: "space", id: pantry.id })).toEqual({
+        refused: usedBy(
+          pantry,
+          `${the(shelf)}, ${the(remodel)}, ${the(painted)}, ${the(tiled)}, ${the(photo)}`,
+        ),
+      });
+      expect(yield* deleting({ type: "project", id: remodel.id })).toEqual({
+        refused: usedBy(remodel, the(quote)),
+      });
+      expect(yield* counting).toEqual(before);
+
+      // With a replacement, each Document names the other Vendor, or is on the other record, and
+      // the warranty does both.
+      expect(yield* deleting({ type: "vendor", id: ace.id, replacement: best.id })).toMatchObject({
+        removed: [ace],
+        updated: [receipt, warranty, manual],
+      });
+      yield* deleting({ type: "space", id: pantry.id, replacement: kitchen.id });
+      yield* deleting({ type: "project", id: remodel.id, replacement: refit.id });
+      expect(yield* documentsNow).toEqual([
+        { id: manual.id, status: "filed", vendor_id: null, on: [`vendor ${best.id}`] },
+        { id: receipt.id, status: "filed", vendor_id: best.id, on: [] },
+        { id: warranty.id, status: "filed", vendor_id: best.id, on: [`vendor ${best.id}`] },
+        { id: photo.id, status: "filed", vendor_id: null, on: [`space ${kitchen.id}`] },
+        { id: quote.id, status: "filed", vendor_id: null, on: [`project ${refit.id}`] },
+      ]);
+    }).pipe(Effect.provide(TestDatabase)),
+);
+
+it.effect("an undo of a Change that took a Document out more than 30 days ago is refused", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const { dishwasher, notes } = yield* savingTheDishwasher;
+    const receipt = yield* filedOn("Receipt", dishwasher);
+    const removal = yield* deleting({ type: "item", id: dishwasher.id });
+    // Every Change is made at one time on a day, so the delete is still the latest of them.
+    const madeOn = (day: string) => sql`UPDATE changes SET created_at = ${`${day}T09:00:00.000Z`}`;
+    yield* todayIs("2026-11-05");
+    const before = yield* counting;
+
+    // 31 days before today, and a little more.
+    yield* madeOn("2026-10-05");
+    expect(yield* undoing(removal.change_id)).toEqual({
+      refused: `Nothing was undone, because the Change "${String(removal.change_id)}" took out these Documents more than 30 days ago, at 2026-10-05T09:00:00.000Z. A Document's file is removed 30 days after the Document goes, so they cannot come back:\nThe Document "Receipt" (${receipt.id}).`,
+    });
+    expect(yield* counting).toEqual(before);
+
+    // 29 days before today.
+    yield* madeOn("2026-10-07");
+    expect(yield* undoing(removal.change_id)).toMatchObject({
+      put_back: [receipt, dishwasher, ...notes],
+    });
   }).pipe(Effect.provide(TestDatabase)),
 );
