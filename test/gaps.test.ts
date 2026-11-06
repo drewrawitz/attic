@@ -55,11 +55,20 @@ test(
   }),
 );
 
+// An Item that is missing only its photo and its Receipt.
+const bare = (id: string, name: string) => ({
+  type: "item",
+  id,
+  name,
+  missing: ["photo", "receipt"],
+});
+const DUMBBELLS = bare("seed-item-dumbbells", "Adjustable dumbbells");
+// Its Receipt is on the Work that put it in, so the Item has none of its own.
 const WATER_HEATER = {
   type: "item",
   id: "seed-item-water-heater",
   name: "Water heater",
-  missing: ["price"],
+  missing: ["price", "photo", "receipt"],
 };
 // It is dated only 2023, because the date on its Receipt cannot be read.
 const WATER_HEATER_WORK = {
@@ -81,24 +90,49 @@ const noSize = (id: string, name: string, ...items: ReadonlyArray<Entry>) => ({
 // The router is filed under Networking, which expects nothing. The serial it lacks is expected
 // by Electronics, the Category above it, so finding it means the Category tree was walked. The
 // exercise bike has no serial either, and it was sold. The living room has a size and wall
-// paint, and the other three Spaces have only the Property's trim for paint.
+// paint, and the other three Spaces have only the Property's trim for paint. The fridge and the
+// treadmill each have a photo and a Receipt, so finding them left out means each record's
+// Documents were read. Of the Work someone was paid for, only the furnace service has no Receipt.
 test(
   "the gaps of the made-up household come back on D1, with an Item missing a key only a parent Category expects",
   asking(async (gaps) => {
     expect(await gaps({})).toEqual({
-      counts: { items: 2, work: 1, spaces: 3 },
+      counts: { items: 7, work: 2, spaces: 3 },
       property: "Maple Street house",
       spaces: [
         noSize("seed-space-exterior", "Exterior"),
-        noSize("seed-space-garage", "Garage", WATER_HEATER),
-        noSize("seed-space-kitchen", "Kitchen"),
+        noSize("seed-space-garage", "Garage", DUMBBELLS, WATER_HEATER),
+        noSize("seed-space-kitchen", "Kitchen", bare("seed-item-microwave", "Microwave")),
+        {
+          type: "space",
+          id: "seed-space-living-room",
+          name: "Living room",
+          missing: [],
+          items: [bare("seed-item-couch", "Sectional couch")],
+        },
       ],
       no_space: {
         items: [
-          { type: "item", id: "seed-item-router", name: "Office router", missing: ["data.serial"] },
+          {
+            type: "item",
+            id: "seed-item-router",
+            name: "Office router",
+            missing: ["data.serial", "photo", "receipt"],
+          },
+          bare("seed-item-watch", "Running watch"),
+          bare("seed-item-desk", "Standing desk"),
         ],
       },
-      work: [WATER_HEATER_WORK],
+      work: [
+        {
+          type: "work",
+          id: "seed-work-furnace",
+          name: "Annual furnace service",
+          spaces: [],
+          missing: ["receipt"],
+        },
+        WATER_HEATER_WORK,
+      ],
     });
   }),
 );
@@ -108,16 +142,17 @@ test(
   "gaps keeps to one Space on D1, whatever the case of its name",
   asking(async (gaps) => {
     expect(await gaps({ property: "maple street HOUSE", space: "GARAGE" })).toEqual({
-      counts: { items: 1, work: 1, spaces: 1 },
+      counts: { items: 2, work: 1, spaces: 1 },
       property: "Maple Street house",
-      spaces: [noSize("seed-space-garage", "Garage", WATER_HEATER)],
+      spaces: [noSize("seed-space-garage", "Garage", DUMBBELLS, WATER_HEATER)],
       work: [WATER_HEATER_WORK],
     });
 
     // The former Property has no paint for its Spaces, and the landlord's dishwasher was left
-    // there with no Price, no date, and no serial.
+    // there with no Price, no date, no serial, and no Documents. The drain was cleared by someone
+    // who was paid, and there is no Receipt for it.
     expect(await gaps({ property: "Elm Court apartment" })).toEqual({
-      counts: { items: 1, work: 0, spaces: 1 },
+      counts: { items: 1, work: 1, spaces: 1 },
       property: "Elm Court apartment",
       spaces: [
         {
@@ -130,13 +165,21 @@ test(
               type: "item",
               id: "seed-item-elm-dishwasher",
               name: "Dishwasher",
-              missing: ["price", "acquired_on", "data.serial"],
+              missing: ["price", "acquired_on", "data.serial", "photo", "receipt"],
             },
           ],
         },
       ],
       no_space: { items: [] },
-      work: [],
+      work: [
+        {
+          type: "work",
+          id: "seed-work-elm-drain",
+          name: "Cleared the kitchen drain",
+          spaces: ["Kitchen"],
+          missing: ["receipt"],
+        },
+      ],
     });
   }),
 );

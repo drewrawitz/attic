@@ -1,8 +1,9 @@
 import { expect, it } from "@effect/vitest";
 import { Effect } from "effect";
 import { SqlClient } from "effect/sql";
+import type { Kind } from "../../src/document.ts";
 import { gaps } from "../../src/tools/gaps.ts";
-import { answer, call, callAsClient, todayIs } from "../call.ts";
+import { answer, callAsClient, todayIs } from "../call.ts";
 import { loadHousehold } from "../household.ts";
 import { TestDatabase } from "../TestDatabase.ts";
 
@@ -33,9 +34,32 @@ interface Gaps {
   readonly note?: string;
 }
 
-// A call the way a client sends one: checked against the tool's input first.
-const asking = (input: unknown = {}) =>
+// A call the way a client sends one: checked against the tool's input first. It asks about the
+// records as they are, Documents and all.
+const askingAsIs = (input: unknown = {}) =>
   callAsClient(gaps, input).pipe(Effect.map((sent) => answer<Gaps>(sent)));
+
+// A photo and a Receipt on every Item and every piece of Work there is. Most tests here are about
+// another gap, so they file these first and see only the gaps they put there themselves. It can
+// run again after more records are written, and files them on the new ones.
+const paperworkOnEverything = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    INSERT OR IGNORE INTO documents (id, status, kind, title, r2_key, mime_type, sha256) VALUES
+      ('d-every-photo', 'filed', 'photo', 'Every photo', 'd-every-photo', 'image/jpeg',
+       'sha-every-photo'),
+      ('d-every-receipt', 'filed', 'receipt', 'Every receipt', 'd-every-receipt',
+       'application/pdf', 'sha-every-receipt')`;
+  yield* sql`
+    INSERT OR IGNORE INTO document_links (document_id, entity_type, entity_id)
+    SELECT 'd-every-photo', 'item', id FROM items
+    UNION ALL SELECT 'd-every-receipt', 'item', id FROM items
+    UNION ALL SELECT 'd-every-receipt', 'work', id FROM work`;
+});
+
+// A call about every gap but a photo and a Receipt, since it files them first.
+const askingWithPaperwork = (input: unknown = {}) =>
+  paperworkOnEverything.pipe(Effect.andThen(askingAsIs(input)));
 
 // The day the tests are on. A Property that ended before it is a former one. The made-up
 // household has one Current property on it: the Maple Street house.
@@ -72,7 +96,7 @@ it.effect("an Item with nothing under a key its Category expects is missing that
       VALUES ('i-blender', 'p-oak', 's-den', 'small-appliances', 'Blender', '2024-03', 8900,
               '{"brand":"Vitamix"}')`;
 
-    const whole = yield* asking();
+    const whole = yield* askingWithPaperwork();
     expect(whole).toEqual({
       counts: { items: 1, work: 0, spaces: 0 },
       property: "Oak Lane house",
@@ -102,7 +126,7 @@ it.effect("a key that only a parent Category expects counts, and so does one of 
         ('i-lamp', 'p-oak', 's-den', 'furniture', 'Smart lamp', '2025', 6000, '{}')`;
     yield* sql`INSERT INTO item_categories (item_id, category_id) VALUES ('i-lamp', 'smart-devices')`;
 
-    const { counts, spaces } = yield* asking();
+    const { counts, spaces } = yield* askingWithPaperwork();
     expect(counts).toEqual({ items: 2, work: 0, spaces: 0 });
     expect(spaces).toEqual([
       den(
@@ -130,7 +154,7 @@ it.effect("a key with nothing under it is missing, and a zero or a false is not"
       VALUES ('i-gadget', 'p-oak', 's-den', 'gadgets', 'Gadget', '2024', 100,
               '{"brand":null,"model":"","serial":"  ","parts":{},"colors":[],"condition":"\\t\\n","quantity":0,"original_box":false}')`;
 
-    const { spaces } = yield* asking();
+    const { spaces } = yield* askingWithPaperwork();
     expect(spaces![0]!.items[0]!.missing).toEqual([
       "data.brand",
       "data.colors",
@@ -158,7 +182,7 @@ it.effect("a Category whose expects is not a list of names expects nothing", () 
       VALUES ('i-one', 'p-oak', 's-den', 'odd-text', 'One', '2024', 100),
              ('i-two', 'p-oak', 's-den', 'odd-list', 'Two', '2024', 100)`;
 
-    expect(yield* asking()).toMatchObject({ counts: { items: 0 }, spaces: [] });
+    expect(yield* askingWithPaperwork()).toMatchObject({ counts: { items: 0 }, spaces: [] });
   }).pipe(Effect.provide(TestDatabase)),
 );
 
@@ -180,7 +204,7 @@ it.effect("an Item with no Price, or with no date it was acquired on, is missing
         -- A gift cost nothing, and nothing is a Price.
         ('i-vase', 'p-oak', 's-den', 'decor', 'Vase', '2020-12-25', 0, '{}')`;
 
-    const { counts, spaces } = yield* asking();
+    const { counts, spaces } = yield* askingWithPaperwork();
     expect(counts).toEqual({ items: 3, work: 0, spaces: 0 });
     expect(spaces).toEqual([
       den(
@@ -207,7 +231,7 @@ it.effect("an Item with every expected key, a Price, and a date is left out", ()
       VALUES ('i-fridge', 'p-oak', 's-den', 'appliances', 'Fridge', '2022-06-03', 219900,
               '{"brand":"Samsung","model":"RF28R7351SR","serial":"OAK-0001"}')`;
 
-    expect(yield* asking()).toEqual({
+    expect(yield* askingWithPaperwork()).toEqual({
       counts: { items: 0, work: 0, spaces: 0 },
       property: "Oak Lane house",
       spaces: [],
@@ -217,8 +241,9 @@ it.effect("an Item with every expected key, a Price, and a date is left out", ()
   }).pipe(Effect.provide(TestDatabase)),
 );
 
-// A Gone Item keeps its row for the money trail. There is nothing left to go and look at.
-it.effect("a Gone Item is left out, whatever it is missing", () =>
+// A Gone Item keeps its row for the money trail. There is nothing left to go and look at, or to
+// take a photo of.
+it.effect("a Gone Item is left out, whatever it is missing, Documents and all", () =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     yield* oakLane;
@@ -233,7 +258,20 @@ it.effect("a Gone Item is left out, whatever it is missing", () =>
         -- One that is up for sale is still the User's.
         ('i-listed', 'p-oak', 's-den', 'furniture', 'Old desk', 'listed')`;
 
-    const { counts, spaces, no_space } = yield* asking();
+    // With no Document on any of them, only the one for sale is asked for a photo and a Receipt.
+    const asIs = yield* askingAsIs();
+    expect(asIs.counts).toEqual({ items: 1, work: 0, spaces: 0 });
+    expect(asIs.spaces).toEqual([
+      den({
+        type: "item",
+        id: "i-listed",
+        name: "Old desk",
+        missing: ["price", "acquired_on", "photo", "receipt"],
+      }),
+    ]);
+    expect(asIs.no_space).toEqual({ items: [] });
+
+    const { counts, spaces, no_space } = yield* askingWithPaperwork();
     expect(counts).toEqual({ items: 1, work: 0, spaces: 0 });
     expect(spaces).toEqual([
       den({ type: "item", id: "i-listed", name: "Old desk", missing: ["price", "acquired_on"] }),
@@ -258,7 +296,7 @@ it.effect("Items in no Space come back as a group of their own", () =>
         ('i-elsewhere', 'p-old', NULL, 'furniture', 'Bookcase', NULL, NULL),
         ('i-nowhere', NULL, NULL, 'furniture', 'Trunk in storage', NULL, NULL)`;
 
-    expect(yield* asking()).toEqual({
+    expect(yield* askingWithPaperwork()).toEqual({
       counts: { items: 3, work: 0, spaces: 0 },
       property: "Oak Lane house",
       spaces: [den({ type: "item", id: "i-chair", name: "Chair", missing: ["price"] })],
@@ -296,7 +334,7 @@ it.effect(
           ('w-elsewhere', 'p-old', 'repair', 'Unclogged the drain', NULL, NULL, 0, 'v-pipes')`;
       yield* sql`INSERT INTO work_spaces (work_id, space_id) VALUES ('w-elsewhere', 's-old')`;
 
-      const { counts, work } = yield* asking();
+      const { counts, work } = yield* askingWithPaperwork();
       expect(counts).toEqual({ items: 0, work: 3, spaces: 0 });
       // Newest first, and the ones with no date last.
       expect(work).toEqual([
@@ -339,7 +377,7 @@ it.effect(
       INSERT INTO work_spaces (work_id, space_id)
       VALUES ('w-year', 's-den'), ('w-year', 's-attic'), ('w-year-unpaid', 's-den')`;
 
-      const { counts, work } = yield* asking();
+      const { counts, work } = yield* askingWithPaperwork();
       expect(counts).toMatchObject({ items: 0, work: 3 });
       expect(work).toEqual([
         {
@@ -371,6 +409,172 @@ it.effect(
     }).pipe(Effect.provide(TestDatabase)),
 );
 
+// Files a Document of a kind, named by its id, on the records given as a type and an id.
+const filing = (id: string, kind: Kind, ...on: ReadonlyArray<readonly [string, string]>) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`
+      INSERT INTO documents (id, status, kind, title, r2_key, mime_type, sha256)
+      VALUES (${id}, 'filed', ${kind}, ${id}, ${id}, 'image/jpeg', ${`sha-${id}`})`;
+    for (const [type, record] of on) {
+      yield* sql`
+        INSERT INTO document_links (document_id, entity_type, entity_id)
+        VALUES (${id}, ${type}, ${record})`;
+    }
+  });
+
+// A photo and a Receipt are Documents, so they are named as request_upload_link takes their
+// kind, after the fields and the keys of `data` that save_item takes.
+it.effect("an Item with no photo or no Receipt is missing it, after its fields and keys", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* oakLane;
+    yield* sql`
+      INSERT INTO items (id, property_id, space_id, category_id, name, acquired_on, price_cents, data)
+      VALUES
+        ('i-sofa', 'p-oak', 's-den', 'furniture', 'Sofa', '2022', 120000, '{}'),
+        ('i-desk', 'p-oak', 's-den', 'furniture', 'Desk', '2023', 45000, '{}'),
+        ('i-lamp', 'p-oak', 's-den', 'furniture', 'Lamp', '2024', 8000, '{}'),
+        ('i-fridge', 'p-oak', 's-den', 'appliances', 'Fridge', '2022-06-03', 219900,
+         '{"brand":"Samsung","model":"RF28R7351SR"}'),
+        ('i-watch', 'p-oak', NULL, 'jewelry', 'Watch', '2023-05', 30000, '{}')`;
+    yield* filing("d-desk-photo", "photo", ["item", "i-desk"]);
+    yield* filing("d-lamp-photo", "photo", ["item", "i-lamp"]);
+    yield* filing("d-lamp-receipt", "receipt", ["item", "i-lamp"]);
+
+    // The Lamp has both, and nothing else missing.
+    expect(yield* askingAsIs()).toEqual({
+      counts: { items: 4, work: 0, spaces: 0 },
+      property: "Oak Lane house",
+      spaces: [
+        den(
+          { type: "item", id: "i-desk", name: "Desk", missing: ["receipt"] },
+          {
+            type: "item",
+            id: "i-fridge",
+            name: "Fridge",
+            missing: ["data.serial", "photo", "receipt"],
+          },
+          { type: "item", id: "i-sofa", name: "Sofa", missing: ["photo", "receipt"] },
+        ),
+      ],
+      no_space: {
+        items: [{ type: "item", id: "i-watch", name: "Watch", missing: ["photo", "receipt"] }],
+      },
+      work: [],
+    });
+  }).pipe(Effect.provide(TestDatabase)),
+);
+
+// A Price of zero says nothing was paid, as for a gift. No Price says nothing yet, and a Receipt
+// is where one is read from.
+it.effect("an Item with a Price of zero is not asked for a Receipt, and one with no Price is", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* oakLane;
+    yield* sql`
+      INSERT INTO items (id, property_id, space_id, category_id, name, acquired_on, price_cents)
+      VALUES
+        ('i-vase', 'p-oak', 's-den', 'decor', 'Vase', '2020-12-25', 0),
+        ('i-mirror', 'p-oak', 's-den', 'decor', 'Mirror', '2019', 0),
+        ('i-rug', 'p-oak', 's-den', 'furniture', 'Rug', '2021', NULL)`;
+    yield* filing("d-vase-photo", "photo", ["item", "i-vase"]);
+    yield* filing("d-rug-photo", "photo", ["item", "i-rug"]);
+
+    const { counts, spaces } = yield* askingAsIs();
+    expect(counts).toEqual({ items: 2, work: 0, spaces: 0 });
+    expect(spaces).toEqual([
+      den(
+        { type: "item", id: "i-mirror", name: "Mirror", missing: ["photo"] },
+        { type: "item", id: "i-rug", name: "Rug", missing: ["price", "receipt"] },
+      ),
+    ]);
+  }).pipe(Effect.provide(TestDatabase)),
+);
+
+// The `inventory` view counts an Item's photos and Receipts the same way. One link can file a
+// Document on both an Item and the Work that names it, and then it counts for both.
+it.effect("only a Document on the record itself counts, and a manual is neither", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* oakLane;
+    yield* sql`
+      INSERT INTO items (id, property_id, space_id, category_id, name, acquired_on, price_cents)
+      VALUES
+        ('i-faucet', 'p-oak', 's-den', 'lighting-plumbing', 'Faucet', '2024-04', 32000),
+        ('i-fan', 'p-oak', 's-den', 'lighting-plumbing', 'Ceiling fan', '2024-05', 25000),
+        ('i-shelf', 'p-oak', 's-den', 'furniture', 'Shelf', '2024', 9000)`;
+    yield* sql`
+      INSERT INTO work (id, property_id, kind, title, date, cost_cents, diy)
+      VALUES
+        ('w-faucet', 'p-oak', 'improvement', 'Put in the faucet', '2024-04-02', 52000, 0),
+        ('w-fan', 'p-oak', 'improvement', 'Hung the fan', '2024-05-10', 40000, 0)`;
+    yield* sql`
+      INSERT INTO work_items (work_id, item_id) VALUES ('w-faucet', 'i-faucet'), ('w-fan', 'i-fan')`;
+    yield* filing("d-faucet-photo", "photo", ["item", "i-faucet"]);
+    yield* filing("d-plumber-receipt", "receipt", ["work", "w-faucet"]);
+    yield* filing("d-fan-photo", "photo", ["item", "i-fan"]);
+    yield* filing("d-fan-receipt", "receipt", ["item", "i-fan"], ["work", "w-fan"]);
+    yield* filing("d-shelf-manual", "manual", ["item", "i-shelf"]);
+
+    expect(yield* askingAsIs()).toEqual({
+      counts: { items: 2, work: 0, spaces: 0 },
+      property: "Oak Lane house",
+      spaces: [
+        den(
+          { type: "item", id: "i-faucet", name: "Faucet", missing: ["receipt"] },
+          { type: "item", id: "i-shelf", name: "Shelf", missing: ["photo", "receipt"] },
+        ),
+      ],
+      no_space: { items: [] },
+      work: [],
+    });
+  }).pipe(Effect.provide(TestDatabase)),
+);
+
+// Work is asked for a Receipt where it is asked for a Cost, and also when it has one. DIY Work is
+// not asked, even with a Cost for its materials. Work is never asked for a photo, and a manual
+// on it is not a Receipt.
+it.effect(
+  "Work someone was paid for is missing its Receipt, and DIY Work and free Work are not",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* oakLane;
+      yield* sql`
+      INSERT INTO work (id, property_id, kind, title, date, cost_cents, diy)
+      VALUES
+        ('w-paid', 'p-oak', 'repair', 'Fixed the leak', '2024-06-01', 18000, 0),
+        ('w-unknown', 'p-oak', 'maintenance', 'Swept the chimney', '2024-03-01', NULL, 0),
+        ('w-diy', 'p-oak', 'repair', 'Patched the drywall', '2024-05-01', 3000, 1),
+        ('w-free', 'p-oak', 'repair', 'Warranty repair', '2025-01-15', 0, 0),
+        ('w-filed', 'p-oak', 'maintenance', 'Serviced the furnace', '2024-10-01', 9000, 0),
+        ('w-boiler', 'p-oak', 'maintenance', 'Serviced the boiler', '2024-02-01', 12000, 0)`;
+      yield* filing("d-furnace-receipt", "receipt", ["work", "w-filed"]);
+      yield* filing("d-boiler-manual", "manual", ["work", "w-boiler"]);
+
+      const { counts, work } = yield* askingAsIs();
+      expect(counts).toEqual({ items: 0, work: 3, spaces: 0 });
+      expect(work).toEqual([
+        { type: "work", id: "w-paid", name: "Fixed the leak", spaces: [], missing: ["receipt"] },
+        {
+          type: "work",
+          id: "w-unknown",
+          name: "Swept the chimney",
+          spaces: [],
+          missing: ["cost", "receipt"],
+        },
+        {
+          type: "work",
+          id: "w-boiler",
+          name: "Serviced the boiler",
+          spaces: [],
+          missing: ["receipt"],
+        },
+      ]);
+    }).pipe(Effect.provide(TestDatabase)),
+);
+
 // A Space with nothing in it that is missing something, as `gaps` shows it.
 const space = (id: string, name: string, ...missing: ReadonlyArray<string>) => ({
   type: "space",
@@ -397,7 +601,7 @@ it.effect("a Space with no size is missing it, and so is one with no paint", () 
         ('s-loft', 'p-oak', 'Loft', '{"sqft":null,"paint":" \\t\\n"}'),
         ('s-yard', 'p-oak', 'Yard', '{"sqft":0,"paint":[]}')`;
 
-    const { counts, spaces } = yield* asking();
+    const { counts, spaces } = yield* askingWithPaperwork();
     expect(counts).toEqual({ items: 0, work: 0, spaces: 6 });
     expect(spaces).toEqual([
       space("s-hall", "Hall", "data.sqft"),
@@ -425,7 +629,7 @@ it.effect("a Space whose only paint is its Property's is not missing paint", () 
         ('s-porch', 'p-oak', 'Porch', '{}'),
         ('s-nook', 'p-oak', 'Nook', '{"sqft":20,"paint":{}}')`;
 
-    const { counts, spaces } = yield* asking();
+    const { counts, spaces } = yield* askingWithPaperwork();
     expect(counts).toEqual({ items: 0, work: 0, spaces: 1 });
     expect(spaces).toEqual([space("s-porch", "Porch", "data.sqft")]);
   }).pipe(Effect.provide(TestDatabase)),
@@ -442,7 +646,7 @@ it.effect("a Space comes back with what it is missing itself and the Items in it
       INSERT INTO items (id, property_id, space_id, category_id, name, acquired_on, price_cents)
       VALUES ('i-swing', 'p-oak', 's-porch', 'outdoor', 'Porch swing', '2022', NULL)`;
 
-    const { counts, spaces } = yield* asking();
+    const { counts, spaces } = yield* askingWithPaperwork();
     expect(counts).toEqual({ items: 1, work: 0, spaces: 1 });
     expect(spaces).toEqual([
       {
@@ -494,7 +698,7 @@ it.effect(
       yield* porchAndDen;
 
       // The name is matched whatever its case, as it is everywhere else.
-      expect(yield* asking({ space: "porch" })).toEqual({
+      expect(yield* askingWithPaperwork({ space: "porch" })).toEqual({
         counts: { items: 1, work: 2, spaces: 1 },
         property: "Oak Lane house",
         spaces: [{ ...space("s-porch", "Porch", "data.sqft", "data.paint"), items: [SWING] }],
@@ -511,7 +715,7 @@ it.effect(
       });
 
       // Without one, everything at the Property comes back.
-      expect(yield* asking()).toMatchObject({
+      expect(yield* askingWithPaperwork()).toMatchObject({
         counts: { items: 3, work: 4, spaces: 1 },
         spaces: [{ id: "s-den" }, { id: "s-porch" }],
         no_space: { items: [{ id: "i-watch" }] },
@@ -528,7 +732,7 @@ it.effect("a Space with nothing missing comes back empty, with every count at ze
     yield* sql`UPDATE items SET price_cents = 9900 WHERE id = 'i-chair'`;
     yield* sql`DELETE FROM work_spaces WHERE space_id = 's-den'`;
 
-    expect(yield* asking({ space: "Den" })).toEqual({
+    expect(yield* askingWithPaperwork({ space: "Den" })).toEqual({
       counts: { items: 0, work: 0, spaces: 0 },
       property: "Oak Lane house",
       spaces: [],
@@ -546,18 +750,18 @@ it.effect("a Space that is not at the Property is an error that lists the ones t
     yield* sql`INSERT INTO spaces (id, property_id, name) VALUES ('s-hall', 'p-old', 'Hall')`;
     yield* sql`INSERT INTO properties (id, name, end_on) VALUES ('p-first', 'First flat', '2015')`;
 
-    expect(yield* asking({ space: "Attic" })).toEqual({
+    expect(yield* askingWithPaperwork({ space: "Attic" })).toEqual({
       refused: 'There is no Space "Attic" at Oak Lane house. Its Spaces are: Den, Porch.',
     });
     // The Hall is a Space, at another Property.
-    expect(yield* asking({ space: "Hall" })).toEqual({
+    expect(yield* askingWithPaperwork({ space: "Hall" })).toEqual({
       refused: 'There is no Space "Hall" at Oak Lane house. Its Spaces are: Den, Porch.',
     });
-    expect(yield* asking({ property: "Old flat", space: "Hall" })).toMatchObject({
+    expect(yield* askingWithPaperwork({ property: "Old flat", space: "Hall" })).toMatchObject({
       property: "Old flat",
       spaces: [{ id: "s-hall", missing: ["data.sqft", "data.paint"] }],
     });
-    expect(yield* asking({ property: "First flat", space: "Hall" })).toEqual({
+    expect(yield* askingWithPaperwork({ property: "First flat", space: "Hall" })).toEqual({
       refused: 'There is no Space "Hall" at First flat. It has no Spaces yet.',
     });
   }).pipe(Effect.provide(TestDatabase)),
@@ -571,19 +775,19 @@ it.effect("with no Property given and two Current properties, the error lists th
     yield* sql`INSERT INTO properties (id, name) VALUES ('p-birch', 'Birch Road house')`;
     yield* sql`INSERT INTO spaces (id, property_id, name) VALUES ('s-loft', 'p-birch', 'Loft')`;
 
-    expect(yield* asking()).toEqual({
+    expect(yield* askingWithPaperwork()).toEqual({
       refused:
         "2 Properties are current: Birch Road house, Oak Lane house. Say which one this is for: give `property` its id or its name.",
     });
 
     // By its name, whatever the case, or by its id.
     for (const property of ["birch road HOUSE", "p-birch"]) {
-      expect(yield* asking({ property }), property).toMatchObject({
+      expect(yield* askingWithPaperwork({ property }), property).toMatchObject({
         property: "Birch Road house",
         spaces: [{ id: "s-loft" }],
       });
     }
-    expect(yield* asking({ property: "Cedar Court" })).toEqual({
+    expect(yield* askingWithPaperwork({ property: "Cedar Court" })).toEqual({
       refused:
         'There is no Property "Cedar Court". The Properties are: Birch Road house, Oak Lane house.',
     });
@@ -621,7 +825,7 @@ it.effect("a Property with 60 Items that have no Price shows 50 and counts the o
     yield* bins(26, 55, "s-porch");
     yield* bins(56, 60, null);
 
-    const whole = yield* asking();
+    const whole = yield* askingWithPaperwork();
     expect(whole.counts).toEqual({ items: 60, work: 0, spaces: 0 });
     expect(names(whole.no_space)).toEqual(["Bin 56", "Bin 57", "Bin 58", "Bin 59", "Bin 60"]);
     expect(whole.no_space).not.toHaveProperty("more_items");
@@ -637,7 +841,7 @@ it.effect("a Property with 60 Items that have no Price shows 50 and counts the o
     );
 
     // One Space at a time, every Item is there.
-    const alone = yield* asking({ space: "Porch" });
+    const alone = yield* askingWithPaperwork({ space: "Porch" });
     expect(alone.counts).toEqual({ items: 30, work: 0, spaces: 0 });
     expect(names(alone.spaces![0])).toHaveLength(30);
     expect(alone.spaces![0]).not.toHaveProperty("more_items");
@@ -650,7 +854,7 @@ it.effect("a Space with more than 50 Items is cut too when it is asked for alone
     yield* oakLane;
     yield* bins(1, 60, "s-den");
 
-    const alone = yield* asking({ space: "Den" });
+    const alone = yield* askingWithPaperwork({ space: "Den" });
     expect(alone.counts).toEqual({ items: 60, work: 0, spaces: 0 });
     expect(names(alone.spaces![0])).toHaveLength(50);
     expect(alone.spaces![0]!.more_items).toBe(10);
@@ -672,7 +876,7 @@ it.effect("a Space whose Items were all cut comes back with a count of them", ()
     yield* bins(1, 50, "s-den");
     yield* bins(51, 53, "s-porch");
 
-    const { spaces } = yield* asking();
+    const { spaces } = yield* askingWithPaperwork();
     expect(spaces![1]).toEqual({
       type: "space",
       id: "s-porch",
@@ -698,7 +902,7 @@ it.effect("55 pieces of Work with no date show 50, newest first, and count the o
         VALUES (${id}, 'p-oak', 'repair', ${`Repair ${number}`}, 1000)`;
     }
 
-    const { counts, no_space, work, more_work, note } = yield* asking();
+    const { counts, no_space, work, more_work, note } = yield* askingWithPaperwork();
     expect(counts).toEqual({ items: 51, work: 55, spaces: 0 });
     expect(names(no_space)).toHaveLength(50);
     expect(no_space!.more_items).toBe(1);
@@ -712,39 +916,73 @@ it.effect("55 pieces of Work with no date show 50, newest first, and count the o
   }).pipe(Effect.provide(TestDatabase)),
 );
 
-// The living room has a size and wall paint, and the couch in it has nothing missing, so it does
-// not come back. The other three Spaces have no size. Their only paint is the trim, which is the
-// Property's. The router is filed under Networking, and the serial it lacks is expected by
-// Electronics, the Category above it. The exercise bike has no serial either, and it was sold.
+// The household as it is, Documents and all. The living room has a size and wall paint, and the
+// couch in it is missing only its photo and its Receipt. The other three Spaces have no size.
+// Their only paint is the trim, which is the Property's. The router is filed under Networking,
+// and the serial it lacks is expected by Electronics, the Category above it. The fridge and the
+// treadmill each have a photo and a Receipt, so they do not come back. The water heater's
+// Receipt is on the Work that put it in, so the Item has none of its own. The exercise bike has
+// no serial either, and it was sold. Of the Work someone was paid for, only the furnace service
+// has no Receipt.
 it.effect("the gaps of the made-up household come back, grouped by Space", () =>
   Effect.gen(function* () {
     yield* loadHousehold;
     yield* todayIs(TODAY);
 
-    expect(yield* asking()).toEqual({
-      counts: { items: 2, work: 1, spaces: 3 },
+    // An Item that is missing only its photo and its Receipt.
+    const bare = (id: string, name: string) => ({
+      type: "item",
+      id,
+      name,
+      missing: ["photo", "receipt"],
+    });
+
+    expect(yield* askingAsIs()).toEqual({
+      counts: { items: 7, work: 2, spaces: 3 },
       property: "Maple Street house",
       spaces: [
         space("seed-space-exterior", "Exterior", "data.sqft"),
         {
           ...space("seed-space-garage", "Garage", "data.sqft"),
           items: [
+            bare("seed-item-dumbbells", "Adjustable dumbbells"),
             {
               type: "item",
               id: "seed-item-water-heater",
               name: "Water heater",
-              missing: ["price"],
+              missing: ["price", "photo", "receipt"],
             },
           ],
         },
-        space("seed-space-kitchen", "Kitchen", "data.sqft"),
+        {
+          ...space("seed-space-kitchen", "Kitchen", "data.sqft"),
+          items: [bare("seed-item-microwave", "Microwave")],
+        },
+        {
+          ...space("seed-space-living-room", "Living room"),
+          items: [bare("seed-item-couch", "Sectional couch")],
+        },
       ],
       no_space: {
         items: [
-          { type: "item", id: "seed-item-router", name: "Office router", missing: ["data.serial"] },
+          {
+            type: "item",
+            id: "seed-item-router",
+            name: "Office router",
+            missing: ["data.serial", "photo", "receipt"],
+          },
+          bare("seed-item-watch", "Running watch"),
+          bare("seed-item-desk", "Standing desk"),
         ],
       },
       work: [
+        {
+          type: "work",
+          id: "seed-work-furnace",
+          name: "Annual furnace service",
+          spaces: [],
+          missing: ["receipt"],
+        },
         {
           type: "work",
           id: "seed-work-water-heater",
@@ -756,9 +994,10 @@ it.effect("the gaps of the made-up household come back, grouped by Space", () =>
       ],
     });
 
-    // The former Property is asked about by name. The landlord's dishwasher was left there.
-    expect(yield* asking({ property: "Elm Court apartment" })).toMatchObject({
-      counts: { items: 1, work: 0, spaces: 1 },
+    // The former Property is asked about by name. The landlord's dishwasher was left there, and
+    // the drain was cleared by someone who was paid, with no Receipt on record.
+    expect(yield* askingAsIs({ property: "Elm Court apartment" })).toMatchObject({
+      counts: { items: 1, work: 1, spaces: 1 },
       spaces: [
         {
           id: "seed-space-elm-kitchen",
@@ -766,31 +1005,13 @@ it.effect("the gaps of the made-up household come back, grouped by Space", () =>
           items: [
             {
               id: "seed-item-elm-dishwasher",
-              missing: ["price", "acquired_on", "data.serial"],
+              missing: ["price", "acquired_on", "data.serial", "photo", "receipt"],
             },
           ],
         },
       ],
+      work: [{ id: "seed-work-elm-drain", missing: ["receipt"] }],
     });
-  }).pipe(Effect.provide(TestDatabase)),
-);
-
-// Asking for a photo and a Receipt is parked in step 6 of the `v1` route, so gaps says nothing
-// of either yet. The made-up household has Documents on some records and none on others.
-it.effect("nothing about a photo or a Receipt is in the reply or in the description", () =>
-  Effect.gen(function* () {
-    yield* loadHousehold;
-    yield* todayIs(TODAY);
-    const paperwork = /photo|receipt|document/i;
-
-    for (const input of [{}, { space: "Kitchen" }, { property: "Elm Court apartment" }]) {
-      const { text, isError } = yield* call(gaps, input);
-      expect(isError).toBe(false);
-      expect(text).not.toMatch(paperwork);
-    }
-    expect(gaps.description).not.toMatch(paperwork);
-    const { jsonSchema } = gaps.input["~standard"];
-    expect(JSON.stringify(jsonSchema.input({ target: "draft-2020-12" }))).not.toMatch(paperwork);
   }).pipe(Effect.provide(TestDatabase)),
 );
 
@@ -801,6 +1022,11 @@ it("gaps says what it is for and what it counts, names the script that uses it, 
     "walk_the_house is the script that uses it",
     "a `data` key that one of its Categories expects",
     "no Price, or with no `acquired_on`",
+    "An Item with no photo, and one with no Receipt unless its Price is zero",
+    "a Receipt on Work that names the Item is not one for the Item",
+    "not DIY and has no Receipt, unless its Cost is zero",
+    "`photo` or `receipt` for a Document the record has none of",
+    "request_upload_link with that `kind`",
     "not DIY and has no Cost",
     "Work dated only to the year",
     "no size",

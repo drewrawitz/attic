@@ -1,5 +1,6 @@
 import { Effect, Schema } from "effect";
 import { SqlClient } from "effect/sql";
+import type { Kind } from "../document.ts";
 import { storedObject, type JsonObject } from "../output.ts";
 import { propertyFor } from "../property.ts";
 import { nameText } from "../save.ts";
@@ -37,6 +38,31 @@ const KEY_HAS_SOMETHING = `CASE own.type
 // DIY Work often cost nothing, so only Work that someone was paid for is missing its Cost.
 const NO_COST = `(work.diy = 0 AND work.cost_cents IS NULL)`;
 
+// The two kinds of Document a record is asked for. The reply names them as request_upload_link
+// takes its `kind`, since that is the tool they go in through.
+const PHOTO = "photo" satisfies Kind;
+const RECEIPT = "receipt" satisfies Kind;
+
+// Whether no Document of a kind is attached to the record of a type that the statement reads,
+// which it names by its type: \`item\` or \`work\`. Only the record's own links count, as the
+// \`inventory\` view counts them, so a Receipt on Work is not one for the Items the Work names.
+// \`document_links_entity\` indexes a record's links.
+const noneAttached = (kind: Kind, type: "item" | "work") =>
+  `NOT EXISTS (SELECT 1 FROM document_links AS link
+                 JOIN documents AS document ON document.id = link.document_id
+                WHERE link.entity_type = '${type}' AND link.entity_id = ${type}.id
+                  AND document.kind = '${kind}')`;
+
+// An Item is asked for a Receipt unless its Price is zero: it was not paid for, such as a gift.
+// One with no Price is asked, since a Receipt is where a Price is read from.
+const ITEM_NO_RECEIPT = `((item.price_cents IS NULL OR item.price_cents > 0)
+                         AND ${noneAttached(RECEIPT, "item")})`;
+
+// Work is asked for a Receipt where it is asked for a Cost, when someone was paid, and also when
+// it has a Cost. A Cost of zero, such as a repair under warranty, has no Receipt to find.
+const WORK_NO_RECEIPT = `(work.diy = 0 AND (work.cost_cents IS NULL OR work.cost_cents > 0)
+                         AND ${noneAttached(RECEIPT, "work")})`;
+
 // A date that is a year and nothing more. A year and a month is close enough to leave alone.
 const DATE_YEAR_ONLY = `coalesce(length(work.date) = 4, 0)`;
 
@@ -48,7 +74,8 @@ const DATE_YEAR_ONLY = `coalesce(length(work.date) = 4, 0)`;
 //             that was given. The database compares the name, so case is ignored the same way
 //             it is everywhere else
 //   held      the Items at the Property that the User still has, in the Space with that name
-//             when one was given. Nothing is asked about a Gone Item
+//             when one was given, each with whether it has no photo and no Receipt. Nothing is
+//             asked about a Gone Item
 //   key_gap   for each of those Items, the `data` keys it has nothing under that one of its
 //             Categories expects. `item_in_category` walks the Category tree, so the keys are
 //             those of the Item's primary Category, its extra ones, and all their parents.
@@ -56,9 +83,10 @@ const DATE_YEAR_ONLY = `coalesce(length(work.date) = 4, 0)`;
 //             else that got there expects nothing
 //   item_gap  the Items with something missing. The ones in no Space come first, because no
 //             Space can be asked for to see them. The rest go by Space and then by name
-//   work_gap  the Work at the Property with something missing, or dated only to the year, newest
-//             first by its date as text, with the Work that has no date last. Each has the names
-//             of the Spaces it names. When a Space was given, it is the Work that names it
+//   work_gap  the Work at the Property with something missing, its Receipt among them, or dated
+//             only to the year, newest first by its date as text, with the Work that has no date
+//             last. Each has the names of the Spaces it names. When a Space was given, it is the
+//             Work that names it
 //
 // What comes back is one row. It has a JSON column for each list: every Space, with how many of
 // its Items have something missing, and the first Items and the first Work, up to the most a
@@ -68,8 +96,9 @@ WITH
   space (id, name, data, has_name) AS (
     SELECT id, name, data, coalesce(name = ?2, 0) FROM spaces WHERE property_id = ?1
   ),
-  held (id, name, space_id, price_cents, acquired_on, data) AS (
-    SELECT item.id, item.name, item.space_id, item.price_cents, item.acquired_on, item.data
+  held (id, name, space_id, price_cents, acquired_on, data, no_photo, no_receipt) AS (
+    SELECT item.id, item.name, item.space_id, item.price_cents, item.acquired_on, item.data,
+           ${noneAttached(PHOTO, "item")}, ${ITEM_NO_RECEIPT}
       FROM items AS item
      WHERE item.property_id = ?1 AND ${NOT_GONE}
        AND (?2 IS NULL OR item.space_id IN (SELECT id FROM space WHERE has_name))
@@ -86,9 +115,11 @@ WITH
                                 WHERE own.key = expected.value AND ${KEY_HAS_SOMETHING}))
      GROUP BY item_id
   ),
-  item_gap (id, name, space_id, no_price, no_acquired_on, missing_keys, position) AS (
+  item_gap (id, name, space_id, no_price, no_acquired_on, missing_keys, no_photo, no_receipt,
+            position) AS (
     SELECT held.id, held.name, space.id,
            held.price_cents IS NULL, held.acquired_on IS NULL, coalesce(key_gap.keys, '[]'),
+           held.no_photo, held.no_receipt,
            row_number() OVER (
              ORDER BY space.id IS NOT NULL, space.name COLLATE NOCASE, space.id,
                       held.name COLLATE NOCASE, held.id
@@ -97,9 +128,11 @@ WITH
       LEFT JOIN key_gap ON key_gap.item_id = held.id
       LEFT JOIN space ON space.id = held.space_id
      WHERE held.price_cents IS NULL OR held.acquired_on IS NULL OR key_gap.item_id IS NOT NULL
+        OR held.no_photo OR held.no_receipt
   ),
-  work_gap (id, name, no_cost, no_date, date_year_only, spaces, position) AS (
-    SELECT work.id, work.title, ${NO_COST}, work.date IS NULL, ${DATE_YEAR_ONLY},
+  work_gap (id, name, no_cost, no_date, no_receipt, date_year_only, spaces, position) AS (
+    SELECT work.id, work.title, ${NO_COST}, work.date IS NULL, ${WORK_NO_RECEIPT},
+           ${DATE_YEAR_ONLY},
            ${jsonList(
              "name",
              `SELECT space.name FROM work_spaces AS done_in
@@ -109,7 +142,8 @@ WITH
            )},
            row_number() OVER (ORDER BY work.date DESC, work.id DESC)
       FROM work
-     WHERE work.property_id = ?1 AND (${NO_COST} OR work.date IS NULL OR ${DATE_YEAR_ONLY})
+     WHERE work.property_id = ?1
+       AND (${NO_COST} OR work.date IS NULL OR ${WORK_NO_RECEIPT} OR ${DATE_YEAR_ONLY})
        AND (?2 IS NULL
             OR work.id IN (SELECT work_id FROM work_spaces
                             WHERE space_id IN (SELECT id FROM space WHERE has_name)))
@@ -124,13 +158,22 @@ SELECT property.data AS property_data,
        )} AS every_space,
        (SELECT count(*) FROM item_gap) AS item_count,
        ${jsonRows(
-         ["id", "name", "space_id", "no_price", "no_acquired_on", "missing_keys"],
+         [
+           "id",
+           "name",
+           "space_id",
+           "no_price",
+           "no_acquired_on",
+           "missing_keys",
+           "no_photo",
+           "no_receipt",
+         ],
          `SELECT * FROM item_gap WHERE position <= ${MOST_SHOWN} ORDER BY position`,
          ["missing_keys"],
        )} AS items,
        (SELECT count(*) FROM work_gap) AS work_count,
        ${jsonRows(
-         ["id", "name", "no_cost", "no_date", "date_year_only", "spaces"],
+         ["id", "name", "no_cost", "no_date", "no_receipt", "date_year_only", "spaces"],
          `SELECT * FROM work_gap WHERE position <= ${MOST_SHOWN} ORDER BY position`,
          ["spaces"],
        )} AS work
@@ -168,6 +211,8 @@ interface ItemRow {
   readonly no_price: number;
   readonly no_acquired_on: number;
   readonly missing_keys: ReadonlyArray<string>;
+  readonly no_photo: number;
+  readonly no_receipt: number;
 }
 
 // A piece of Work with something missing, or dated only to the year. Each flag is 1 or 0.
@@ -176,6 +221,7 @@ interface WorkRow {
   readonly name: string;
   readonly no_cost: number;
   readonly no_date: number;
+  readonly no_receipt: number;
   readonly date_year_only: number;
   /** The names of the Spaces it names. */
   readonly spaces: ReadonlyArray<string>;
@@ -205,16 +251,19 @@ const missingFromSpace = (own: JsonObject, propertyData: JsonObject) => [
     : [`data.${PAINT}`]),
 ];
 
-// An Item as the reply shows it: what it is, and the fields it has nothing in, as save_item
-// takes them. Its own fields come first, and then the keys of its `data` by name.
-const itemEntry = ({ id, name, no_price, no_acquired_on, missing_keys }: ItemRow) => ({
+// An Item as the reply shows it: what it is, and what it has nothing in. Its own fields come
+// first, then the keys of its `data` by name, as save_item takes them, and last the Documents it
+// has none of, as request_upload_link takes their kind.
+const itemEntry = (item: ItemRow) => ({
   type: "item",
-  id,
-  name,
+  id: item.id,
+  name: item.name,
   missing: [
-    ...(no_price === 1 ? ["price"] : []),
-    ...(no_acquired_on === 1 ? ["acquired_on"] : []),
-    ...missing_keys.toSorted().map((key) => `data.${key}`),
+    ...(item.no_price === 1 ? ["price"] : []),
+    ...(item.no_acquired_on === 1 ? ["acquired_on"] : []),
+    ...item.missing_keys.toSorted().map((key) => `data.${key}`),
+    ...(item.no_photo === 1 ? [PHOTO] : []),
+    ...(item.no_receipt === 1 ? [RECEIPT] : []),
   ],
 });
 
@@ -226,16 +275,20 @@ const itemsOf = (first: ReadonlyArray<ItemRow>, spaceId: string | null, count: n
   return { items, ...(count > items.length ? { more_items: count - items.length } : {}) };
 };
 
-// A piece of Work as the reply shows it, with the names of the Spaces it names and the fields it
-// has nothing in, as log_work takes them. A date that is only a year is there, so it is not
-// missing: it is under `year_only`.
-const workEntry = ({ id, name, no_cost, no_date, date_year_only, spaces }: WorkRow) => ({
+// A piece of Work as the reply shows it, with the names of the Spaces it names and what it has
+// nothing in: its fields as log_work takes them, and then its Receipt. A date that is only a year
+// is there, so it is not missing: it is under `year_only`.
+const workEntry = (work: WorkRow) => ({
   type: "work",
-  id,
-  name,
-  spaces,
-  missing: [...(no_cost === 1 ? ["cost"] : []), ...(no_date === 1 ? ["date"] : [])],
-  ...(date_year_only === 1 ? { year_only: ["date"] } : {}),
+  id: work.id,
+  name: work.name,
+  spaces: work.spaces,
+  missing: [
+    ...(work.no_cost === 1 ? ["cost"] : []),
+    ...(work.no_date === 1 ? ["date"] : []),
+    ...(work.no_receipt === 1 ? [RECEIPT] : []),
+  ],
+  ...(work.date_year_only === 1 ? { year_only: ["date"] } : {}),
 });
 
 // The error for a Space that was asked for by a name no Space at the Property has. It lists
@@ -270,12 +323,14 @@ Give \`property\` its id or its name, or leave it out for the one Current proper
 What counts as missing:
 - An Item with nothing under a \`data\` key that one of its Categories expects. An Item is expected to have the keys of every Category it sits under: its primary Category, its extra ones, and all their parents. get_schema shows what each Category expects.
 - An Item with no Price, or with no \`acquired_on\`.
+- An Item with no photo, and one with no Receipt unless its Price is zero, as a gift's is. Only a Document attached to the Item itself counts: a Receipt on Work that names the Item is not one for the Item.
 - Work that is not DIY and has no Cost, and Work with no date, DIY or not.
+- Work that is not DIY and has no Receipt, unless its Cost is zero.
 - A Space with no size, which is \`${SIZE}\` in its \`data\`, or with no paint. Paint that its Property has for every Space counts as the Space's.
 
 Work dated only to the year comes back too. A year is a date, so it is not in \`missing\`: the piece has \`year_only\`, which names \`date\`. Ask for the month. Only the Items the User still has are looked at, so a Gone Item is left out.
 
-The reply starts with \`counts\`: how many Items, pieces of Work, and Spaces have something to fill in themselves, whether or not the reply shows them. \`spaces\` has each Space that is missing something or has such an Item in it, by name, with the Space's own \`missing\` and its \`items\`. \`no_space\` has the Items in no Space. \`work\` is a list of its own, newest first, and each piece has the names of the \`spaces\` it names. Every entry has the record's type, id, and name. \`missing\` has the fields to fill in, as the save tools take them: \`price\` and \`acquired_on\` for save_item, \`cost\` and \`date\` for log_work, and a key of \`data\` as \`data.model\` or \`data.${SIZE}\`.
+The reply starts with \`counts\`: how many Items, pieces of Work, and Spaces have something to fill in themselves, whether or not the reply shows them. \`spaces\` has each Space that is missing something or has such an Item in it, by name, with the Space's own \`missing\` and its \`items\`. \`no_space\` has the Items in no Space. \`work\` is a list of its own, newest first, and each piece has the names of the \`spaces\` it names. Every entry has the record's type, id, and name. \`missing\` has the fields to fill in, as the save tools take them: \`price\` and \`acquired_on\` for save_item, \`cost\` and \`date\` for log_work, and a key of \`data\` as \`data.model\` or \`data.${SIZE}\`. It also has \`${PHOTO}\` or \`${RECEIPT}\` for a Document the record has none of, which goes in through request_upload_link with that \`kind\`, attached to the record.
 
 At most ${MOST_SHOWN} Items and ${MOST_SHOWN} pieces of Work come back. The Items in no Space come first, because no Space can be asked for to see them, and the rest go by Space and then by name. \`more_items\` counts the rest of a Space's, \`more_work\` the rest of the Work, and \`note\` says how to see them.`;
 

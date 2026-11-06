@@ -4,6 +4,7 @@ import { prompts, tools } from "../../src/index.ts";
 import { gaps } from "../../src/tools/gaps.ts";
 import { getRecord } from "../../src/tools/get-record.ts";
 import { DATA_KEYS, getSchema } from "../../src/tools/get-schema.ts";
+import { requestUploadLink } from "../../src/tools/request-upload-link.ts";
 import { saveItem } from "../../src/tools/save-item.ts";
 import { saveSpace } from "../../src/tools/save-space.ts";
 import { undo } from "../../src/tools/undo.ts";
@@ -63,10 +64,16 @@ it.effect(
       expect(inScript.filter((name) => !onList.includes(name))).toEqual([]);
 
       // The Property and what its records are expected to have first, then what is missing,
-      // then a Space and its Items, and last the way back from a wrong save.
-      const inOrder = [getRecord, getSchema, gaps, saveSpace, saveItem, undo].map(
-        ({ name }) => name,
-      );
+      // then a Space and its Items, the way back from a wrong save, and last the photos.
+      const inOrder = [
+        getRecord,
+        getSchema,
+        gaps,
+        saveSpace,
+        saveItem,
+        undo,
+        requestUploadLink,
+      ].map(({ name }) => name);
       expect(inScript.filter((name) => inOrder.includes(name))).toEqual(inOrder);
     }).pipe(Effect.provide(TestDatabase)),
 );
@@ -97,8 +104,8 @@ it.effect("the prompt is the same script under the same name, with a description
   }).pipe(Effect.provide(TestDatabase)),
 );
 
-// What a client does unless it is told not to. A photo and a Receipt are Documents, and each
-// goes in through a link of its own, which would stop the walk.
+// What a client does unless it is told not to. A Receipt is seldom in the Space it is about, so
+// asking for one there would stop the walk for nothing.
 it.effect("the script says what not to do", () =>
   Effect.gen(function* () {
     const text = yield* script;
@@ -106,10 +113,29 @@ it.effect("the script says what not to do", () =>
     for (const said of [
       "Guess a model, a serial number, a Price, or a date.",
       "Make a new Category where one in the tree fits.",
-      "Ask for photos or Receipts.",
+      "Ask for Receipts while going through the Spaces.",
     ]) {
       expect(text, said).toContain(said);
     }
+  }).pipe(Effect.provide(TestDatabase)),
+);
+
+// A photo goes in through a link of its own for each Item, so the walk asks once for a Space,
+// and goes on when the User says no. The Receipts still missing are named at the end.
+it.effect("the script offers photos one Item at a time, and leaves Receipts to the end", () =>
+  Effect.gen(function* () {
+    const text = yield* script;
+
+    for (const said of [
+      "offer once to put in photos of the Items in the Space that have none",
+      "go one Item at a time: call `request_upload_link` with the kind photo",
+      "If the User would rather not, go on to the next Space.",
+      "Name the Items and the Work that still have no Receipt",
+      "Something the User was given has a Price of zero, and then no Receipt is asked for.",
+    ]) {
+      expect(text, said).toContain(said);
+    }
+    expect(walkTheHouse.description).toContain("with their models and photos");
   }).pipe(Effect.provide(TestDatabase)),
 );
 

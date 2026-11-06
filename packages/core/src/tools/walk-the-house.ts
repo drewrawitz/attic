@@ -9,7 +9,8 @@ const NAME = "walk_the_house";
 
 // What the interview fills in. The script opens with it, and the tool and the prompt each say it
 // in their description, so it is written once.
-const FILLED_IN = "its Spaces, their size and paint, and the Items in them, with their models";
+const FILLED_IN =
+  "its Spaces, their size and paint, and the Items in them, with their models and photos";
 
 // The script: one fixed text, written for a client to follow. It ships twice, as the tool and as
 // the prompt below, and both are this one text, so the two cannot come apart.
@@ -19,14 +20,15 @@ const FILLED_IN = "its Spaces, their size and paint, and the Items in them, with
 // them to the list of tools, so that a tool that is renamed breaks the test and not the
 // interview.
 //
-// It tells the client not to ask for photos or Receipts. Each one would stop the walk for a
-// trip through an upload link. Asking for them waits for the part of step 6 of the `v1` route
-// that is still parked.
+// A photo goes in through a link of its own for each Item, so the script offers photos once for
+// a Space, and the User can say no. It leaves Receipts to the end, since one is seldom in the
+// Space it is about. A kind of Document is not a name it sets in backticks, so it says photo
+// plainly.
 const SCRIPT = `This is the script for going through a Property with the User, one Space at a time, to put on record ${FILLED_IN}. Follow the steps in order. Ask a question or two at a time, and save as you go.
 
 1. Settle which Property this is. Ask the User for its name, unless that is already clear. Read it with \`get_record\`, which takes a Property by its name and returns its Spaces and the Items at it. If it is not on record, the error says which Properties are, and a new one is created with \`save_property\`. Give this Property in every call that takes one. Then read \`get_schema\` once, for the Category tree, the keys of \`data\` each Category expects, and the well-known keys of \`data\`.
 
-2. Call \`gaps\` for the Property. It lists what is on record with something still missing, grouped by Space: a Space with no size or no paint, and an Item with no Price, no date, or nothing under a key its Categories expect. Tell the User in a sentence how much is missing.
+2. Call \`gaps\` for the Property. It lists what is on record with something still missing, grouped by Space: a Space with no size or no paint, and an Item with no Price, no date, nothing under a key its Categories expect, no photo, or no Receipt. Tell the User in a sentence how much is missing.
 
 3. Go one Space at a time. Start with the one the User is in now, and let them say which comes next. If the Space is on record, read it with \`get_record\`, by the id the Property's record gave: it has its size, its paint, and the Items in it, so ask only for what is missing. Ask for the Space's size in square feet, and for its paint by surface: the brand, color, code, and sheen on the walls, the trim, and the ceiling. Save them with \`save_space\`, under \`data.sqft\` and \`data.paint\`. Paint that is the same in every Space, such as the trim, goes on the Property once, with \`save_property\`.
 
@@ -35,17 +37,19 @@ const SCRIPT = `This is the script for going through a Property with the User, o
    - Save each one as a Fixture, which stays with the Property when the User leaves, or as a Belonging, which is the User's own. Ask when it is not clear which.
    - Give each one a Category from the tree, by its id.
    - Where a Category of the Item expects a key, such as \`data.model\` or \`data.serial\`, ask for it, and have the User read it off the Item itself, from its plate or its sticker.
-   - Ask what was paid for it and when it was bought, and leave out what the User does not know. A date can be a year, or a year and a month.
+   - Ask what was paid for it and when it was bought, and leave out what the User does not know. A date can be a year, or a year and a month. Something the User was given has a Price of zero, and then no Receipt is asked for.
    - An Item that is on record already is updated by its id. Saved by its name, it would be there twice.
 
 5. Save as you go: one Space, with its Items, before the next. Then nothing is lost if the conversation ends. After each save, tell the User what was saved. A save that was wrong is put right with \`undo\`, which takes the id of the Change the save returned.
 
-6. When every Space is done, or the User wants to stop, call \`gaps\` again. Tell the User what is still missing, and offer to carry on another day.
+6. Then offer once to put in photos of the Items in the Space that have none, which \`gaps\` lists as missing a photo. If the User wants to, go one Item at a time: call \`request_upload_link\` with the kind photo, a title that names the Item, and the Item to attach it to, and give the User the link. The User taps it and takes the photos. One link takes several, so the front of an Item and the plate with its model can go in together. Wait for the User to say they are in before the next Item. If the User would rather not, go on to the next Space.
+
+7. When every Space is done, or the User wants to stop, call \`gaps\` again. Tell the User what is still missing. Name the Items and the Work that still have no Receipt, and say that a Receipt can go in any time: the User shows it in a chat, and it is put in with \`request_upload_link\`. Offer to carry on another day.
 
 Do not:
 - Guess a model, a serial number, a Price, or a date. Save what the User said or read out, and nothing else. What is left out stays missing, and \`gaps\` shows it the next time.
 - Make a new Category where one in the tree fits. \`save_category\` is for an Item that none fits.
-- Ask for photos or Receipts. Each one would stop the walk to be sent through a link of its own, so they are put in another time.`;
+- Ask for Receipts while going through the Spaces. A Receipt is seldom in the Space it is about, so they come at the end.`;
 
 const DESCRIPTION = `Returns the script for going through a Property with the User: an interview, one Space at a time, that puts on record ${FILLED_IN}. Call it when the User wants to set up a Property, or to go through one, and then follow what comes back. The script says which tools to call and in what order. This tool reads no record and writes none. It takes no input.`;
 
