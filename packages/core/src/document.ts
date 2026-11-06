@@ -34,8 +34,25 @@ export const FILE_TYPES: Readonly<Record<string, ReadonlyArray<string>>> = {
 export const MOST_FILE_MEGABYTES = 25;
 export const MOST_FILE_BYTES = MOST_FILE_MEGABYTES * 1024 * 1024;
 
-// The set of a Document that holds the records it is attached to.
-const ATTACHED = (() => {
+/**
+ * How many days a file stays in the bucket once no Document has it: since the Change that took
+ * its Document out, or since R2 got it, for a file whose Document was never written. Inside
+ * them, undo can bring a Document back with its file. Then the nightly run removes the file
+ * for good, and an undo that would bring its Document back is refused.
+ */
+export const DAYS_A_FILE_IS_KEPT = 30;
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Whether a file that no Document has had since one time is past keeping at another: more than
+ * those days later. Both are in milliseconds.
+ */
+export const pastKeeping = (since: number, now: number) =>
+  now - since > DAYS_A_FILE_IS_KEPT * DAY_MS;
+
+/** The set of a Document that holds the records it is attached to. */
+export const ATTACHED = (() => {
   const set = SHAPES.document.links.find(({ name }) => name === "attached_to");
   if (set === undefined) throw new Error("records.ts gives a Document no attached_to set.");
   return set;
@@ -307,4 +324,52 @@ export const documentFrom = Effect.fnUntraced(function* (
       : [{ ...row, statement: sql.unsafe(ATTACHING, [id, JSON.stringify(records)]) }];
   const saved = yield* runSave([...(vendor?.steps ?? []), row, ...attaching]);
   return { document_id: id, change_id: saved.change_id };
+});
+
+/** A file in the bucket, as a list of the bucket gives it: its key, its size, and when R2 got it. */
+export interface ListedFile {
+  readonly key: string;
+  readonly size: number;
+  readonly uploaded: Date;
+}
+
+// Of the keys in the JSON list `?1`, the ones no Document has its file under, each with the time
+// of the latest Change of the Document whose id it is, or null when no Change has one. A file is
+// stored under its Document's id (ADR 0008), so that is how its Changes are found. No Change
+// can touch a Document while it is out, so the latest is the one that took it out.
+const NO_DOCUMENT_HAS = `
+  SELECT listed.value AS key,
+         (SELECT max(change.created_at)
+            FROM change_records AS touched
+            JOIN changes AS change ON change.id = touched.change_id
+           WHERE touched.entity_type = 'document' AND touched.entity_id = listed.value)
+           AS last_change
+    FROM json_each(?) AS listed
+   WHERE listed.value NOT IN (SELECT r2_key FROM ${SHAPES.document.table})
+   ORDER BY listed.key`;
+
+/**
+ * Of these files, the ones that are past keeping now, as `removable`, and how many others that
+ * no Document has are still waiting out their days. A file no Change has is one R2 took when
+ * the write after it failed (ADR 0008), and its days count from when R2 got it. Every file a
+ * Document has stays. It is one read, for as many files as one list of the bucket gives.
+ */
+export const filesPastKeeping = Effect.fnUntraced(function* (files: ReadonlyArray<ListedFile>) {
+  const sql = yield* SqlClient.SqlClient;
+  const now = yield* Clock.currentTimeMillis;
+  const unclaimed = yield* sql.unsafe<{ key: string; last_change: string | null }>(
+    NO_DOCUMENT_HAS,
+    [JSON.stringify(files.map(({ key }) => key))],
+  );
+  const byKey = new Map(files.map((file) => [file.key, file]));
+  const judged = unclaimed.flatMap(({ key, last_change }) => {
+    const file = byKey.get(key);
+    if (file === undefined) return [];
+    const since = last_change === null ? file.uploaded.getTime() : Date.parse(last_change);
+    return [{ file, past: pastKeeping(since, now) }];
+  });
+  return {
+    removable: judged.filter(({ past }) => past).map(({ file }) => file),
+    waiting: judged.filter(({ past }) => !past).length,
+  };
 });

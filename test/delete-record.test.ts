@@ -124,6 +124,7 @@ test(
                 "quote",
                 "work",
                 "note",
+                "document",
               ],
             },
             id: text,
@@ -144,7 +145,7 @@ test(
 
     // What the description has to say, because nothing else tells a client.
     for (const said of [
-      "an Item, Work, a Vendor, a Note, a Category, a Space, a Project, or a Quote",
+      "an Item, Work, a Vendor, a Note, a Category, a Space, a Project, a Quote, or a Document",
       "undo puts back what a Change took out",
       "an Item that was returned or thrown away",
       "An Item that was sold, given away, lost, stolen, or destroyed is not deleted.",
@@ -159,7 +160,11 @@ test(
       "An Item that would then have a Category twice keeps it once.",
       "A Property is never deleted.",
       "The Category `other` is never deleted either",
-      "A record with a Schedule or a Document on it cannot be deleted yet.",
+      "A deleted Item or piece of Work comes off every Document on it.",
+      "A Document that is then on nothing else goes with it",
+      "A Document's file is kept for 30 days after the Document is deleted",
+      "After them, the undo is refused.",
+      "An Item with a Schedule on it cannot be deleted yet.",
       "what was `removed`, and what was `updated`",
     ]) {
       expect(tool("delete_record")?.description, said).toContain(said);

@@ -44,6 +44,12 @@ export interface LinkSet {
    * of one type has none. No foreign key holds a link of such a set to its record.
    */
   readonly typeColumn?: string;
+  /**
+   * The pointer column of the row whose record is never in the set as well: an Item's primary
+   * Category is never one of its extra ones. A set without one can hold the record its row
+   * points at: a Document can name a Vendor and be attached to it too.
+   */
+  readonly besides?: string;
 }
 
 /**
@@ -197,6 +203,7 @@ export const SHAPES = {
         from: "item_id",
         to: "category_id",
         of: ["category"],
+        besides: "category_id",
       },
     ],
     namedBy: "name",

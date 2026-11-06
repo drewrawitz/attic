@@ -1,5 +1,6 @@
-import { Effect, Schema } from "effect";
+import { Clock, Effect, Schema } from "effect";
 import { SqlClient } from "effect/sql";
+import { DAYS_A_FILE_IS_KEPT, pastKeeping } from "../document.ts";
 import {
   asListed,
   EACH_TYPE,
@@ -37,6 +38,7 @@ An undo is refused, and nothing is written, when it would lose something, or lea
 - A Category it would bring back would be under one that is under it, however far down, which is a loop: its parent was cleared, that parent was put under it, and the clearing is being undone. The error names every Category in the loop. Take one of the others out from under its parent first, with save_category, or undo the Change that put it there.
 - A record it would move back to another Property has had a Note added to it since. A save that moves a record moves its Notes, and an undo would leave this one where it is. The error names the Note and the Change that added it. Undo that Change first, and then this one.
 - A Note it would bring back is on a record that is elsewhere now, so the Note would come back at a Property its record is not at. The error names both, and the Change that moved the record, when one did. Undo that Change first, or move the record back.
+- The Change took a Document out more than ${DAYS_A_FILE_IS_KEPT} days ago. A Document's file is removed ${DAYS_A_FILE_IS_KEPT} days after the Document goes, so there is no file to bring back. The error names the Document. A Change that took out an Item and its Receipt with it is refused the same way, since a Change is undone whole.
 
 An undo is a Change too, so it can be undone, and then the records are as the first Change left them. Changes are kept forever, and undoing one does not remove it.
 
@@ -238,7 +240,8 @@ const LATER = `
 // What an undo reads of the Change `?1` first, in one statement: one row, or none when there
 // is no such Change.
 const CHANGE = compact(`
-  SELECT ${jsonRows(["type", "id", "name", "outcome"], TOUCHED)} AS touched,
+  SELECT to_undo.created_at,
+         ${jsonRows(["type", "id", "name", "outcome"], TOUCHED)} AS touched,
          ${jsonRows(["id", "tool", "created_at", "undoes"], LATER)} AS later
     FROM changes AS to_undo
    WHERE to_undo.id = ?1`);
@@ -290,6 +293,24 @@ const refuseChangedSince = (toUndo: string, later: ReadonlyArray<Later>) => {
     `records the Change "${toUndo}" touched have been changed again since, and undoing it would write over that. Undo the later Changes first, newest first:`,
   );
 };
+
+// Refuses an undo that would put back a Document whose file the nightly run may have removed:
+// one the Change took out more than the days a file is kept. The run counts them from the
+// latest Change of the Document, which is this one or a later one, so the file is there for as
+// long as this lets an undo through.
+const refusePastKeeping = Effect.fnUntraced(function* (
+  toUndo: string,
+  createdAt: string,
+  touched: ReadonlyArray<Touched>,
+) {
+  const documents = pick(touched, "document", ["put_back"]);
+  if (documents.length === 0) return;
+  if (!pastKeeping(Date.parse(createdAt), yield* Clock.currentTimeMillis)) return;
+  yield* refuseFor(
+    documents.map((document) => `The ${named(document)}.`),
+    `the Change "${toUndo}" took out these Documents more than ${DAYS_A_FILE_IS_KEPT} days ago, at ${createdAt}. A Document's file is removed ${DAYS_A_FILE_IS_KEPT} days after the Document goes, so they cannot come back:`,
+  );
+});
 
 // One read an undo makes before it writes: a SELECT as SQL on one line, and the fields of
 // its rows.
@@ -837,12 +858,16 @@ export const undo = defineTool({
   run: ({ change_id: toUndo }) =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
-      const [change] = yield* sql.unsafe<{ touched: string; later: string }>(CHANGE, [toUndo]);
+      const [change] = yield* sql.unsafe<{ created_at: string; touched: string; later: string }>(
+        CHANGE,
+        [toUndo],
+      );
       if (change === undefined) return yield* noChange(toUndo);
       const touched = yield* touchedBy(toUndo, JSON.parse(change.touched));
 
       // Everything is checked before anything is written.
       yield* refuseChangedSince(toUndo, JSON.parse(change.later));
+      yield* refusePastKeeping(toUndo, change.created_at, touched);
       const blocks = yield* whatBlocks(toUndo, touched);
       yield* refuseInUse(toUndo, touched, blocks.inUse);
       yield* refuseMissing(blocks.missing);

@@ -1,10 +1,15 @@
 import type { WorkerEnv } from "../../../alchemy.run.ts";
 import { ChoreFailure, type Chore, type NightlyRun } from "./chore.ts";
 import { databaseBackup } from "./database-backup.ts";
+import { fileSweep } from "./file-sweep.ts";
 
 // The nightly run. The Cron Trigger in alchemy.run.ts fires the Worker's `scheduled` handler
-// once a night, and the handler runs these chores, one after another.
-const nightlyChores = (env: WorkerEnv): ReadonlyArray<Chore> => [databaseBackup(env)];
+// once a night, and the handler runs these chores, one after another. The database is exported
+// before any file is removed.
+const nightlyChores = (env: WorkerEnv): ReadonlyArray<Chore> => [
+  databaseBackup(env),
+  fileSweep(env),
+];
 
 // How many subrequests one run makes at the most, between all of its chores. A cron run on
 // Workers Free gets 50 (ADR 0012), and a `fetch` past them fails. The run stops five short,

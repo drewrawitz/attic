@@ -22,9 +22,11 @@ import { walkTheHouse, walkTheHousePrompt } from "./tools/walk-the-house.ts";
 
 export { today } from "./dates.ts";
 export {
+  DAYS_A_FILE_IS_KEPT,
   DOCUMENT_PATH,
   documentToOpen,
   FILE_TYPES,
+  filesPastKeeping,
   MOST_FILE_BYTES,
   MOST_FILE_MEGABYTES,
   shownRequest,
@@ -32,6 +34,7 @@ export {
   UPLOAD_PATH,
   type ArrivedFile,
   type DocumentToOpen,
+  type ListedFile,
 } from "./document.ts";
 export { receiveFile, type Arrival } from "./tools/request-upload-link.ts";
 export { Currency } from "./money.ts";
