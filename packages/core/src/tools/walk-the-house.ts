@@ -20,8 +20,7 @@ const FILLED_IN = "its Spaces, their size and paint, and the Items in them, with
 // interview.
 //
 // It tells the client not to ask for photos or Receipts. Each one would stop the walk for a
-// trip through an upload link. Asking for them waits for the part of step 6 of the `v1` route
-// that is still parked.
+// trip through an upload link, so they go in another time.
 const SCRIPT = `This is the script for going through a Property with the User, one Space at a time, to put on record ${FILLED_IN}. Follow the steps in order. Ask a question or two at a time, and save as you go.
 
 1. Settle which Property this is. Ask the User for its name, unless that is already clear. Read it with \`get_record\`, which takes a Property by its name and returns its Spaces and the Items at it. If it is not on record, the error says which Properties are, and a new one is created with \`save_property\`. Give this Property in every call that takes one. Then read \`get_schema\` once, for the Category tree, the keys of \`data\` each Category expects, and the well-known keys of \`data\`.
