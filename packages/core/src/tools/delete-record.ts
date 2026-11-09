@@ -99,9 +99,18 @@ const usedIn = (way: WayOfUsing, which: string, nameOf: string) => {
            ORDER BY record.id`;
 };
 
+// The records a delete's read finds going, as rows of their type, their id, and their name. The
+// read lists them once, as the JSON list `listed.going`, and each part of it that asks which
+// records go reads them from that list. SQLite copies a CTE into each place that names it, and
+// D1 refuses to read a CTE once the statement holds 100 tables, counting every copy: SQLite
+// 3.54.1 holds the tables to SQLITE_LIMIT_EXPR_DEPTH, which workerd sets to 100. The CTE
+// `going` was named once for each way a record is used, and a read of an Item held too many.
+const GOING = `(SELECT value ->> 'type' AS type, value ->> 'id' AS id, value ->> 'name' AS name
+                  FROM json_each(listed.going))`;
+
 // The records of a type among the records a delete's read finds going, as the end of a test
 // of what is pointed at.
-const amongGoing = (type: RecordType) => `IN (SELECT id FROM going WHERE type = '${type}')`;
+const amongGoing = (type: RecordType) => `IN (SELECT id FROM ${GOING} WHERE type = '${type}')`;
 
 // The ids in the JSON list `?1`, as the end of a test of what is pointed at. A statement of a
 // delete is about every record of a type that goes, and is given their ids.
@@ -233,13 +242,12 @@ const withGoing = (type: Deletable, shape: RecordShape) => {
 // How a Note is on a record: by the record's type and its id, in these two columns.
 const NOTE_ON = SHAPES.note.attachedBy;
 
-// The Notes on the records that go, by id. A statement that reads this names those records
-// `going`: the record itself, and what goes with it.
+// The Notes on the records that go, by id.
 const NOTES_ON_GOING = `
   SELECT 'note' AS type, record.id, ${nameOfRow(SHAPES.note, "record")} AS name
     FROM ${SHAPES.note.table} AS record
-    JOIN going ON going.type = record.${NOTE_ON.typeColumn}
-              AND going.id = record.${NOTE_ON.idColumn}
+    JOIN ${GOING} AS going ON going.type = record.${NOTE_ON.typeColumn}
+                          AND going.id = record.${NOTE_ON.idColumn}
    ORDER BY record.id`;
 
 // A record that goes, with how many Schedules are on it.
@@ -255,7 +263,7 @@ const SCHEDULES_ON_GOING = `
     SELECT going.type, going.id, going.name,
            (SELECT count(*) FROM schedules AS schedule
              WHERE going.type = 'item' AND schedule.item_id = going.id) AS schedules
-      FROM going)
+      FROM ${GOING} AS going)
    WHERE schedules > 0
    ORDER BY type, id`;
 
@@ -266,7 +274,8 @@ type StatementText = string;
 // such record. Every delete reads the record's name, the records that go, the Notes on any of
 // those, and the ones among them with a Schedule on them, each list as a JSON column. `used`
 // has a column for each way a record that goes is used, with the records that use it that
-// way. `more` is what a merge reads beside those, and the join it reads it from.
+// way. `more` is what a merge reads beside those, and the join it reads it from. The records
+// that go are read once, as `listed`, and the rest read them from there as `GOING`.
 const readOf = (
   type: Deletable,
   shape: RecordShape,
@@ -278,16 +287,19 @@ const readOf = (
 ): StatementText => {
   const columns = [
     `${nameOfRow(shape, "record")} AS name`,
-    `${jsonRows(LISTED_FIELDS, "SELECT type, id, name FROM going ORDER BY type, id")} AS going`,
+    `listed.going`,
     `${jsonRows(LISTED_FIELDS, NOTES_ON_GOING)} AS notes`,
     `${jsonRows([...LISTED_FIELDS, "schedules"], SCHEDULES_ON_GOING)} AS schedules`,
     ...used,
     ...more.columns,
   ];
+  const listed = jsonRows(LISTED_FIELDS, "SELECT type, id, name FROM going ORDER BY type, id");
   return compact(`
     ${withGoing(type, shape)}
     SELECT ${columns.join(", ")}
-      FROM ${shape.table} AS record ${more.join}
+      FROM ${shape.table} AS record
+      JOIN (SELECT ${listed} AS going) AS listed
+      ${more.join}
      WHERE record.id = ?1`);
 };
 
