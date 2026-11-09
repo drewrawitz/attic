@@ -1,5 +1,6 @@
 import { Effect, Schema } from "effect";
 import { SqlClient } from "effect/sql";
+import { notGone } from "../item.ts";
 import { formatRow, isObject, storedObject, type JsonObject } from "../output.ts";
 import { propertyNamed } from "../property.ts";
 import { jsonList, jsonObject } from "../sql.ts";
@@ -97,12 +98,6 @@ const items = (where: string) =>
       WHERE ${where}
       ORDER BY item.name COLLATE NOCASE, item.id`,
   );
-
-/**
- * The Items the User still has, in a statement that reads Items as `item`. A Gone Item keeps its
- * row for the money trail. It is no longer in a Space or at a Property.
- */
-export const NOT_GONE = `item.status IN ('active', 'listed')`;
 
 // Spaces as a list shows them, by name.
 const spaces = (where: string) =>
@@ -233,7 +228,7 @@ const STATEMENTS: Readonly<Record<Type, (type: Type) => string>> = {
            ${spaces("space.property_id = record.id")},
            ${projects("project.property_id = record.id")},
            ${schedules("schedule.property_id = record.id")},
-           ${items(`item.property_id = record.id AND ${NOT_GONE}`)},
+           ${items(`item.property_id = record.id AND ${notGone("item.status")}`)},
            ${work("work.property_id = record.id")},
            ${documents(type)},
            ${notes("property_id = record.id AND entity_type IS NULL")},
@@ -248,7 +243,7 @@ const STATEMENTS: Readonly<Record<Type, (type: Type) => string>> = {
   space: (type) => `
     SELECT record.id, record.name, record.property_id, property.name AS property,
            record.data, property.data AS from_property,
-           ${items(`item.space_id = record.id AND ${NOT_GONE}`)},
+           ${items(`item.space_id = record.id AND ${notGone("item.status")}`)},
            ${work("work.id IN (SELECT work_id FROM work_spaces WHERE space_id = record.id)")},
            ${projects("project.id IN (SELECT project_id FROM project_spaces WHERE space_id = record.id)")},
            ${documents(type)},

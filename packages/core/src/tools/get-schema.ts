@@ -1,6 +1,9 @@
 import { Effect, Option, Schema } from "effect";
 import { SqlClient } from "effect/sql";
+import type { DocumentStatus } from "../document.ts";
+import type { ItemStatus } from "../item.ts";
 import { formatRow } from "../output.ts";
+import type { ProjectStatus } from "../project.ts";
 import { defineTool, NoInput } from "../tool.ts";
 
 // The conventions the data follows: the header of migrations/0001_init.sql without its first
@@ -113,6 +116,41 @@ export const FROM_PROPERTY_KEYS = ["paint", "flooring"] as const satisfies Reado
   keyof typeof DATA_KEYS.property
 >;
 
+/**
+ * What each status means, for each kind of record that has one, in the order of its table's
+ * CHECK list. That list says which statuses there are and not what they mean, and a client's SQL
+ * goes by both. A Gone Item's status says so first. Each list is the one in the module of its
+ * record, so a status with no meaning here stops the type check.
+ */
+export const STATUS_MEANINGS = {
+  item: {
+    active: "The User has it.",
+    listed: "The User has it, and it is for sale, as `data.listing` says.",
+    sold: "Gone: it was sold. `proceeds_cents` is what it sold for, and `data.sold_to` says who bought it.",
+    given: "Gone: it was given away. `data.donated_to` says who it went to.",
+    lost: "Gone: it was lost. `proceeds_cents` is what an insurance claim paid, and is null until one pays. One that turns up goes back to active.",
+    stolen:
+      "Gone: it was stolen. `proceeds_cents` is what an insurance claim paid, and is null until one pays.",
+    destroyed:
+      "Gone: it was destroyed. `proceeds_cents` is what an insurance claim paid, and is null until one pays.",
+  },
+  project: {
+    open: "Still being planned or worked on.",
+    done: "Finished. `end_on` says when.",
+    dropped: "Given up. `end_on` says when, and its Quotes stay for next time.",
+  },
+  document: {
+    pending: "Attached to no record yet.",
+    needs_review: "Not in use yet. Nothing sets it.",
+    filed: "Attached to one record or more.",
+    ignored: "Not in use yet. Nothing sets it.",
+  },
+} satisfies {
+  readonly item: Readonly<Record<ItemStatus, string>>;
+  readonly project: Readonly<Record<ProjectStatus, string>>;
+  readonly document: Readonly<Record<DocumentStatus, string>>;
+};
+
 // A row of sqlite_master: a table or view, and the statement that created it.
 interface Definition {
   readonly type: "table" | "view";
@@ -166,7 +204,7 @@ const categoryTree = (rows: ReadonlyArray<CategoryRow>): ReadonlyArray<Category>
 export const getSchema = defineTool({
   name: "get_schema",
   description:
-    "Returns how Attic stores its records: the definition of every table and view, the conventions the data follows, the Category tree with the `data` keys each Category expects, the well-known `data` keys for each kind of record, the keys of a Property's `data` that a Space shows as `from_property`, and a warning about comparing Partial dates. An Item is expected to have the keys of every Category it sits under, parents included. Call it before writing SQL or saving records. It takes no input.",
+    "Returns how Attic stores its records: the definition of every table and view, the conventions the data follows, the Category tree with the `data` keys each Category expects, the well-known `data` keys for each kind of record, what each status of an Item, a Project, and a Document means, the keys of a Property's `data` that a Space shows as `from_property`, and a warning about comparing Partial dates. An Item is expected to have the keys of every Category it sits under, parents included. Call it before writing SQL or saving records. It takes no input.",
   input: NoInput,
   annotations: { readOnlyHint: true },
   run: () =>
@@ -194,6 +232,7 @@ export const getSchema = defineTool({
         views: defined("view"),
         categories: categoryTree(categories),
         data_keys: DATA_KEYS,
+        status_meanings: STATUS_MEANINGS,
         from_property_keys: FROM_PROPERTY_KEYS,
       };
     }),

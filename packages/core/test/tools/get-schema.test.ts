@@ -1,9 +1,11 @@
 import { expect, it } from "@effect/vitest";
 import { Effect } from "effect";
 import { SqlClient } from "effect/sql";
+import { GONE_STATUSES } from "../../src/item.ts";
+import { SHAPES } from "../../src/records.ts";
 import { getSchema } from "../../src/tools/get-schema.ts";
 import { call } from "../call.ts";
-import { migrations, TestDatabase } from "../TestDatabase.ts";
+import { checkList, migrations, TestDatabase } from "../TestDatabase.ts";
 
 interface Definition {
   readonly name: string;
@@ -16,6 +18,7 @@ interface Published {
   readonly views: ReadonlyArray<Definition>;
   readonly categories: ReadonlyArray<Category>;
   readonly data_keys: Readonly<Record<string, Readonly<Record<string, string>>>>;
+  readonly status_meanings: Readonly<Record<string, Readonly<Record<string, string>>>>;
   readonly from_property_keys: ReadonlyArray<string>;
   readonly partial_dates: string;
   readonly conventions: string;
@@ -169,6 +172,26 @@ it.effect(
       // A Space has a `sqft` of its own, so the Property's says whose size it is.
       expect(data_keys.property?.sqft).toContain("the whole Property");
     }).pipe(Effect.provide(TestDatabase)),
+);
+
+// A table's CHECK list says which statuses there are, and not what they mean. A status with no
+// meaning, or a meaning for one the table does not allow, would send a client's SQL after rows
+// that cannot be there.
+it.effect("get_schema says what each status means, for the statuses each table allows", () =>
+  Effect.gen(function* () {
+    const { status_meanings } = yield* published;
+
+    expect(Object.keys(status_meanings)).toEqual(["item", "project", "document"]);
+    for (const [type, meanings] of Object.entries(status_meanings)) {
+      const { table } = SHAPES[type as keyof typeof SHAPES];
+      expect(Object.keys(meanings), type).toEqual(yield* checkList(table, "status"));
+    }
+    // A Gone Item's status says so first, and no other status does.
+    const saysGone = Object.entries(status_meanings.item ?? {})
+      .filter(([, meaning]) => meaning.startsWith("Gone:"))
+      .map(([status]) => status);
+    expect(saysGone).toEqual(GONE_STATUSES);
+  }).pipe(Effect.provide(TestDatabase)),
 );
 
 it.effect("get_schema warns that comparing dates as plain text misses Partial dates", () =>

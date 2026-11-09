@@ -1,11 +1,12 @@
 import { Effect, Schema } from "effect";
 import { SqlClient } from "effect/sql";
+import { notGone } from "../item.ts";
 import { storedObject, type JsonObject } from "../output.ts";
 import { propertyFor } from "../property.ts";
 import { nameText } from "../save.ts";
 import { compact, jsonList, jsonRows, rowsIn } from "../sql.ts";
 import { defineTool, noRecord, optional, ToolError } from "../tool.ts";
-import { fromProperty, NOT_GONE } from "./get-record.ts";
+import { fromProperty } from "./get-record.ts";
 import type { DATA_KEYS } from "./get-schema.ts";
 
 // The most Items a reply shows, and the most pieces of Work. A Property can have hundreds of
@@ -71,7 +72,7 @@ WITH
   held (id, name, space_id, price_cents, acquired_on, data) AS (
     SELECT item.id, item.name, item.space_id, item.price_cents, item.acquired_on, item.data
       FROM items AS item
-     WHERE item.property_id = ?1 AND ${NOT_GONE}
+     WHERE item.property_id = ?1 AND ${notGone("item.status")}
        AND (?2 IS NULL OR item.space_id IN (SELECT id FROM space WHERE has_name))
   ),
   key_gap (item_id, keys) AS (
