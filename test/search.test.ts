@@ -6,8 +6,8 @@ import { mcp } from "./support/mcp-client.ts";
 
 // What `search` matches is tested on Node SQLite, in packages/core. D1 is not the same build
 // (ADR 0006), and it has limits of its own that Node SQLite does not: at most five SELECTs in
-// one UNION, and at most 50 bytes in a LIKE pattern. So these go through the real Worker on
-// local D1, with the made-up household loaded.
+// one UNION, at most 50 bytes in a LIKE pattern, and no CTE read once the statement holds 100
+// tables. So these go through the real Worker on local D1, with the made-up household loaded.
 
 // What `search` sends back: the records it found, and a note when there were more.
 interface Found {
