@@ -17,30 +17,25 @@ it.effect("each list of statuses is the CHECK list of its table, in its order", 
   }).pipe(Effect.provide(TestDatabase)),
 );
 
-it.effect("notGone holds for an Item the User still has, and not for a Gone Item", () =>
+// The tools leave a Gone Item out through notGone. The inventory view is SQL a migration wrote,
+// and cannot ask it, so this holds the two together by what each returns: a status that is added
+// takes a migration that writes the view again.
+it.effect("notGone and the inventory view keep the Items the User still has, and no others", () =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
+    // Each is a Belonging at no Property, so its status is all the view goes by.
     for (const status of ITEM_STATUSES) {
       yield* sql`INSERT INTO items (id, name, status) VALUES (${status}, 'Couch', ${status})`;
     }
+    const statuses = (rows: ReadonlyArray<{ status: string }>) => rows.map(({ status }) => status);
 
     const held = yield* sql.unsafe<{ status: string }>(
-      `SELECT status FROM items AS item WHERE ${notGone("item.status")} ORDER BY rowid`,
+      `SELECT status FROM items AS item WHERE ${notGone("item.status")} ORDER BY status`,
     );
+    const inInventory = yield* sql<{ status: string }>`
+      SELECT status FROM inventory ORDER BY status`;
 
-    expect(held.map(({ status }) => status)).toEqual(["active", "listed"]);
-  }).pipe(Effect.provide(TestDatabase)),
-);
-
-// The tools leave a Gone Item out through notGone. The inventory view is SQL a migration wrote,
-// and cannot ask it, so this holds the two together: a status that is added takes a migration
-// that writes the view again.
-it.effect("the inventory view leaves out the Items the tools leave out", () =>
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    const [view] = yield* sql<{ sql: string }>`
-      SELECT sql FROM sqlite_master WHERE type = 'view' AND name = 'inventory'`;
-
-    expect(view?.sql).toContain(`WHERE ${notGone("i.status")}`);
+    expect(statuses(held)).toEqual(["active", "listed"]);
+    expect(statuses(inInventory)).toEqual(statuses(held));
   }).pipe(Effect.provide(TestDatabase)),
 );
