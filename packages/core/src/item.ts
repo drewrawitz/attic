@@ -30,12 +30,20 @@ export const GONE_STATUSES: ReadonlyArray<ItemStatus> = [
 ];
 
 /**
- * The SQL that holds for an Item the User still has, given the column its status is read from,
- * such as `item.status`. A Gone Item is left out of the Items a Property and a Space show, and
- * of what `gaps` asks about. Every tool that leaves one out asks this, so a status that is added
- * is left out everywhere or nowhere.
+ * The columns a statement reads an Item's status from: `item.status` where it reads the `items`
+ * table as `item`, and `record.status` in `search`, where only an Item has a status. The column
+ * goes into the SQL as written, so only one named here can, and a statement that reads the
+ * status under another name adds it here.
  */
-export const notGone = (statusColumn: string) =>
-  `${statusColumn} IN (${ITEM_STATUSES.filter((status) => !GONE_STATUSES.includes(status))
+export type StatusColumn = "item.status" | "record.status";
+
+/**
+ * The SQL that holds for an Item the User still has, given the column its status is read from.
+ * A Gone Item is left out of the Items a Property and a Space show, and of what `gaps` asks
+ * about. Every tool that leaves one out asks this, so a status that is added is left out
+ * everywhere or nowhere.
+ */
+export const notGone = (column: StatusColumn) =>
+  `${column} IN (${ITEM_STATUSES.filter((status) => !GONE_STATUSES.includes(status))
     .map((status) => `'${status}'`)
     .join(", ")})`;
