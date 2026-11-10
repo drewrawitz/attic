@@ -16,6 +16,23 @@ export const KINDS = ["photo", "receipt", "quote", "manual", "warranty", "other"
 export type Kind = (typeof KINDS)[number];
 
 /**
+ * The statuses a Document can have, in the order of the CHECK list of the `documents` table,
+ * which a test holds it to. A Document's status follows what it is attached to: pending while
+ * that is no record, and filed while it is one or more. The write that attaches the first record
+ * files it, here, and a delete that would leave one filed on nothing takes it out with the record
+ * (ADR 0011). needs_review and ignored are not in use yet, and nothing sets them. `get_schema`
+ * says what each status means.
+ */
+export const DOCUMENT_STATUSES = ["pending", "needs_review", "filed", "ignored"] as const;
+
+export type DocumentStatus = (typeof DOCUMENT_STATUSES)[number];
+
+// The status of a Document that is attached to a record or more, and of one that is attached to
+// none.
+const FILED: DocumentStatus = "filed";
+const PENDING: DocumentStatus = "pending";
+
+/**
  * The types a Document's file can be, each with the endings of a file name that has it: images
  * and PDFs. HEIF is the name some systems give a HEIC photo. Not SVG, which is a page that can
  * run script, and a Document's file is to be opened from Attic's own address.
@@ -281,7 +298,7 @@ export const documentFrom = Effect.fnUntraced(function* (
       // A Document is `filed` once it is attached to a record.
       ...(more.length === 0
         ? []
-        : ["status = CASE status WHEN 'pending' THEN 'filed' ELSE status END"]),
+        : [`status = CASE status WHEN '${PENDING}' THEN '${FILED}' ELSE status END`]),
       ...updatedNow(SHAPES.document),
     ];
     const document: Listed = { type: "document", id: had.id, name: had.title };
@@ -305,7 +322,7 @@ export const documentFrom = Effect.fnUntraced(function* (
   const document: Listed = { type: "document", id, name: request.title };
   const row = insertRow(sql, document, {
     property_id: request.property_id,
-    status: records.length > 0 ? "filed" : "pending",
+    status: records.length > 0 ? FILED : PENDING,
     kind: request.kind,
     title: request.title,
     doc_date: request.doc_date ?? null,

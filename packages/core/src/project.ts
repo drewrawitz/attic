@@ -2,7 +2,14 @@ import { Effect } from "effect";
 import { SqlClient } from "effect/sql";
 import { noRecord } from "./tool.ts";
 
-/** The statuses a Project can have. One that is open is still being planned or worked on. */
+/**
+ * The statuses a Project can have, in the order of the CHECK list of the `projects` table, which
+ * a test holds it to. A new Project is open: still being planned or worked on. A save that takes
+ * it from open to done or dropped closes it, and its `end_on` is then today unless the save gives
+ * one. done and dropped can follow each other, and open can follow either. A Project that is
+ * closed already keeps its `end_on`, and the save that opens it again can clear it (ADR 0010).
+ * `get_schema` says what each status means.
+ */
 export const PROJECT_STATUSES = ["open", "done", "dropped"] as const;
 
 export type ProjectStatus = (typeof PROJECT_STATUSES)[number];

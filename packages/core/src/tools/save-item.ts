@@ -2,6 +2,7 @@ import { Effect, Schema } from "effect";
 import { SqlClient } from "effect/sql";
 import { categoryAmong, DEFAULT_CATEGORY, everyCategory } from "../category.ts";
 import { partialDate, today } from "../dates.ts";
+import { GONE_STATUSES, ITEM_STATUSES, type ItemStatus } from "../item.ts";
 import { amount, formatCents, inCents } from "../money.ts";
 import { newNote, noteOn, notesMovedTo } from "../note.ts";
 import { propertyForOnce } from "../property.ts";
@@ -65,14 +66,8 @@ What comes back is the id of the Change that recorded the save, and every record
 
 const SCOPES = ["fixture", "belonging"] as const;
 
-const STATUSES = ["active", "listed", "sold", "given", "lost", "stolen", "destroyed"] as const;
-type Status = (typeof STATUSES)[number];
-
 // The status a new Item has unless the save gives one, which is the table's own default.
-const ACTIVE: Status = "active";
-
-// The statuses of a Gone Item: the User no longer has it, and its exit left a money trail.
-const GONE: ReadonlySet<Status> = new Set(["sold", "given", "lost", "stolen", "destroyed"]);
+const ACTIVE: ItemStatus = "active";
 
 // The fields a save can empty. An Item always has a name, a scope, a Category, and a status.
 const CLEARABLE = [
@@ -139,7 +134,7 @@ const FIELDS = {
     ),
   ),
   status: optional(
-    Schema.Literals(STATUSES).annotate({
+    Schema.Literals(ITEM_STATUSES).annotate({
       description:
         "active or listed for an Item the User still has, where listed means it is for sale. sold, given, lost, stolen, or destroyed for one that is gone. A new Item is active.",
     }),
@@ -174,7 +169,7 @@ interface Existing {
   readonly id: string;
   readonly name: string;
   readonly scope: (typeof SCOPES)[number];
-  readonly status: Status;
+  readonly status: ItemStatus;
   readonly property_id: string | null;
   readonly category_id: string;
   readonly proceeds_cents: number | null;
@@ -347,7 +342,7 @@ const stepsFor = Effect.fnUntraced(function* (
   // something did come back, whether this save gave the proceeds or an earlier one did.
   const cameBack = proceedsCents === undefined ? (was?.proceeds_cents ?? null) : proceedsCents;
   const forAmount =
-    marked !== undefined && GONE.has(marked) && cameBack !== null && cameBack > 0
+    marked !== undefined && GONE_STATUSES.includes(marked) && cameBack !== null && cameBack > 0
       ? ` for ${yield* formatCents(cameBack)}`
       : "";
   const added = [

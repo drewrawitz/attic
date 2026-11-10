@@ -1,5 +1,6 @@
 import { Array as Arr, Effect, Schema } from "effect";
 import { SqlClient } from "effect/sql";
+import { notGone } from "../item.ts";
 import { formatJson } from "../output.ts";
 import { propertyNamed } from "../property.ts";
 import { defineTool, optional, ToolError } from "../tool.ts";
@@ -98,7 +99,8 @@ const LEAD = 100;
 // whether to keep Gone Items, and the Property to keep to, if any.
 //
 //   word      the words, each with the LIKE pattern that finds it, in text and in `data`
-//   record    every record that is searched, with what a result says about it
+//   record    every record that is searched, with what a result says about it. Only an Item
+//             has a status in it, so only an Item can be a Gone Item
 //   attached  what each Note and each Document is attached to
 //   piece     every piece of text of every record
 //   hit       a piece, once for each word it holds, with the word's place among the words its
@@ -160,7 +162,7 @@ WITH
       JOIN json_each(?2) AS wanted ON wanted.value = record.type
       LEFT JOIN properties AS property ON property.id = record.property_id
      WHERE shown.words = (SELECT count(DISTINCT lower(value ->> 'word')) FROM json_each(?1))
-       AND (?3 OR record.status IS NULL OR record.status IN ('active', 'listed'))
+       AND (?3 OR record.status IS NULL OR ${notGone("record.status")})
        AND (?4 IS NULL OR record.property_id = ?4)
   )
 SELECT page.position, page.type, page.id, page.name_field, page.property, page.status, page.date,
